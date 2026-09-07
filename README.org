@@ -1298,6 +1298,41 @@ notifications in =*Messages*= and =~/.pi/agent/mcp.log= for connection
 problems.  See
 [[https://pi.dev/docs/latest/mcp][Pi's MCP documentation]] for configuration details.
 
+** Programmatic sessions
+
+Use =pilish-start-session= to create independent named chat/input pairs
+without changing window focus:
+
+#+begin_src emacs-lisp
+(pilish-start-session "/path/to/project/" "review"
+                      :session-file "/path/to/review.jsonl"
+                      :environment '(("KEY" . "value"))
+                      :on-ready (lambda (response) (message "%S" response)))
+#+end_src
+
+Creation returns the chat buffer immediately.  =on-ready= receives Pi's first
+state response asynchronously.  Named background creation never opens grammar
+installation prompts; dependencies must already be installed.  Per-process
+arguments and environment survive reload.  =pilish-session-chat-buffer=
+resolves the session from a chat or input buffer.  =pilish-session-process= and
+=pilish-session-input-buffer= expose native handles; =pilish-session-directory=,
+=-name=, =-title=, =-file=, =-model=, =-context-usage=, =-queued-prompts= and
+=-busy-p= read its state, and =pilish-session-exists-p= checks a name.
+=pilish-view-session-file= opens a saved session read-only.
+=pilish-submit-prompt= submits without modifying a draft and acknowledges
+actual RPC acceptance; while Pi is busy, Pi queues the prompt itself.
+=pilish-reload= takes an optional callback, called exactly once with nil or
+a failure reason.
+=pilish-close-session= stops only the explicitly supplied session without a
+confirmation prompt; callers must establish ownership.
+
+Integrations can register =pilish-session-environment-functions= before the
+first session starts.  Each function receives the chat buffer and directory,
+and returns an environment alist.  This runs before the initial spawn for
+both interactive and non-displaying sessions; the result is retained on reload.
+Explicit =:environment= entries take precedence, then functions in hook order.
+Pilish itself does not depend on an Emacs server or any external integration.
+
 ** Tree-sitter grammar management
 
 Pilish uses Emacs's built-in tree-sitter support to render

@@ -326,7 +326,7 @@ Also verifies that the new session-file is stored in state for reload to work."
   "Named session creates separate buffers from default."
   (let ((default-directory "/tmp/pilish-test-named/"))
     (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
-              ((symbol-function 'pilish--start-process) (lambda (_) nil))
+              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) nil))
               ((symbol-function 'pilish--display-buffers) #'ignore))
       (unwind-protect
           (progn
@@ -345,7 +345,7 @@ Also verifies that the new session-file is stored in state for reload to work."
   "Creating named session while in pi buffer creates new session, not reuse."
   (let ((default-directory "/tmp/pilish-test-from-pi/"))
     (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
-              ((symbol-function 'pilish--start-process) (lambda (_) nil))
+              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) nil))
               ((symbol-function 'pilish--display-buffers) #'ignore))
       (unwind-protect
           (progn
@@ -389,7 +389,7 @@ BINDING-SPEC is (DIR CHAT-NAME INPUT-NAME PROC).  DIR is evaluated once."
        (make-directory ,dir-value t)
        (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
                  ((symbol-function 'pilish--start-process)
-                  (lambda (_)
+                  (lambda (_ &optional _args _environment)
                     (setq ,proc (start-process "pi-test-quit" nil "cat"))
                     (set-process-query-on-exit-flag ,proc t)
                     ,proc))
@@ -625,7 +625,7 @@ BINDING-SPEC is (DIR CHAT-NAME INPUT-NAME PROC).  DIR is evaluated once."
               (setq pilish--process dead-proc))
             ;; Mock functions
             (cl-letf (((symbol-function 'pilish--start-process)
-                       (lambda (_dir)
+                       (lambda (_dir &optional _args _environment)
                          (setq started-new-process t)
                          (let ((proc (start-process "test-new" nil "cat")))
                            (set-process-query-on-exit-flag proc nil)
@@ -665,7 +665,7 @@ BINDING-SPEC is (DIR CHAT-NAME INPUT-NAME PROC).  DIR is evaluated once."
               (should (pilish-test-wait-for-process-exit dead-proc))
               (setq pilish--process dead-proc))
             (cl-letf (((symbol-function 'pilish--start-process)
-                       (lambda (_dir)
+                       (lambda (_dir &optional _args _environment)
                          (setq new-proc
                                (start-process "test-remote-reload-new" nil "cat"))))
                       ((symbol-function 'pilish--rpc-async)
@@ -701,7 +701,7 @@ BINDING-SPEC is (DIR CHAT-NAME INPUT-NAME PROC).  DIR is evaluated once."
           (setq alive-proc (start-process "test-reload-validate-alive" nil "cat")
                 pilish--process alive-proc)
           (cl-letf (((symbol-function 'pilish--start-process)
-                     (lambda (_dir)
+                     (lambda (_dir &optional _args _environment)
                        (setq started-new-process t)
                        (ert-fail "Reload started a process before validation failed")))
                     ((symbol-function 'pilish--rpc-async)
@@ -732,7 +732,7 @@ BINDING-SPEC is (DIR CHAT-NAME INPUT-NAME PROC).  DIR is evaluated once."
               (set-process-query-on-exit-flag alive-proc nil)
               (setq pilish--process alive-proc)
               (cl-letf (((symbol-function 'pilish--start-process)
-                         (lambda (_dir)
+                         (lambda (_dir &optional _args _environment)
                            (setq started-new-process t)
                            (let ((proc (start-process "test-new" nil "cat")))
                              (set-process-query-on-exit-flag proc nil)
@@ -765,7 +765,7 @@ BINDING-SPEC is (DIR CHAT-NAME INPUT-NAME PROC).  DIR is evaluated once."
             (setq old-proc (start-process "test-reload-failure-old" nil "cat")
                   pilish--process old-proc))
           (cl-letf (((symbol-function 'pilish--start-process)
-                     (lambda (_dir)
+                     (lambda (_dir &optional _args _environment)
                        (setq new-proc
                              (start-process "test-reload-failure-new" nil "cat"))))
                     ((symbol-function 'pilish--rpc-async)
@@ -805,7 +805,7 @@ BINDING-SPEC is (DIR CHAT-NAME INPUT-NAME PROC).  DIR is evaluated once."
             (setq old-proc (start-process "test-reload-cancelled-old" nil "cat")
                   pilish--process old-proc))
           (cl-letf (((symbol-function 'pilish--start-process)
-                     (lambda (_dir)
+                     (lambda (_dir &optional _args _environment)
                        (setq new-proc
                              (start-process "test-reload-cancelled-new" nil "cat"))))
                     ((symbol-function 'pilish--rpc-async)
@@ -842,7 +842,7 @@ BINDING-SPEC is (DIR CHAT-NAME INPUT-NAME PROC).  DIR is evaluated once."
               (should (pilish-test-wait-for-process-exit dead-proc))
               (setq pilish--process dead-proc))
             (cl-letf (((symbol-function 'pilish--start-process)
-                       (lambda (_dir)
+                       (lambda (_dir &optional _args _environment)
                          (let ((proc (start-process "test-new" nil "cat")))
                            (set-process-query-on-exit-flag proc nil)
                            proc)))
@@ -915,7 +915,7 @@ BINDING-SPEC is (DIR CHAT-NAME INPUT-NAME PROC).  DIR is evaluated once."
               (should (pilish-test-wait-for-process-exit dead-proc))
               (setq pilish--process dead-proc)))
           (cl-letf (((symbol-function 'pilish--start-process)
-                     (lambda (_dir)
+                     (lambda (_dir &optional _args _environment)
                        (setq new-proc (start-process "test-reload-history-new" nil "cat"))
                        new-proc))
                     ((symbol-function 'pilish--rpc-async)
@@ -990,7 +990,7 @@ BINDING-SPEC is (DIR CHAT-NAME INPUT-NAME PROC).  DIR is evaluated once."
             (pilish-input-mode)
             (pilish--set-chat-buffer chat-buf))
           (cl-letf (((symbol-function 'pilish--start-process)
-                     (lambda (_dir)
+                     (lambda (_dir &optional _args _environment)
                        (setq new-proc
                              (start-process "test-reload-transition-new" nil "cat"))
                        new-proc))
@@ -1075,7 +1075,7 @@ BINDING-SPEC is (DIR CHAT-NAME INPUT-NAME PROC).  DIR is evaluated once."
                   pilish--status 'idle
                   pilish--state (list :session-file session-file)))
           (cl-letf (((symbol-function 'pilish--start-process)
-                     (lambda (_dir)
+                     (lambda (_dir &optional _args _environment)
                        (setq new-proc
                              (start-process "test-reload-cmd-new" nil "cat"))))
                     ((symbol-function 'pilish--rpc-async)

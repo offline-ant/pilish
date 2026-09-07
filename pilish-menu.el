@@ -576,7 +576,8 @@ buffer from session history."
                                session-file dir))
                 (old-proc pilish--process))
             (setq pilish--status 'idle)
-            (let* ((new-proc (pilish--start-process dir))
+            (let* ((new-proc (pilish--start-process
+                              dir pilish--launch-args pilish--launch-environment))
                    (generation (pilish--begin-session-transition
                                 new-proc)))
               (when (processp new-proc)

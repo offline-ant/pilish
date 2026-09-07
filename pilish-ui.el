@@ -1285,6 +1285,12 @@ of the current session in the selected frame."
 (defvar-local pilish--process nil
   "The pi RPC subprocess for this session.")
 
+(defvar-local pilish--launch-args nil
+  "Per-process CLI arguments retained for this session's reload.")
+
+(defvar-local pilish--launch-environment nil
+  "Per-process environment overrides retained for this session's reload.")
+
 (defvar-local pilish--process-version nil
   "Detected pi CLI version for the current process.")
 
@@ -3337,6 +3343,25 @@ local ownership or mutate a later operation on the same process."
   (when-let* ((proc (pilish--get-process)))
     (pilish--rpc-async proc '(:type "clear_queue") #'ignore)
     (pilish--rpc-async proc '(:type "abort") #'ignore)))
+
+(defun pilish-submit-prompt (chat-buffer text callback &optional behavior)
+  "Submit TEXT to CHAT-BUFFER without changing its input draft.
+CALLBACK receives Pi's acceptance or rejection response asynchronously.
+BEHAVIOR is \"steer\" or \"followUp\" (the default) while busy.  Use RPC
+prompt, not steer/follow_up: prompt invokes extension input hooks immediately
+at submission, before queued text is delivered to the model.
+While the session is busy Pi queues TEXT itself and reports it with
+`queue_update', which the header and `pilish-session-queued-prompts'
+include.  Pilish's own follow-up queue and `sending' status belong to
+prompts typed in the input buffer, whose draft they restore on failure."
+  (let ((proc (and (buffer-live-p chat-buffer)
+                   (buffer-local-value 'pilish--process chat-buffer))))
+    (unless (and (processp proc) (process-live-p proc))
+      (error "Pi process is unavailable"))
+    (pilish--rpc-async
+     proc (list :type "prompt" :message text
+                :streamingBehavior (or behavior "followUp"))
+     callback)))
 
 (defconst pilish--prompt-start-timeout 0.5
   "Seconds before probing Pi state after acceptance with no agent_start.
