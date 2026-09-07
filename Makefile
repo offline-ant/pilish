@@ -30,7 +30,7 @@ SELECTOR ?=
 # Example: make test VERBOSE=1
 VERBOSE ?=
 
-.PHONY: test test-unit test-core test-ui test-render test-arguments test-table test-input test-menu test-browse test-jsonl test-snapshot test-build
+.PHONY: test test-unit test-core test-ui test-render test-arguments test-table test-input test-menu test-browse test-jsonl test-snapshot test-build test-session-api
 .PHONY: test-integration test-integration-fake test-integration-real test-integration-ci test-integration-ci-real test-gui test-gui-ci test-all
 .PHONY: bench bench-batch bench-reload-resume bench-reload-resume-batch bench-reload-resume-smoke
 .PHONY: bench-tool-update bench-tool-update-batch bench-tool-update-smoke
@@ -126,6 +126,7 @@ test: .deps-stamp
 		$(LOCAL_LOAD_PATH) \
 		-l pilish \
 		-l pilish-core-test \
+		-l pilish-session-api-test \
 		-l pilish-ui-test \
 		-l pilish-render-test \
 		-l pilish-arguments-test \
@@ -162,6 +163,8 @@ BATCH_TEST = $(BATCH) -L test --eval "(setq load-prefer-newer t)" \
 
 test-core: .deps-stamp
 	@$(BATCH_TEST) -l pilish-core-test $(ERT_RUN)
+test-session-api: .deps-stamp
+	@$(BATCH_TEST) -l pilish-session-api-test $(ERT_RUN)
 test-ui: .deps-stamp
 	@$(BATCH_TEST) -l pilish-ui-test $(ERT_RUN)
 test-render: .deps-stamp
