@@ -43,6 +43,7 @@
 ;;; Code:
 
 (require 'pilish-ui)
+(require 'pilish-dialog)
 (require 'pilish-table)
 (require 'cl-lib)
 (require 'ansi-color)
@@ -1452,6 +1453,7 @@ Dispatches to appropriate handler based on method."
       ("confirm"        (pilish--extension-ui-confirm event proc))
       ("select"         (pilish--extension-ui-select event proc))
       ("input"          (pilish--extension-ui-input event proc))
+      ("editor"         (pilish-open-editor-dialog event proc))
       ("set_editor_text" (pilish--extension-ui-set-editor-text event))
       ("setStatus"      (pilish--extension-ui-set-status event))
       ("setWorkingMessage" (pilish--extension-ui-set-working-message event))

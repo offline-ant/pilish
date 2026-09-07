@@ -3342,6 +3342,9 @@ Send both commands in wire order.  Their acknowledgments must not release
 local ownership or mutate a later operation on the same process."
   (when-let* ((proc (pilish--get-process)))
     (pilish--rpc-async proc '(:type "clear_queue") #'ignore)
+    ;; RPC editors have no agent-side AbortSignal option.  Cancel them after
+    ;; clearing the queue, then abort so their waiting tools settle.
+    (pilish--close-process-editors proc)
     (pilish--rpc-async proc '(:type "abort") #'ignore)))
 
 (defun pilish-submit-prompt (chat-buffer text callback &optional behavior)

@@ -44,3 +44,7 @@ For RPC changes, consult the Pi source that matches `PI_VERSION` in the Makefile
 ## Session API contract
 
 `pilish-start-session` creates background sessions that never display buffers, offer interactive dependency installation or prompt for missing tree-sitter grammars; a nil name selects the directory's default session and `:session-file` resumes a session with its history. Launch args/environment survive reload. Integrations register `pilish-session-environment-functions` before first spawn (failing functions are warnings). Consumers read sessions only through the public accessors in `pilish.el` (`pilish-session-directory`, `-name`, `-title`, `-file`, `-model`, `-context-usage`, `-queued-prompts`, `-busy-p`, `-exists-p`, `pilish-view-session-file`); add an accessor rather than letting integrations read `pilish--` state. `pilish-submit-prompt` relies on Pi's own queue (`queue_update`), not Pilish's follow-up queue. Pilish has no server or host-specific integration dependency. Covered by `test/pilish-session-api-test.el` (`make test-session-api`).
+
+## Extension dialogs
+
+`pilish-dialog.el` (requires only core; render uses it) owns asynchronous standard RPC multiline `editor` dialogs in a separate buffer with submit/cancel responses; it never reuses the prompt draft. Stop cancels process-owned editors between `clear_queue` and `abort`. Covered by `test/pilish-dialog-test.el` (`make test-dialog`).

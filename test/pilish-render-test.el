@@ -8157,24 +8157,17 @@ See https://github.com/dnouri/pilish/issues/176."
         (should (equal (plist-get response-sent :id) "req-9"))
         (should (eq (plist-get response-sent :cancelled) t))))))
 
-(ert-deftest pilish-test-extension-ui-editor-cancels ()
-  "extension_ui_request editor method sends cancelled (not supported)."
-  (let ((response-sent nil))
-    (cl-letf (((symbol-function 'pilish--send-extension-ui-response)
-               (lambda (_proc msg)
-                 (setq response-sent msg)))
-              ((symbol-function 'message) #'ignore))
+(ert-deftest pilish-test-extension-ui-editor-dispatches-native-dialog ()
+  "The standard editor RPC dispatches its multiline prefill unchanged."
+  (let ((event '(:type "extension_ui_request" :id "req-10" :method "editor"
+                 :title "Edit:" :prefill "first\nsecond")) received)
+    (cl-letf (((symbol-function 'pilish-open-editor-dialog)
+               (lambda (request process) (setq received (list request process)))))
       (with-temp-buffer
         (pilish-chat-mode)
-        (let ((pilish--process t))
-          (pilish--handle-extension-ui-request
-           '(:type "extension_ui_request"
-             :id "req-10"
-             :method "editor"
-             :title "Edit:"
-             :prefill "some text")))
-        (should response-sent)
-        (should (eq (plist-get response-sent :cancelled) t))))))
+        (setq pilish--process 'editor-process)
+        (pilish--handle-extension-ui-request event)))
+    (should (equal received (list event 'editor-process)))))
 
 ;; W1 Task 1 fixture: a valid supported-dialog request. File-local to these tests.
 (defun pilish-test--extension-dialog-request (method &optional id)
