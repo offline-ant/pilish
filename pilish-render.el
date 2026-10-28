@@ -45,6 +45,7 @@
 (require 'pilish-ui)
 (require 'pilish-dialog)
 (require 'pilish-table)
+(require 'pilish-style)
 (require 'cl-lib)
 (require 'ansi-color)
 (require 'image)
@@ -1602,7 +1603,9 @@ which asks upfront before any buffers are touched."
   (when (and (stringp content)
              (not (string-empty-p content)))
     (let ((start (point-max)))
-      (pilish--append-to-chat (concat "\n" content "\n"))
+      ;; The property marks the message for chat styles (`pilish-style').
+      (pilish--append-to-chat
+       (concat "\n" (propertize (concat content "\n") 'pilish-custom-message t)))
       (pilish--decorate-tables-unless-deferred start (point-max)))
     ;; Reset so next assistant message shows its header
     (setq pilish--assistant-header-shown nil)))
@@ -4511,6 +4514,8 @@ until an authoritative tool execution/history event supplies it."
       (setf (pilish--tool-block-args block) nil
             (pilish--tool-block-result block) nil))
     (overlay-put ov 'face face)
+    ;; Chat styles decorate by the tool face (`pilish-style').
+    (font-lock-flush (overlay-start ov) (overlay-end ov))
     (pilish--tool-refresh-prefixes block)
     (pilish--tool-block-refresh-overlay block)
     (pilish--tool-block-unregister block)
@@ -6067,7 +6072,7 @@ if none exists, render the result at point without a live overlay."
                                        (pilish--tool-block-history-p block))
           (pilish--redraw-compound-tool block)
           (pilish--tool-overlay-finalize
-           (if is-error 'pilish-tool-block-error 'pilish-tool-block) block))
+           (if is-error 'pilish-tool-block-error 'pilish-tool-block-success) block))
       (let* ((presentation (pilish--tool-result-presentation tool-name args content details is-error nil labels))
              (image-previews (plist-get presentation :images))
              (lang (plist-get presentation :lang))
@@ -6108,7 +6113,7 @@ if none exists, render the result at point without a live overlay."
                    (when-let* ((line-map (plist-get truncation :line-map)))
                      (pilish--tool-block-set-line-map block line-map))
                    (pilish--tool-overlay-finalize
-                    (if is-error 'pilish-tool-block-error 'pilish-tool-block) block)
+                    (if is-error 'pilish-tool-block-error 'pilish-tool-block-success) block)
                    (when (eobp) (insert "\n"))))))
           (pilish--with-scroll-preservation
             (save-excursion

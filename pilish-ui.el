@@ -167,10 +167,31 @@ Timing uses approximate wall time, including suspend and Emacs delays."
   "Height of the input window.
 An integer specifies an absolute number of lines.
 A float between 0.0 and 1.0 (exclusive) specifies a fraction of the
-total window height, e.g. 0.3 means 30% for input."
+total window height, e.g. 0.3 means 30% for input.
+The symbol `fit' sizes the window to its draft like Pi's own editor:
+it starts at `pilish-input-window-min-height', grows with the draft up
+to `pilish-input-window-max-height', and shrinks again after sending.
+Window heights include the header and mode lines."
+  :type '(choice (natnum :tag "Lines")
+                 (float :tag "Fraction (0.0–1.0)")
+                 (const :tag "Fit the draft" fit))
+  :group 'pilish)
+
+(defcustom pilish-input-window-min-height 3
+  "Smallest total height of a `fit' input window, in lines.
+See `pilish-input-window-height'."
+  :type 'natnum
+  :group 'pilish)
+
+(defcustom pilish-input-window-max-height 0.33
+  "Largest total height of a `fit' input window.
+An integer is a number of lines; a float is a fraction of the chat and
+input windows' combined height.  See `pilish-input-window-height'."
   :type '(choice (natnum :tag "Lines")
                  (float :tag "Fraction (0.0–1.0)"))
   :group 'pilish)
+
+(declare-function pilish--apply-chat-style "pilish-style")
 
 (defcustom pilish-input-window-display 'always
   "How the input window is displayed alongside the chat window.
@@ -388,6 +409,12 @@ still operate on the raw table source."
   '((t :extend t))
   "Face for tool blocks.
 Subtle blue-tinted background derived from the current theme."
+  :group 'pilish)
+
+(defface pilish-tool-block-success
+  '((t :inherit pilish-tool-block))
+  "Face for tool blocks after successful completion.
+The classic style shows them like running tool blocks."
   :group 'pilish)
 
 (defface pilish-tool-block-error
@@ -781,10 +808,11 @@ Returns the position of the heading line start, or nil if not found."
 (defun pilish--visible-text-span-p (position)
   "Return non-nil when buffer text at POSITION contributes visible text.
 This deliberately follows the package's existing visible-copy semantics:
-active `invisible' text and text whose `display' property is the empty string
-are omitted; nonempty display replacements and overlay display strings are not
-expanded into synthetic buffer characters."
-  (let ((invisible (get-text-property position 'invisible))
+text made invisible by an active `invisible' property (from text or an
+overlay, such as hidden headings of a chat style) and text whose `display'
+property is the empty string are omitted; nonempty display replacements and
+overlay display strings are not expanded into synthetic buffer characters."
+  (let ((invisible (get-char-property position 'invisible))
         (display (get-text-property position 'display)))
     (and (not (and invisible (invisible-p invisible)))
          (not (equal display "")))))
@@ -1089,6 +1117,7 @@ Reserve at least one left column and preserve each window's larger margins."
 
   ;; Compute theme-derived faces used by chat overlays.
   (pilish--update-theme-derived-faces)
+  (pilish--apply-chat-style)
 
   ;; Saving a transcript should not make the live chat editable.
   (add-hook 'after-save-hook #'pilish--restore-chat-buffer-read-only nil t)
@@ -2152,8 +2181,86 @@ In both cases, clamp the result to the range
          (raw (if (floatp pilish-input-window-height)
                   (round (* pilish-input-window-height total))
                 pilish-input-window-height)))
-    (max window-min-height
-         (min raw max-input-height))))
+    (if (eq pilish-input-window-height 'fit)
+        (max 1 (min pilish-input-window-min-height max-input-height))
+      (max window-min-height
+           (min raw max-input-height)))))
+
+(defun pilish--fit-input-height (input-win total)
+  "Return the `fit' height for INPUT-WIN in a container of TOTAL lines.
+The height covers the draft's screen lines plus INPUT-WIN's header and
+mode lines, clamped between `pilish-input-window-min-height' and
+`pilish-input-window-max-height', and always leaves `window-min-height'
+lines for the chat."
+  (let* ((chrome (- (window-total-height input-win)
+                    (window-body-height input-win)))
+         (lines (with-current-buffer (window-buffer input-win)
+                  (max 1 (count-screen-lines (point-min) (point-max)
+                                             nil input-win))))
+         (cap (if (floatp pilish-input-window-max-height)
+                  (round (* pilish-input-window-max-height total))
+                pilish-input-window-max-height))
+         (cap (min (max cap pilish-input-window-min-height)
+                   (- total window-min-height))))
+    (max 1 (min (max (+ lines chrome) pilish-input-window-min-height)
+                cap))))
+
+(defun pilish-fit-input-window (input-win)
+  "Resize INPUT-WIN to its draft when `pilish-input-window-height' is `fit'.
+INPUT-WIN must show an input buffer below its chat window; other windows
+and other height settings are left alone.  A preserved height (see
+`window-preserve-size') follows the new size."
+  (when (and (eq pilish-input-window-height 'fit)
+             (window-live-p input-win)
+             (window-combined-p input-win))
+    (let* ((total (if-let* ((parent (window-parent input-win)))
+                      (window-total-height parent)
+                    (window-total-height input-win)))
+           (current (window-total-height input-win))
+           (delta (- (pilish--fit-input-height input-win total) current)))
+      (unless (zerop delta)
+        (let ((preserved (window-parameter input-win 'window-preserved-size)))
+          (when preserved
+            (window-preserve-size input-win nil nil))
+          (condition-case nil
+              (window-resize input-win delta nil t)
+            (error nil))
+          (when preserved
+            (window-preserve-size input-win nil t))
+          ;; A grown window would otherwise keep the start chosen for its
+          ;; smaller size, hiding the top of a draft that now fits.
+          (with-current-buffer (window-buffer input-win)
+            (set-window-start
+             input-win
+             (save-excursion
+               (goto-char (window-point input-win))
+               (vertical-motion (- 1 (window-body-height input-win)) input-win)
+               (point)))))))))
+
+(defun pilish--fit-input-buffer-windows (buffer)
+  "Fit every window showing input BUFFER to its draft."
+  (when (buffer-live-p buffer)
+    (dolist (win (get-buffer-window-list buffer nil t))
+      (pilish-fit-input-window win))))
+
+(defvar-local pilish--fit-input-timer nil
+  "Pending timer that fits this input buffer's windows to the draft.")
+
+(defun pilish--schedule-fit-input-windows (&rest _)
+  "Fit the current input buffer's windows soon, once per batch of edits.
+Intended for `after-change-functions'; resizing waits for the change to
+finish so programmatic edits (send, history, editor text) are covered."
+  (when (and (eq pilish-input-window-height 'fit)
+             (not (timerp pilish--fit-input-timer)))
+    (let ((buffer (current-buffer)))
+      (setq pilish--fit-input-timer
+            (run-at-time
+             0 nil
+             (lambda ()
+               (when (buffer-live-p buffer)
+                 (with-current-buffer buffer
+                   (setq pilish--fit-input-timer nil))
+                 (pilish--fit-input-buffer-windows buffer))))))))
 
 (defun pilish--input-height-for-window (window)
   "Return input pane height to use when splitting WINDOW."
@@ -2175,9 +2282,15 @@ Only resizes when `pilish-input-window-height' is a float."
       (unless (zerop delta)
         (window-resize input-win delta nil t)))))
 
-(defun pilish--maybe-rebalance-windows (_frame)
-  "Rebalance pi chat/input window pairs after a frame size change.
-Intended for `window-size-change-functions'."
+(defun pilish--maybe-rebalance-windows (frame)
+  "Rebalance pi chat/input window pairs after FRAME is resized.
+Intended for `window-size-change-functions'.  `fit' input windows are
+refitted, since a width change can rewrap the draft."
+  (when (eq pilish-input-window-height 'fit)
+    (dolist (win (window-list frame 'no-mini))
+      (when (with-current-buffer (window-buffer win)
+              (derived-mode-p 'pilish-input-mode))
+        (pilish-fit-input-window win))))
   (when (floatp pilish-input-window-height)
     (dolist (win (window-list nil 'no-mini))
       (when-let* ((input-buf (buffer-local-value
@@ -2274,6 +2387,14 @@ Return the new input window, or nil when no chat window can be split."
                    (cl-find-if #'pilish--window-can-split-for-input-p
                                (pilish--windows-by-height
                                 (get-buffer-window-list chat-buf nil))))))
+    (pilish-split-input-window chat-win input-buf)))
+
+(defun pilish-split-input-window (chat-win input-buf)
+  "Show INPUT-BUF in a new window below CHAT-WIN and return that window.
+The height follows `pilish-input-window-height'.  The new window is
+soft-dedicated so `display-buffer' never targets it.  Return nil when
+CHAT-WIN is too small to split."
+  (when (pilish--window-can-split-for-input-p chat-win)
     (let ((input-win
            (split-window
             chat-win (- (pilish--input-height-for-window chat-win))
@@ -2283,6 +2404,7 @@ Return the new input window, or nil when no chat window can be split."
       ;; targets it (magit, help, compilation, etc.).  The 'side
       ;; value still allows `switch-to-buffer' and `C-x o'.
       (set-window-dedicated-p input-win 'side)
+      (pilish-fit-input-window input-win)
       input-win)))
 
 (defun pilish-open-input ()

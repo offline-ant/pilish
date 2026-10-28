@@ -931,6 +931,15 @@ Here are some common non-default preferences:
 ;; rebalanced on frame resize:
 (setopt pilish-input-window-height 0.25)
 
+;; Or size it to the draft like Pi's editor: 3 lines (header, one text
+;; line, mode line), growing up to a third of the pair, shrinking after
+;; sending (`pilish-input-window-min-height', `-max-height'):
+(setopt pilish-input-window-height 'fit)
+
+;; Look like Pi's terminal interface: no You/Assistant headings, user
+;; messages and tool calls as coloured blocks (see "Chat styles"):
+(setopt pilish-chat-style 'pi)
+
 ;; Copy source Markdown from the chat buffer instead of only visible text:
 (setopt pilish-copy-raw-markdown t)
 
@@ -1091,6 +1100,26 @@ Fork stays on =f=, char-finding remains available on =F=, =t=, and
 =T=, and snipe stays active in the input buffer.  Set
 =pilish-evil-disable-snipe= to nil to keep snipe active in
 chat buffers.
+
+** Chat styles
+
+=pilish-chat-style= selects how chat and transcript buffers look.  The
+default =classic= shows =You= and =Assistant= headings.  =pi= follows
+Pi's terminal interface: turn headings are hidden, assistant text is
+plain Markdown, user messages are padded blocks with Pi's user message
+background, tool blocks are padded and coloured by state (running,
+success, error) with muted output (except =read=, =write= and =edit=,
+see =pilish-pi-highlighted-output-tools=), thinking is muted italic, and
+custom messages and summaries get Pi's custom message background.
+
+The buffer text is identical in both styles; =pi= only adds overlays and
+buffer-local face remapping, so navigation, folding and saved transcripts
+are unchanged; copying visible text omits the hidden headings.  The faces (=pilish-pi-user-message=,
+=pilish-pi-tool-pending=, =pilish-pi-tool-success=, =pilish-pi-tool-error=,
+=pilish-pi-custom-message=, =pilish-pi-thinking=, ...) default to the colours
+of Pi's built-in dark and light themes, chosen by the frame background.
+Customize them to match another Pi theme.  Changing the option through
+=setopt= or Customize restyles open buffers.
 
 ** Display of thinking
 

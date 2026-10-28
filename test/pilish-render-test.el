@@ -19043,7 +19043,7 @@ Regression test: single lines should respect byte limit even with no newlines."
     ;; Should have output, success face, no [error]
     (should (string-match-p "success output" (buffer-string)))
     (let ((ov (car (overlays-at (point-min)))))
-      (should (eq (overlay-get ov 'face) 'pilish-tool-block)))
+      (should (eq (overlay-get ov 'face) 'pilish-tool-block-success)))
     (should-not (string-match-p "\\[error\\]" (buffer-string)))))
 
 (ert-deftest pilish-test-tool-output-survives-message-render ()
@@ -21320,7 +21320,7 @@ Multiple deltas should replace the preview instead of appending forever."
       (should (= 0 (hash-table-count pilish--live-tool-blocks)))
       (should-not pilish--pending-tool-overlay)
       (should (= 1 (length (pilish-test--all-tool-overlays))))
-      (should (eq 'pilish-tool-block
+      (should (eq 'pilish-tool-block-success
                   (overlay-get preview 'face)))
       (should (equal '("final content")
                      (pilish-test--tool-content-lines-from-stream

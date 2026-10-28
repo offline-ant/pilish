@@ -5651,20 +5651,20 @@ This occurs after compaction before the next assistant message."
     ;; Should NOT have drawer syntax
     (should-not (string-match-p ":BASH:" (buffer-string)))))
 
-(ert-deftest pilish-test-tool-end-keeps-overlay-face ()
-  "tool_execution_end keeps base face on success."
+(ert-deftest pilish-test-tool-end-success-face ()
+  "tool_execution_end switches from the running to the success face."
   (with-temp-buffer
     (pilish-chat-mode)
     (pilish--display-tool-start "bash" '(:command "ls"))
     ;; Initially base face
     (let ((ov (car (overlays-at (point-min)))))
       (should (eq (overlay-get ov 'face) 'pilish-tool-block)))
-    ;; After success — face stays the same
+    ;; After success — the success face, which classic style draws alike
     (pilish--display-tool-end "bash" '(:command "ls")
                           '((:type "text" :text "file.txt"))
                           nil nil)
     (let ((ov (car (overlays-at (point-min)))))
-      (should (eq (overlay-get ov 'face) 'pilish-tool-block)))))
+      (should (eq (overlay-get ov 'face) 'pilish-tool-block-success)))))
 
 (ert-deftest pilish-test-tool-end-error-face ()
   "tool_execution_end sets error face on failure."
