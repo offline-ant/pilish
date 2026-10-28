@@ -285,6 +285,7 @@ options `pilish-evil-chat-state',
                           pilish-evil-chat-state)
   (evil-set-initial-state 'pilish-input-mode
                           pilish-evil-input-state)
+  ;; An extension editor is typed text answering Pi, like the prompt.
   (evil-set-initial-state 'pilish-editor-mode
                           pilish-evil-input-state)
   (evil-set-initial-state 'pilish-snapshot-mode 'motion)

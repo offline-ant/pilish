@@ -1403,7 +1403,9 @@ Uses commands from pi's `get_commands' RPC."
     ("s" "steer" pilish-queue-steering)
     ("u" "follow-up" pilish-queue-followup)
     ("a" "attach" pilish-attach-menu)
-    ("k" "abort" pilish-abort)]]
+    ("k" "abort" pilish-abort)
+    ("A" "answer question" pilish-answer-dialog)
+    ("D" "cancel question" pilish-cancel-dialog)]]
   [["Model"
     ("m" "select" pilish-select-model)
     ("t" "thinking" pilish-select-thinking)]
