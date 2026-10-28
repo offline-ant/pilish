@@ -737,6 +737,15 @@ other processes stay open.  A non-process PROCESS is ignored."
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
+;;;; Process Exit
+
+(defvar pilish--process-exit-functions nil
+  "Functions called with a pi process that exited, before its callbacks fail.
+Modules owning per-process state, such as pending extension dialogs,
+release it here.")
+
+(add-hook 'pilish--process-exit-functions #'pilish--close-process-editors)
+
 (defun pilish--handle-process-exit (proc event)
   "Clean up when pi process PROC exits with EVENT.
 Calls pending request callbacks for this process with an error response
@@ -756,7 +765,11 @@ containing EVENT, then clears this process's pending request tables."
     (unwind-protect
         (unwind-protect
             (progn
-              (pilish--call-process-hook #'pilish--close-process-editors proc)
+              (run-hook-wrapped
+               'pilish--process-exit-functions
+               (lambda (function)
+                 (pilish--call-process-hook function proc)
+                 nil))
               (when pending
                 (maphash (lambda (_id callback)
                            (pilish--call-process-hook callback error-response))

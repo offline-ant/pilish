@@ -55,6 +55,8 @@
 
 ;; pilish-render.el (chat buffer commands)
 (declare-function pilish-toggle-tool-section "pilish-render")
+(declare-function pilish--cancel-process-dialogs "pilish-dialog" (process))
+(declare-function pilish--header-format-dialog "pilish-dialog" (chat-buf))
 (declare-function pilish--transcript-local-help "pilish-render")
 (declare-function pilish-shell-command-at-point "pilish-render")
 (declare-function pilish-visit-file "pilish-render")
@@ -3620,6 +3622,7 @@ the session's input buffer."
      (pilish--header-format-identity model-short thinking activity-phase-str)
      (pilish--header-format-stats stats)
      (pilish--header-format-queue chat-buf)
+     (pilish--header-format-dialog chat-buf)
      (pilish--header-format-context-group session-name)
      (pilish--header-format-extension-group ext-status working-message)
      (pilish--header-format-prompt-image
@@ -3680,6 +3683,9 @@ Open extension editors are cancelled in between: Pi's RPC editor request
 has no abort signal, so its waiting tool settles only after a response."
   (when-let* ((proc (pilish--get-process)))
     (pilish--rpc-async proc '(:type "clear_queue") #'ignore)
+    ;; Cancel tracked dialogs and any remaining editor before aborting so their
+    ;; waiting extension tools settle even though RPC editors lack AbortSignal.
+    (pilish--cancel-process-dialogs proc)
     (pilish--close-process-editors proc)
     (pilish--rpc-async proc '(:type "abort") #'ignore)))
 
