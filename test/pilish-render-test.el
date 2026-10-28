@@ -8746,6 +8746,20 @@ See https://github.com/dnouri/pilish/issues/176."
           (when (buffer-live-p draft) (kill-buffer draft))
           (delete-process process))))))
 
+(ert-deftest pilish-test-extension-ui-editor-dispatches-native-dialog ()
+  "The standard editor RPC dispatches its multiline prefill unchanged."
+  (let ((event '(:type "extension_ui_request" :id "req-10" :method "editor"
+                 :title "Edit:" :prefill "first\nsecond")) received)
+    (cl-letf (((symbol-function 'pilish--extension-ui-editor)
+               (lambda (request process &optional _display)
+                 (setq received (list request process)))))
+      (with-temp-buffer
+        (pilish-chat-mode)
+        (setq pilish--process 'editor-process)
+        (pilish--handle-extension-ui-request event)))
+    (should (equal received (list event 'editor-process)))))
+
+
 ;; W1 Task 1 fixture: a valid supported-dialog request. File-local to these tests.
 (defun pilish-test--extension-dialog-request (method &optional id)
   "Return a supported METHOD request with ID, defaulting to METHOD."
