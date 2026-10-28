@@ -119,6 +119,7 @@
 (require 'pilish-input)
 (require 'pilish-browse)
 (require 'pilish-snapshot)
+(require 'pilish-pair)
 
 (declare-function dired-get-filename "dired" (&optional localp no-error-if-not-filep))
 

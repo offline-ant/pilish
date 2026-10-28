@@ -193,6 +193,9 @@ input windows' combined height.  See `pilish-input-window-height'."
 
 (declare-function pilish--apply-chat-style "pilish-style")
 
+(defvar pilish-window-pairing-mode)
+(declare-function pilish--pair-input-window "pilish-pair" (chat-win input-buf))
+
 (defcustom pilish-input-window-display 'always
   "How the input window is displayed alongside the chat window.
 When `always' (the default), the input window is shown whenever the
@@ -2392,20 +2395,25 @@ Return the new input window, or nil when no chat window can be split."
 (defun pilish-split-input-window (chat-win input-buf)
   "Show INPUT-BUF in a new window below CHAT-WIN and return that window.
 The height follows `pilish-input-window-height'.  The new window is
-soft-dedicated so `display-buffer' never targets it.  Return nil when
-CHAT-WIN is too small to split."
-  (when (pilish--window-can-split-for-input-p chat-win)
-    (let ((input-win
-           (split-window
-            chat-win (- (pilish--input-height-for-window chat-win))
-            'below)))
-      (set-window-buffer input-win input-buf)
-      ;; Soft-dedicate the input window so `display-buffer' never
-      ;; targets it (magit, help, compilation, etc.).  The 'side
-      ;; value still allows `switch-to-buffer' and `C-x o'.
-      (set-window-dedicated-p input-win 'side)
-      (pilish-fit-input-window input-win)
-      input-win)))
+soft-dedicated so `display-buffer' never targets it.  With
+`pilish-window-pairing-mode', the two become one pair (see
+`pilish-window-pair').  Return nil when CHAT-WIN is too small to split."
+  (if (bound-and-true-p pilish-window-pairing-mode)
+      (when-let* ((input-win (pilish--pair-input-window chat-win input-buf)))
+        (pilish-fit-input-window input-win)
+        input-win)
+    (when (pilish--window-can-split-for-input-p chat-win)
+      (let ((input-win
+             (split-window
+              chat-win (- (pilish--input-height-for-window chat-win))
+              'below)))
+        (set-window-buffer input-win input-buf)
+        ;; Soft-dedicate the input window so `display-buffer' never
+        ;; targets it (magit, help, compilation, etc.).  The 'side
+        ;; value still allows `switch-to-buffer' and `C-x o'.
+        (set-window-dedicated-p input-win 'side)
+        (pilish-fit-input-window input-win)
+        input-win))))
 
 (defun pilish-open-input ()
   "Open the input window below the chat window and select it.

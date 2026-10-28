@@ -940,6 +940,10 @@ Here are some common non-default preferences:
 ;; messages and tool calls as coloured blocks (see "Chat styles"):
 (setopt pilish-chat-style 'pi)
 
+;; Keep each chat window and its input window together as one window
+;; (see "Window pairs"):
+(pilish-window-pairing-mode 1)
+
 ;; Copy source Markdown from the chat buffer instead of only visible text:
 (setopt pilish-copy-raw-markdown t)
 
@@ -1120,6 +1124,33 @@ are unchanged; copying visible text omits the hidden headings.  The faces (=pili
 of Pi's built-in dark and light themes, chosen by the frame background.
 Customize them to match another Pi theme.  Changing the option through
 =setopt= or Customize restyles open buffers.
+
+** Window pairs
+
+=pilish-window-pairing-mode= ties each chat window to the input window
+below it, so ordinary window commands cannot separate them.  The two
+form one atomic window (see the Elisp manual, "Atomic Windows"):
+
+- =delete-window= in the chat closes both; in the input it closes only the
+  input, which stays closed until the window shows another chat.
+  =delete-other-windows= in either keeps both (a pair that already fills
+  its frame stays as it is); splitting either splits beside the pair.
+- Both halves are soft-dedicated: =display-buffer= shows other buffers
+  elsewhere, as it already does for the input window.
+- =switch-to-buffer= to a chat or input buffer in either half shows that
+  session in the whole pair.  Another buffer replaces the pair, or opens
+  beside it with =switch-to-buffer-obey-display-actions=.
+- A chat window shown without its input gets one below it (when
+  =pilish-input-window-display= is =always=); an input window shown alone
+  gets its chat above it.  Restored layouts (window states, tabs copied
+  to new frames) become pairs again this way.  =pilish-repair-window-pairs=
+  runs this repair on demand; with a prefix argument it also reopens
+  closed inputs.
+
+Several pairs can share a frame, side by side or stacked, each with its
+own input.  Window managers use =pilish-split-input-window= to make a
+pair, =pilish-window-pair= to find one, and =pilish-dissolve-window-pair=
+to turn one back into its chat window.
 
 ** Display of thinking
 
