@@ -193,6 +193,8 @@ option for all sessions; buffer-local values are not supported."
                  (float :tag "Fraction (0.0–1.0)"))
   :group 'pilish)
 
+(declare-function pilish--apply-chat-style "pilish-style")
+
 (defcustom pilish-input-window-display 'always
   "How the input window is displayed alongside the chat window.
 When `always' (the default), the input window is shown whenever the
@@ -868,10 +870,11 @@ Returns the position of the heading line start, or nil if not found."
 (defun pilish--visible-text-span-p (position)
   "Return non-nil when buffer text at POSITION contributes visible text.
 This deliberately follows the package's existing visible-copy semantics:
-active `invisible' text and text whose `display' property is the empty string
-are omitted; nonempty display replacements and overlay display strings are not
-expanded into synthetic buffer characters."
-  (let ((invisible (get-text-property position 'invisible))
+text made invisible by an active `invisible' property (from text or an
+overlay, such as hidden headings of a chat style) and text whose `display'
+property is the empty string are omitted; nonempty display replacements and
+overlay display strings are not expanded into synthetic buffer characters."
+  (let ((invisible (get-char-property position 'invisible))
         (display (get-text-property position 'display)))
     (and (not (and invisible (invisible-p invisible)))
          (not (equal display "")))))
@@ -1176,6 +1179,7 @@ Reserve at least one left column and preserve each window's larger margins."
 
   ;; Compute theme-derived faces used by chat overlays.
   (pilish--update-theme-derived-faces)
+  (pilish--apply-chat-style)
 
   ;; Saving a transcript should not make the live chat editable.
   (add-hook 'after-save-hook #'pilish--restore-chat-buffer-read-only nil t)
