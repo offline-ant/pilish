@@ -1383,7 +1383,9 @@ Uses commands from pi's `get_commands' RPC."
     ("RET" "send" pilish-send)
     ("s" "steer" pilish-queue-steering)
     ("a" "attach" pilish-attach-menu)
-    ("k" "abort" pilish-abort)]]
+    ("k" "abort" pilish-abort)
+    ("A" "answer question" pilish-answer-dialog)
+    ("D" "cancel question" pilish-cancel-dialog)]]
   [["Model"
     ("m" "select" pilish-select-model)
     ("t" "thinking" pilish-select-thinking)]

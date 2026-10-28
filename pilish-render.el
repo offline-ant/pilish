@@ -1450,10 +1450,8 @@ Dispatches to appropriate handler based on method."
         (proc pilish--process))
     (pcase method
       ("notify"         (pilish--extension-ui-notify event))
-      ("confirm"        (pilish--extension-ui-confirm event proc))
-      ("select"         (pilish--extension-ui-select event proc))
-      ("input"          (pilish--extension-ui-input event proc))
-      ("editor"         (pilish-open-editor-dialog event proc))
+      ((or "confirm" "select" "input" "editor")
+       (pilish--handle-extension-dialog event proc))
       ("set_editor_text" (pilish--extension-ui-set-editor-text event))
       ("setStatus"      (pilish--extension-ui-set-status event))
       ("setWorkingMessage" (pilish--extension-ui-set-working-message event))
@@ -9489,8 +9487,8 @@ Display-only table decoration is applied after the content is stable."
 (defun pilish--restore-tool-properties (beg end)
   "Restore literal metadata after tree-sitter fontification in BEG..END.
 Strip Markdown hiding, faces and link buttons from literal argument text,
-saved assistant outcomes, child summaries and full-output paths, including
-cold text without overlays.
+inline extension dialogs, saved assistant outcomes, child summaries and
+full-output paths, including cold text without overlays.
 Preserve image preview display properties and the outcome notice face.
 Restore `font-lock-face' values for all
 overlapping tool headers, live or finalized."
@@ -9502,9 +9500,11 @@ overlapping tool headers, live or finalized."
                          (next-single-property-change pos 'pilish-argument-literal nil end)
                          (next-single-property-change pos 'pilish-argument-guard nil end)
                          (next-single-property-change pos 'pilish-tool-diagnostic-guard nil end)
-                         (next-single-property-change pos 'pilish-assistant-outcome nil end)))
+                         (next-single-property-change pos 'pilish-assistant-outcome nil end)
+                         (next-single-property-change pos 'pilish-dialog nil end)))
              (outcome (get-text-property pos 'pilish-assistant-outcome))
-             (argument-p (get-text-property pos 'pilish-argument-literal)))
+             (argument-p (or (get-text-property pos 'pilish-argument-literal)
+                             (get-text-property pos 'pilish-dialog))))
         (when (or outcome argument-p (get-text-property pos 'pilish-nested-summary)
                   (eq (get-text-property pos 'pilish-tool-section) 'full-output))
           (when (fboundp 'md-ts--remove-link-button-properties)
@@ -9546,7 +9546,9 @@ overlapping tool headers, live or finalized."
                       (put-text-property pos next 'face fl-face))
                     (setq pos next))))
               (put-text-property hdr-beg hdr-end 'fontified t))))
-        (pilish--tool-place-prefixes ov-start ov-end)))
+        ;; Display code may fontify within a restriction that cuts a block.
+        (pilish--tool-place-prefixes (max ov-start (point-min))
+                                     (min ov-end (point-max)))))
     (pilish--restore-subagent-buttons beg end)))
 
 ;;;; History Display

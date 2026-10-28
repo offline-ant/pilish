@@ -651,6 +651,8 @@ The main buffers:
 | =C-c C-k=                 | input, chat  | Abort current response or compaction        |
 | =C-c C-p=                 | input, chat  | Open the transient menu                     |
 | =C-c C-r=                 | input, chat  | Browse sessions                             |
+| =C-c C-a=                 | input, chat  | Go to the extension question awaiting you   |
+| =C-c C-x=                 | input, chat  | Cancel the extension question awaiting you  |
 | =C-c C-p a i=             | menu         | Attach or replace one prompt image          |
 | =C-u C-c C-p a i=         | menu         | Clear the attached prompt image             |
 | =M-p= / =M-n=             | input        | Prompt history (=C-↑= / =C-↓= also work)    |
@@ -1303,7 +1305,8 @@ problems.  See
 ** Programmatic sessions
 
 Use =pilish-start-session= to create independent named chat/input pairs
-without changing window focus:
+(or, with a nil name, the directory's default session) without changing
+window focus:
 
 #+begin_src emacs-lisp
 (pilish-start-session "/path/to/project/" "review"
@@ -1334,6 +1337,25 @@ and returns an environment alist.  This runs before the initial spawn for
 both interactive and non-displaying sessions; the result is retained on reload.
 Explicit =:environment= entries take precedence, then functions in hook order.
 Pilish itself does not depend on an Emacs server or any external integration.
+
+Extension dialogs (=confirm=, =select=, =input=, =editor=) are tracked while
+they await the user.  =pilish-session-pending-dialogs= lists a session's
+pending requests, and =pilish-extension-dialog-functions= is called with the
+chat buffer, request, and =open= or =close= whenever one starts or stops
+waiting (answered, cancelled, timed out, stopped, or abandoned by process
+exit).  By default a dialog prompts in the minibuffer as soon as Pi asks.  Set
+=pilish-extension-dialog-style= to =inline= to never be interrupted: the
+question waits at the end of its chat buffer with clickable choices (mouse,
+=RET=, or a digit key; =TAB= moves, =C-c C-k= cancels; =y=/=n= for yes-or-no
+questions), and the input header shows =◉ answer: …= until it is answered.
+Output arriving while a question waits appears above it.
+=C-c C-a= (=pilish-answer-dialog=, menu =C-c C-p A=) moves point to the
+oldest question (or displays its editor); =C-c C-x= (=pilish-cancel-dialog=,
+menu =C-c C-p D=) cancels it.  A question that follows
+your answer from the same multi-question tool, such as the next question or
+a text editor, takes focus in the window you answered from, so multi-step
+questions are answered in a row.  Answering never changes the prompt draft.
+Stop cancels pending questions; Pi expires questions with a timeout.
 
 ** Tree-sitter grammar management
 

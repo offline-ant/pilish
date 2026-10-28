@@ -55,6 +55,8 @@
 
 ;; pilish-render.el (chat buffer commands)
 (declare-function pilish-toggle-tool-section "pilish-render")
+(declare-function pilish--cancel-process-dialogs "pilish-dialog" (process))
+(declare-function pilish--header-format-dialog "pilish-dialog" (chat-buf))
 (declare-function pilish--transcript-local-help "pilish-render")
 (declare-function pilish-shell-command-at-point "pilish-render")
 (declare-function pilish-visit-file "pilish-render")
@@ -3281,6 +3283,7 @@ Accesses state from the linked chat buffer."
      (pilish--header-format-identity model-short thinking activity-phase-str)
      (pilish--header-format-stats stats)
      (pilish--header-format-queue chat-buf)
+     (pilish--header-format-dialog chat-buf)
      (pilish--header-format-context-group session-name)
      (pilish--header-format-extension-group ext-status working-message)
      (pilish--header-format-prompt-image
@@ -3342,9 +3345,10 @@ Send both commands in wire order.  Their acknowledgments must not release
 local ownership or mutate a later operation on the same process."
   (when-let* ((proc (pilish--get-process)))
     (pilish--rpc-async proc '(:type "clear_queue") #'ignore)
-    ;; RPC editors have no agent-side AbortSignal option.  Cancel them after
-    ;; clearing the queue, then abort so their waiting tools settle.
-    (pilish--close-process-editors proc)
+    ;; RPC editors have no agent-side AbortSignal option, and Pi never reports
+    ;; dialogs it settles itself.  Cancel pending dialogs after clearing the
+    ;; queue, then abort so their waiting tools settle.
+    (pilish--cancel-process-dialogs proc)
     (pilish--rpc-async proc '(:type "abort") #'ignore)))
 
 (defun pilish-submit-prompt (chat-buffer text callback &optional behavior)
