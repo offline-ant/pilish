@@ -681,13 +681,12 @@ Calls only the handler registered for this specific process."
         (delete-process stderr-proc))
       (kill-buffer stderr-buf))))
 
-(defun pilish--close-process-editors (process)
-  "Dismiss editor buffers owned by PROCESS, leaving other sessions untouched."
-  (let ((buffers (process-get process 'pilish-editor-buffers)))
-    (process-put process 'pilish-editor-buffers nil)
-    (dolist (buffer buffers)
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
+;;;; Process Exit
+
+(defvar pilish--process-exit-functions nil
+  "Functions called with a pi process that exited, before its callbacks fail.
+Modules owning per-process state, such as pending extension dialogs,
+release it here.")
 
 (defun pilish--handle-process-exit (proc event)
   "Clean up when pi process PROC exits with EVENT.
@@ -708,7 +707,7 @@ containing EVENT, then clears this process's pending request tables."
     (unwind-protect
         (unwind-protect
             (progn
-              (pilish--close-process-editors proc)
+              (run-hook-with-args 'pilish--process-exit-functions proc)
               (when pending
                 (maphash (lambda (_id callback)
                            (funcall callback error-response))
