@@ -138,6 +138,15 @@ Return the start of the answer's first line."
         (should (pilish--window-following-p other))
         (should-not pilish--answer-windows)))))
 
+(ert-deftest pilish-answer-test-toggle-off-keeps-landing ()
+  "Turning jumping off leaves a landed window in place until the next turn."
+  (pilish-answer-test--with-chat
+    (let ((start (pilish-answer-test--turn 100)))
+      (pilish-toggle-jump-to-answer)
+      (should (= (window-point window) start))
+      (pilish--handle-display-event '(:type "agent_start"))
+      (should (pilish--window-following-p window)))))
+
 (ert-deftest pilish-answer-test-toggle-is-session-local ()
   "Toggling from the input buffer changes only that session's chat."
   (pilish-answer-test--with-chat
