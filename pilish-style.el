@@ -179,7 +179,10 @@ follow a changed setting."
     ;; the classic faces (e.g. inherited function-name colours) don't leak.
     (pcase-dolist (`(,face . ,pi-face) pilish--pi-face-remappings)
       (face-remap-set-base face pi-face))
-    (jit-lock-register #'pilish--style-decorate)
+    ;; Like `jit-lock-register', but after font-lock in every chunk: the
+    ;; padding depends on which lines Markdown fontification hides.
+    (add-hook 'jit-lock-functions #'pilish--style-decorate 90 t)
+    (jit-lock-mode t)
     (jit-lock-refontify)))
 
 (defun pilish--remove-chat-style ()
@@ -245,6 +248,45 @@ line start in the search direction, or return nil."
 (defun pilish--style-pad (face)
   "Return a padding line drawn with FACE, for display before or after a block."
   (propertize "\n" 'face face))
+
+(defun pilish--style-text-hidden-p (position)
+  "Return non-nil when the text at POSITION is hidden by its own properties.
+Markdown markup hidden by `md-ts-mode' and Pilish's empty `display'
+guards count; overlays, including the style's own, do not."
+  (or (invisible-p (get-text-property position 'invisible))
+      (equal (get-text-property position 'display) "")))
+
+(defun pilish--style-hidden-tail (start end)
+  "Return the newline ending START..END when its whole last line is hidden.
+A closing code fence is such a line.  Return nil otherwise."
+  (when (and (< start end) (eq (char-before end) ?\n))
+    (let ((pos (save-excursion
+                 (goto-char (1- end))
+                 (max start (line-beginning-position)))))
+      (while (and (< pos end) (pilish--style-text-hidden-p pos))
+        (setq pos (1+ pos)))
+      (and (= pos end) (1- end)))))
+
+(defun pilish--style-bottom-pad (kind start end face)
+  "Return KIND decorations padding the bottom of block START..END with FACE.
+The value is (PROPS . SPECS): PROPS for the block's own overlay and
+SPECS for separate decorations.  When the block's last line is hidden,
+its newline is shown instead and becomes the padding row, painted by
+the block's extended face: an overlay string with a newline next to a
+wholly hidden line stops `vertical-motion' and `line-move' moving up
+past it, which would trap line motion and scrolling at the block.
+Otherwise the padding is an `after-string'."
+  (if-let* ((newline (pilish--style-hidden-tail start end)))
+      ;; An `invisible' value outside the spec and a display spec that
+      ;; replaces no text override the hiding text properties.
+      (cons nil (list (list kind newline end
+                            'invisible 'pilish-style-shown
+                            'display '(raise 0))))
+    (let ((pad (pilish--style-pad face)))
+      (cons (list 'after-string (if (eq (char-before end) ?\n)
+                                    pad
+                                  (concat "\n" pad)))
+            nil))))
 
 (defun pilish--style-sync (beg end kinds wanted)
   "Make the KINDS decorations overlapping BEG..END exactly WANTED.
@@ -378,23 +420,24 @@ applies to the bodies of all other tool blocks."
 (defun pilish--style-tool-decorations (from to)
   "Return padding and output decorations for the tool blocks in FROM..TO.
 Like Pi's tool boxes, each block gets a padding line above and below in
-its current state colour, which follows the tool overlay's face.  The
-renderer keeps tool block overlays disjoint; nested calls are text
-inside their parent's block."
+its current state colour, which follows the tool overlay's face (see
+`pilish--style-bottom-pad').  The renderer keeps tool block overlays
+disjoint; nested calls are text inside their parent's block."
   (let (wanted)
     (dolist (tool (seq-filter (lambda (ov) (overlay-get ov 'pilish-tool-block))
                               (overlays-in from to)))
       (let* ((start (overlay-start tool))
              (end (overlay-end tool))
-             (face (or (overlay-get tool 'face) 'pilish-tool-block))
-             (pad (pilish--style-pad face)))
+             (face (or (overlay-get tool 'face) 'pilish-tool-block)))
         (when (< start end)
-          (push (list 'tool-pad start end
-                      'before-string pad
-                      'after-string (if (eq (char-before end) ?\n)
-                                        pad
-                                      (concat "\n" pad)))
-                wanted)
+          (pcase-let ((`(,props . ,specs)
+                       (pilish--style-bottom-pad 'tool-tail start end face)))
+            (push (append (list 'tool-pad start end
+                                'before-string (pilish--style-pad face)
+                                'after-string nil)
+                          props)
+                  wanted)
+            (setq wanted (append specs wanted)))
           (when-let* (((not (member (overlay-get tool 'pilish-tool-name)
                                     pilish-pi-highlighted-output-tools)))
                       (header-end (overlay-get tool 'pilish-header-end))
@@ -402,6 +445,25 @@ inside their parent's block."
                       ((< body end)))
             (push (list 'tool-output body end 'face 'pilish-pi-tool-output)
                   wanted)))))
+    wanted))
+
+(defun pilish--style-custom-decorations (beg end)
+  "Return the decorations of the custom message spans in BEG..END.
+Each span is a padded block in Pi's custom message colour (see
+`pilish--style-bottom-pad')."
+  (let* ((face 'pilish-pi-custom-message)
+         (prefix (pilish--style-prefix face))
+         wanted)
+    (pcase-dolist (`(,kind ,start ,stop . ,props)
+                   (pilish--style-property-decorations
+                    beg end 'pilish-custom-message 'custom
+                    (list 'face face 'line-prefix prefix 'wrap-prefix prefix
+                          'before-string (pilish--style-pad face)
+                          'after-string nil)))
+      (pcase-let ((`(,pad-props . ,specs)
+                   (pilish--style-bottom-pad 'custom-tail start stop face)))
+        (push (append (list kind start stop) props pad-props) wanted)
+        (setq wanted (append specs wanted))))
     wanted))
 
 (defun pilish--style-decorate (start end)
@@ -417,25 +479,18 @@ region was chunked and the cost does not grow with the turn."
           (pcase-let ((`(,headings . ,limit) (pilish--style-headings start end)))
             (pilish--style-sync start end '(heading block label)
                                 (pilish--style-turn-decorations headings limit)))
-          (pilish--style-sync start end '(tool-pad tool-output)
+          (pilish--style-sync start end '(tool-pad tool-tail tool-output)
                               (pilish--style-tool-decorations start end))
-          (pcase-dolist (`(,property ,kind . ,props)
-                         '((pilish-thinking-block thinking face pilish-pi-thinking)
-                           (pilish-custom-message custom
-                                                  face pilish-pi-custom-message)))
-            (pcase-let ((`(,beg . ,stop)
-                         (pilish--style-property-bounds start end property)))
-              (pilish--style-sync
-               beg stop (list kind)
-               (pilish--style-property-decorations
-                beg stop property kind
-                (if (eq kind 'custom)
-                    (append props
-                            (list 'line-prefix (pilish--style-prefix 'pilish-pi-custom-message)
-                                  'wrap-prefix (pilish--style-prefix 'pilish-pi-custom-message)
-                                  'before-string (pilish--style-pad 'pilish-pi-custom-message)
-                                  'after-string (pilish--style-pad 'pilish-pi-custom-message)))
-                  props))))))))))
+          (pcase-let ((`(,beg . ,stop)
+                       (pilish--style-property-bounds start end 'pilish-thinking-block)))
+            (pilish--style-sync beg stop '(thinking)
+                                (pilish--style-property-decorations
+                                 beg stop 'pilish-thinking-block 'thinking
+                                 '(face pilish-pi-thinking))))
+          (pcase-let ((`(,beg . ,stop)
+                       (pilish--style-property-bounds start end 'pilish-custom-message)))
+            (pilish--style-sync beg stop '(custom custom-tail)
+                                (pilish--style-custom-decorations beg stop))))))))
 
 (provide 'pilish-style)
 ;;; pilish-style.el ends here

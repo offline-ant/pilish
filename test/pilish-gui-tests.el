@@ -811,6 +811,62 @@ raced a turn that was never submitted."
                            (list after-expansion after-contraction)))))
       (kill-buffer buf))))
 
+(ert-deftest pilish-gui-test-pi-style-motion-and-scrolling-cross-tool-blocks ()
+  "Line motion and scrolling move up past `pi' style tool blocks.
+A block's closing code fence is hidden; a padding string with a newline
+next to that line used to stop `line-move' and scrolling at every block."
+  (let ((buf (get-buffer-create "*pi-gui-style-motion*"))
+        (pilish-chat-style 'pi)
+        (messages (list '(:role "user" :content "First question"
+                          :timestamp 1784817120000))))
+    (dotimes (i 4)
+      (let ((id (format "call-%d" i)))
+        (setq messages
+              (append messages
+                      (list `(:role "assistant" :timestamp 1784817121000
+                              :content [(:type "text" :text ,(format "Step %d." i))
+                                        (:type "toolCall" :id ,id :name "bash"
+                                         :arguments (:command "seq 4"))])
+                            `(:role "toolResult" :toolCallId ,id :toolName "bash"
+                              :isError :false :timestamp 1784817122000
+                              :content [(:type "text" :text "1\n2\n3\n4")]))))))
+    (unwind-protect
+        (progn
+          (switch-to-buffer buf)
+          (delete-other-windows)
+          (pilish-chat-mode)
+          (pilish--display-history-messages (vconcat messages))
+          (let ((top (save-excursion
+                       (goto-char (point-min))
+                       (search-forward "First question")
+                       (line-beginning-position))))
+            ;; Real redisplay runs font-lock and the style through jit-lock.
+            (jit-lock-fontify-now)
+            (goto-char (point-max))
+            (redisplay)
+            (should (pilish--style-hidden-tail
+                     (point-min) (overlay-end (car (pilish--tool-block-overlays-in-region
+                                         (point-min) (point-max))))))
+            (let ((last (point)))
+              (while (condition-case nil
+                         (progn (line-move -1) t)
+                       (beginning-of-buffer nil))
+                (should (< (point) last))
+                (setq last (point))
+                (redisplay))
+              (should (<= (point) top)))
+            (goto-char (point-max))
+            (recenter -1)
+            (redisplay)
+            (let ((last (window-start)))
+              (while (condition-case nil
+                         (progn (scroll-down 1) (redisplay) t)
+                       (beginning-of-buffer nil))
+                (should (< (window-start) last))
+                (setq last (window-start)))
+              (should (<= (window-start) top)))))
+      (kill-buffer buf))))
+
 (ert-deftest pilish-gui-test-tool-streaming-restores-deleted-point-to-body-start ()
   (let ((buf (get-buffer-create "*pi-gui-tool-deleted-preview-point*")))
     (unwind-protect
