@@ -1423,6 +1423,7 @@ Uses commands from pi's `get_commands' RPC."
    ["Actions"
     ("RET" "send" pilish-send)
     ("s" "steer" pilish-queue-steering)
+    ("u" "follow-up" pilish-queue-followup)
     ("a" "attach" pilish-attach-menu)
     ("k" "abort" pilish-abort)
     ("A" "answer question" pilish-answer-dialog)

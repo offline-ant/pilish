@@ -1632,6 +1632,62 @@ When user aborts, they want to stop everything - including queued messages."
       (kill-buffer chat-buf)
       (kill-buffer input-buf))))
 
+;; Sending while busy: `pilish-send-while-busy'
+
+(defun pilish-test--send-while-busy (status command text)
+  "Run COMMAND with TEXT in an input buffer whose session has STATUS.
+Return (STEER-COMMAND FOLLOWUP-QUEUE INPUT-LEFT), steering mocked at RPC."
+  (let ((chat-buf (get-buffer-create "*pilish-test-busy-send*"))
+        (input-buf (get-buffer-create "*pilish-test-busy-send-input*"))
+        (sent nil))
+    (unwind-protect
+        (progn
+          (with-current-buffer chat-buf
+            (pilish-chat-mode)
+            (setq pilish--status status
+                  pilish--input-buffer input-buf
+                  pilish--followup-queue nil))
+          (with-current-buffer input-buf
+            (pilish-input-mode)
+            (setq pilish--chat-buffer chat-buf)
+            (insert text)
+            (cl-letf (((symbol-function 'pilish--get-process) (lambda () 'mock-proc))
+                      ((symbol-function 'process-live-p) (lambda (_) t))
+                      ((symbol-function 'pilish--rpc-async)
+                       (lambda (_proc cmd _cb) (setq sent cmd)))
+                      ((symbol-function 'message) #'ignore))
+              (funcall command))
+            (list sent
+                  (buffer-local-value 'pilish--followup-queue chat-buf)
+                  (buffer-string))))
+      (kill-buffer chat-buf)
+      (kill-buffer input-buf))))
+
+(ert-deftest pilish-test-send-while-busy-steer ()
+  "With `pilish-send-while-busy' set to `steer', sending steers the run."
+  (let ((pilish-send-while-busy 'steer))
+    (pcase-let ((`(,sent ,queue ,input)
+                 (pilish-test--send-while-busy 'streaming #'pilish-send "Use the other API")))
+      (should (equal sent '(:type "steer" :message "Use the other API")))
+      (should-not queue)
+      (should (string-empty-p input)))
+    ;; Pi cannot take steering while compacting: the text waits as a follow-up.
+    (pcase-let ((`(,sent ,queue ,input)
+                 (pilish-test--send-while-busy 'compacting #'pilish-send "Later")))
+      (should-not sent)
+      (should (equal queue '("Later")))
+      (should (string-empty-p input)))))
+
+(ert-deftest pilish-test-queue-followup-ignores-steer-default ()
+  "M-RET queues a follow-up even when sending steers by default."
+  (should (eq (keymap-lookup pilish-input-mode-map "M-RET") #'pilish-queue-followup))
+  (let ((pilish-send-while-busy 'steer))
+    (pcase-let ((`(,sent ,queue ,input)
+                 (pilish-test--send-while-busy 'streaming #'pilish-queue-followup "Then do Y")))
+      (should-not sent)
+      (should (equal queue '("Then do Y")))
+      (should (string-empty-p input)))))
+
 (ert-deftest pilish-test-queue-steering-when-idle-refuses ()
   "Queue steering refuses when agent is idle (nothing to interrupt)."
   (let ((chat-buf (get-buffer-create "*pilish-test-queue-steer-idle*"))

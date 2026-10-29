@@ -86,6 +86,7 @@
 (declare-function pilish-next-input "pilish-input")
 (declare-function pilish-history-isearch-backward "pilish-input")
 (declare-function pilish-queue-steering "pilish-input")
+(declare-function pilish-queue-followup "pilish-input")
 (declare-function pilish-input-mode "pilish-input")
 
 ;; pilish-browse.el (session browser)
@@ -1179,8 +1180,9 @@ removing the instructional header that would otherwise appear."
     (define-key map (kbd "<C-up>") #'pilish-previous-input)
     (define-key map (kbd "<C-down>") #'pilish-next-input)
     (define-key map (kbd "C-r") #'pilish-history-isearch-backward)
-    ;; Message queuing (steering only - follow-up handled by C-c C-c)
+    ;; Explicit steering and follow-up; C-c C-c follows `pilish-send-while-busy'.
     (define-key map (kbd "C-c C-s") #'pilish-queue-steering)
+    (define-key map (kbd "M-RET") #'pilish-queue-followup)
     map)
   "Keymap for `pilish-input-mode'.")
 
