@@ -129,6 +129,49 @@
     (should (equal (alist-get 'pilish-tool-block-error face-remapping-alist)
                    '(pilish-pi-tool-error)))))
 
+(ert-deftest pilish-style-test-pi-hidden-tail-becomes-bottom-padding ()
+  "A block ending in a hidden line shows that line as its bottom padding.
+An overlay string with a newline next to a wholly hidden line stops line
+motion and scrolling from moving up past it, so such blocks get no
+`after-string'; blocks with a visible last line keep one."
+  (pilish-style-test--with-chat 'pi
+    (pilish--display-history-messages pilish-style-test--history)
+    (let ((inhibit-read-only t))
+      (goto-char (point-max))
+      (insert "Between\n"
+              (propertize "Custom tail\n```\ncode\n```\n" 'pilish-custom-message t)
+              "After\n"))
+    (font-lock-ensure)
+    (pilish-style-test--decorate)
+    (let* ((tool (pilish-style-test--tool-overlay "fine output"))
+           (newline (1- (overlay-end tool)))
+           (tail (seq-find (lambda (ov) (= (overlay-start ov) newline))
+                           (pilish-style-test--overlays 'tool-tail))))
+      ;; The closing fence is hidden by Markdown fontification.
+      (should (pilish--style-hidden-tail (overlay-start tool) (overlay-end tool)))
+      (should (= (overlay-end tail) (overlay-end tool)))
+      (should-not (invisible-p newline))
+      (should (equal (overlay-get tail 'display) '(raise 0)))
+      (should-not (overlay-get (pilish-style-test--overlay-at 'tool-pad "fine output")
+                               'after-string)))
+    (let ((custom (pilish-style-test--overlay-at 'custom "Custom tail")))
+      (should-not (overlay-get custom 'after-string))
+      (should (= (length (pilish-style-test--overlays 'custom-tail)) 1))
+      (should-not (invisible-p (1- (overlay-end custom)))))
+    (should (overlay-get (pilish-style-test--overlay-at 'custom "Custom note")
+                         'after-string))
+    ;; A visible last line keeps the padding string and loses the tail.
+    (let ((inhibit-read-only t)
+          (newline (1- (overlay-end (pilish-style-test--tool-overlay "fine output")))))
+      (remove-text-properties (- newline 3) (1+ newline) '(invisible nil)))
+    (pilish-style-test--decorate)
+    (should (overlay-get (pilish-style-test--overlay-at 'tool-pad "fine output")
+                         'after-string))
+    (should-not (seq-some (lambda (ov)
+                            (= (overlay-end ov)
+                               (overlay-end (pilish-style-test--tool-overlay "fine output"))))
+                          (pilish-style-test--overlays 'tool-tail)))))
+
 (ert-deftest pilish-style-test-pi-decoration-is-idempotent-per-chunk ()
   "Decorating arbitrary chunks gives the same overlays as one full pass."
   (pilish-style-test--with-chat 'pi
