@@ -647,6 +647,69 @@ BINDING-SPEC is (DIR CHAT-NAME INPUT-NAME PROC).  DIR is evaluated once."
             (delete-process pilish--process)))
         (kill-buffer chat-buf)))))
 
+(defun pilish-test--reload-outcomes (responses &rest setup)
+  "Reload a test session and return every outcome passed to its callback.
+RESPONSES maps RPC command types to responses; missing types get no
+response.  SETUP is a plist: :state for `pilish--state' (default: a
+session file), :directory for the session directory, :start for the
+`pilish--start-process' replacement and :current for
+`pilish--session-transition-current-p'."
+  (let ((chat-buf (generate-new-buffer "*pilish-test-reload-outcome*"))
+        (dir (or (plist-get setup :directory) temporary-file-directory))
+        (procs nil)
+        (outcomes nil))
+    (unwind-protect
+        (with-current-buffer chat-buf
+          (pilish-chat-mode)
+          (pilish--set-chat-session-identity dir)
+          (setq pilish--state (if (plist-member setup :state)
+                                  (plist-get setup :state)
+                                '(:session-file "/tmp/test-session.jsonl")))
+          (cl-letf (((symbol-function 'pilish--start-process)
+                     (or (plist-get setup :start)
+                         (lambda (_dir &optional _args _environment)
+                           (car (push (start-process "test-reload-outcome" nil "cat")
+                                      procs)))))
+                    ((symbol-function 'pilish--rpc-async)
+                     (lambda (_proc msg callback)
+                       (when-let* ((response (alist-get (plist-get msg :type)
+                                                        responses nil nil #'equal)))
+                         (funcall callback response))))
+                    ((symbol-function 'pilish--session-transition-current-p)
+                     (or (plist-get setup :current) #'always)))
+            (pilish-reload (lambda (outcome) (push outcome outcomes)))))
+      (dolist (proc procs)
+        (when (process-live-p proc) (delete-process proc)))
+      (kill-buffer chat-buf))
+    (nreverse outcomes)))
+
+(ert-deftest pilish-test-reload-callback-settles-once-on-every-path ()
+  "Reload calls its callback exactly once, with nil only after success."
+  (let ((switched '(("switch_session" . (:success t :data (:cancelled :false))))))
+    (should (equal (pilish-test--reload-outcomes nil :state nil)
+                   '("No session file available - cannot reload")))
+    (should (equal (pilish-test--reload-outcomes
+                    '(("switch_session" . (:success t :data (:cancelled t)))))
+                   '("Reload cancelled")))
+    (should (equal (pilish-test--reload-outcomes
+                    '(("switch_session" . (:success :false :error "boom"))))
+                   '("Failed to reload - boom")))
+    (should (equal (pilish-test--reload-outcomes switched :current #'ignore)
+                   '("Reload superseded by another session change")))
+    (should (equal (pilish-test--reload-outcomes
+                    switched :start (lambda (&rest _) nil))
+                   '("Failed to reload - pi did not start")))
+    (let ((outcomes (pilish-test--reload-outcomes switched :directory "relative/")))
+      (should (= (length outcomes) 1))
+      (should (string-prefix-p "Pi: Cannot reload from invalid session directory"
+                               (car outcomes))))
+    (should (equal (pilish-test--reload-outcomes
+                    (append switched '(("get_messages" . (:success :false :error "gone")))))
+                   '("Failed to reload - history unavailable")))
+    (should (equal (pilish-test--reload-outcomes
+                    (append switched '(("get_messages" . (:success t :data (:messages []))))))
+                   '(nil)))))
+
 (ert-deftest pilish-test-reload-sends-process-local-session-path-for-remote-session ()
   "Reload sends process-local sessionPath when the Emacs state is remote."
   (let* ((session-path-used nil)
