@@ -1688,6 +1688,86 @@ Return (STEER-COMMAND FOLLOWUP-QUEUE INPUT-LEFT), steering mocked at RPC."
       (should (equal queue '("Then do Y")))
       (should (string-empty-p input)))))
 
+;; Sending with a double RET: `pilish-send-on-double-return'
+
+(defun pilish-test--returns (text returns &optional setup)
+  "Insert TEXT, then run RET for each element of RETURNS.
+Each element is the number of seconds since the previous RET.  SETUP,
+if non-nil, runs before the first RET.  Return (SENT INPUT-LEFT)."
+  (let ((input-buf (get-buffer-create "*pilish-test-double-return*"))
+        (sent nil)
+        (now 1000.0))
+    (unwind-protect
+        (with-current-buffer input-buf
+          (pilish-input-mode)
+          (insert text)
+          (when setup (funcall setup))
+          (cl-letf (((symbol-function 'pilish-send)
+                     (lambda ()
+                       (setq sent (string-trim (buffer-string)))
+                       (erase-buffer)))
+                    ((symbol-function 'float-time) (lambda (&optional _) now))
+                    ((symbol-function 'input-pending-p) #'ignore))
+            (let ((last-command nil))
+              (dolist (delay returns)
+                (setq now (+ now delay))
+                (let ((this-command (keymap-lookup pilish-input-mode-map "RET")))
+                  (call-interactively this-command)
+                  (setq last-command this-command)))))
+          (list sent (buffer-string)))
+      (kill-buffer input-buf))))
+
+(ert-deftest pilish-test-double-return-sends ()
+  "A quick second RET at the draft end sends without the first newline."
+  (let ((pilish-send-on-double-return 0.4))
+    (should (equal (pilish-test--returns "Fix it" '(0 0.1))
+                   '("Fix it" "")))
+    ;; Multi-line drafts keep their newlines; only the trailing one goes.
+    (should (equal (pilish-test--returns "One\n\nTwo" '(0 0.1))
+                   '("One\n\nTwo" "")))))
+
+(ert-deftest pilish-test-double-return-slow-inserts-newlines ()
+  "A slow second RET inserts a blank line instead of sending."
+  (let ((pilish-send-on-double-return 0.4))
+    (should (equal (pilish-test--returns "Para" '(0 0.5))
+                   '(nil "Para\n\n")))))
+
+(ert-deftest pilish-test-double-return-only-at-draft-end ()
+  "A quick double RET inside the draft splits it instead of sending."
+  (let ((pilish-send-on-double-return 0.4))
+    (pcase-let ((`(,sent ,input)
+                 (pilish-test--returns "Before\nafter" '(0 0.1)
+                                       (lambda () (goto-char 7)))))
+      (should-not sent)
+      (should (equal input "Before\n\n\nafter")))))
+
+(ert-deftest pilish-test-double-return-pending-input-inserts ()
+  "RET with more input pending, as in an unbracketed paste, never sends."
+  (let ((pilish-send-on-double-return 0.4)
+        (input-buf (get-buffer-create "*pilish-test-double-return-paste*")))
+    (unwind-protect
+        (with-current-buffer input-buf
+          (pilish-input-mode)
+          (insert "Pasted")
+          (cl-letf (((symbol-function 'pilish-send)
+                     (lambda () (error "Must not send")))
+                    ((symbol-function 'input-pending-p) (lambda (&rest _) t)))
+            (let ((this-command #'pilish-newline-or-send)
+                  (last-command nil))
+              (pilish-newline-or-send)
+              (setq last-command this-command)
+              (pilish-newline-or-send)))
+          (should (equal (buffer-string) "Pasted\n\n")))
+      (kill-buffer input-buf))))
+
+(ert-deftest pilish-test-double-return-off-inserts-newlines ()
+  "Without `pilish-send-on-double-return', RET only inserts newlines."
+  (should (eq (keymap-lookup pilish-input-mode-map "RET")
+              #'pilish-newline-or-send))
+  (let ((pilish-send-on-double-return nil))
+    (should (equal (pilish-test--returns "Text" '(0 0.01))
+                   '(nil "Text\n\n")))))
+
 (ert-deftest pilish-test-queue-steering-when-idle-refuses ()
   "Queue steering refuses when agent is idle (nothing to interrupt)."
   (let ((chat-buf (get-buffer-create "*pilish-test-queue-steer-idle*"))
@@ -2949,6 +3029,112 @@ This ensures history loads correctly when callback runs in arbitrary context."
       (kill-buffer chat-buf))))
 
 ;;; Input History
+
+(ert-deftest pilish-test-seed-input-history-merges-session-prompts ()
+  "Session prompts become the newest history; other entries stay older."
+  (with-temp-buffer
+    (pilish-input-mode)
+    (pilish--history-add "/model")
+    (pilish--history-add "a")
+    (pilish--history-add "other session")
+    (setq pilish--input-ring-index 0)
+    (pilish--seed-input-history
+     (current-buffer)
+     [(:role "user" :content "a")
+      (:role "assistant" :content [(:type "text" :text "reply")])
+      (:role "user" :content [(:type "text" :text "b")])
+      (:role "user" :content [(:type "image" :data "x" :mimeType "image/png")])])
+    (should (equal (ring-elements pilish--input-ring)
+                   '("b" "a" "other session" "/model")))
+    (should-not pilish--input-ring-index)))
+
+(ert-deftest pilish-test-session-history-seeds-input-history ()
+  "Showing a session's history makes its prompts available to M-p."
+  (let ((dir "/tmp/pilish-test-seed-history/"))
+    (pilish-test-with-mock-session dir
+      (with-current-buffer (pilish-test--chat-buffer-name dir)
+        (pilish--display-session-history
+         [(:role "user" :content "first prompt" :timestamp 1704067200000)
+          (:role "user" :content "second prompt" :timestamp 1704067201000)]
+         (current-buffer)))
+      (with-current-buffer (pilish-test--input-buffer-name dir)
+        (pilish-previous-input)
+        (should (equal (buffer-string) "second prompt"))
+        (pilish-previous-input)
+        (should (equal (buffer-string) "first prompt"))))))
+
+;; Pi-style arrows: `pilish-input-arrow-history'
+
+(defmacro pilish-test--with-arrow-input (text &rest body)
+  "Run BODY in a displayed input buffer holding TEXT with history old, new."
+  (declare (indent 1))
+  `(let ((buf (generate-new-buffer "*pilish-test-arrows*"))
+         (pilish-input-arrow-history t))
+     (unwind-protect
+         (save-window-excursion
+           (set-window-buffer (selected-window) buf)
+           (with-current-buffer buf
+             (pilish-input-mode)
+             (pilish--history-add "old")
+             (pilish--history-add "new")
+             (insert ,text)
+             ,@body))
+       (kill-buffer buf))))
+
+(defun pilish-test--arrow (key)
+  "Run the command KEY is bound to in the current input buffer."
+  (call-interactively (key-binding key)))
+
+(ert-deftest pilish-test-arrow-history-browses-from-empty-input ()
+  "<up> recalls prompts with point at the start; <down> returns to the draft."
+  (pilish-test--with-arrow-input ""
+    (pilish-test--arrow [up])
+    (should (equal (buffer-string) "new"))
+    (should (bobp))
+    (pilish-test--arrow [up])
+    (should (equal (buffer-string) "old"))
+    (pilish-test--arrow [down])
+    (should (equal (buffer-string) "new"))
+    (pilish-test--arrow [down])
+    (should (equal (buffer-string) ""))))
+
+(ert-deftest pilish-test-arrow-history-moves-within-draft-first ()
+  "Inside a draft the arrows move point; history starts from its start."
+  (pilish-test--with-arrow-input "line one\nline two"
+    (should (eq (key-binding [up]) #'previous-line))
+    (goto-char 4)
+    (pilish-test--arrow [up])
+    (should (= (point) (point-min)))
+    (should (equal (buffer-string) "line one\nline two"))
+    (pilish-test--arrow [up])
+    (should (equal (buffer-string) "new"))
+    (pilish-test--arrow [down])
+    (should (equal (buffer-string) "line one\nline two"))
+    (goto-char (point-min))
+    (should (eq (key-binding [down]) #'next-line))))
+
+(ert-deftest pilish-test-arrow-history-keeps-edited-recall ()
+  "Editing a recalled prompt makes it the draft that <down> returns to."
+  (pilish-test--with-arrow-input ""
+    (pilish-test--arrow [up])
+    (goto-char (point-max))
+    (insert " edited")
+    (pilish-test--arrow [down])
+    (should (equal (buffer-string) "new edited"))
+    (should (eobp))
+    (pilish-test--arrow [up])
+    (should (bobp))
+    (pilish-test--arrow [up])
+    (should (equal (buffer-string) "new"))
+    (pilish-test--arrow [down])
+    (should (equal (buffer-string) "new edited"))))
+
+(ert-deftest pilish-test-arrow-history-off-keeps-movement ()
+  "Without `pilish-input-arrow-history' the arrows keep their bindings."
+  (pilish-test--with-arrow-input ""
+    (let ((pilish-input-arrow-history nil))
+      (should (eq (key-binding [up]) #'previous-line))
+      (should (eq (key-binding [down]) #'next-line)))))
 
 (ert-deftest pilish-test-history-add-to-ring ()
   "pilish--history-add adds input to ring."

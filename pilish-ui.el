@@ -87,6 +87,7 @@
 (declare-function pilish-history-isearch-backward "pilish-input")
 (declare-function pilish-queue-steering "pilish-input")
 (declare-function pilish-queue-followup "pilish-input")
+(declare-function pilish-newline-or-send "pilish-input")
 (declare-function pilish-input-mode "pilish-input")
 
 ;; pilish-browse.el (session browser)
@@ -1168,9 +1169,22 @@ removing the instructional header that would otherwise appear."
   (let ((completion-show-help nil))
     (completion-at-point)))
 
+(defconst pilish--input-arrow-up-binding
+  '(menu-item "" pilish-input-history-up
+              :filter pilish--input-arrow-up-filter)
+  "Input <up> binding: Pi-style history only where its filter applies.")
+
+(defconst pilish--input-arrow-down-binding
+  '(menu-item "" pilish-input-history-down
+              :filter pilish--input-arrow-down-filter)
+  "Input <down> binding: Pi-style history only where its filter applies.")
+
 (defvar pilish-input-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-c C-c") #'pilish-send)
+    ;; A newline unless `pilish-send-on-double-return' makes a quick
+    ;; second RET send.
+    (define-key map (kbd "RET") #'pilish-newline-or-send)
     (define-key map (kbd "TAB") #'pilish-complete)
     (define-key map (kbd "C-c C-k") #'pilish-abort)
     (define-key map (kbd "C-c C-p") #'pilish-menu)
@@ -1179,6 +1193,10 @@ removing the instructional header that would otherwise appear."
     (define-key map (kbd "M-n") #'pilish-next-input)
     (define-key map (kbd "<C-up>") #'pilish-previous-input)
     (define-key map (kbd "<C-down>") #'pilish-next-input)
+    ;; Pi-style arrows on the first/last screen line when
+    ;; `pilish-input-arrow-history' is on; elsewhere the usual bindings.
+    (define-key map [up] pilish--input-arrow-up-binding)
+    (define-key map [down] pilish--input-arrow-down-binding)
     (define-key map (kbd "C-r") #'pilish-history-isearch-backward)
     ;; Explicit steering and follow-up; C-c C-c follows `pilish-send-while-busy'.
     (define-key map (kbd "C-c C-s") #'pilish-queue-steering)

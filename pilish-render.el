@@ -55,6 +55,7 @@
 ;; Forward references for functions in other modules
 (declare-function pilish-compact "pilish-menu" (&optional custom-instructions))
 (declare-function pilish-open-subagent-snapshot "pilish-snapshot" (&optional target))
+(declare-function pilish--seed-input-history "pilish-input" (input-buf messages))
 ;; Declare the Emacs 29 minimum API.  Adding Emacs 30's optional TAG here makes
 ;; its byte compiler pad three-argument calls, producing incompatible bytecode.
 (declare-function treesit-parser-create "treesit.c"
@@ -10007,6 +10008,8 @@ Note: When called from async callbacks, pass CHAT-BUF explicitly."
   (when (and chat-buf (buffer-live-p chat-buf))
     (with-current-buffer chat-buf
       (pilish--set-canonical-messages messages)
+      ;; Like Pi's editor, prompt history includes the shown conversation.
+      (pilish--seed-input-history pilish--input-buffer messages)
       (pilish--replay-history chat-buf messages
                               (concat (pilish--format-startup-header) "\n")))))
 
