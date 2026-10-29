@@ -75,8 +75,10 @@ The setting becomes buffer-local in the session's chat buffer."
       (user-error "Not in a Pilish session"))
     (with-current-buffer chat
       (setq-local pilish-jump-to-answer (not pilish-jump-to-answer))
+      ;; Landed windows keep their records, so they still follow the
+      ;; next turn; only a pending landing for hidden windows is dropped.
       (unless pilish-jump-to-answer
-        (pilish--answer-forget))
+        (pilish--answer-forget-target))
       (message "Pilish: jump to answer %s"
                (if pilish-jump-to-answer "on" "off"))
       pilish-jump-to-answer)))
@@ -153,13 +155,6 @@ next turn at once, or `pilish-jump-to-answer' is nil."
     (unless (rassq pilish--answer-target pilish--answer-windows)
       (set-marker pilish--answer-target nil))
     (setq pilish--answer-target nil)))
-
-(defun pilish--answer-forget ()
-  "Drop all answer state of the current chat buffer."
-  (pilish--answer-forget-target)
-  (dolist (entry pilish--answer-windows)
-    (set-marker (cdr entry) nil))
-  (setq pilish--answer-windows nil))
 
 (defun pilish--answer-window-buffer-change (window)
   "Update WINDOW, newly showing a chat buffer, with the answer state."
