@@ -33,11 +33,14 @@
 ;;
 ;; Key entry points:
 ;;   `pilish-send'                  Send prompt (C-c C-c)
+;;   `pilish-newline-or-send'       Newline; quick second RET sends (RET)
 ;;   `pilish-attach-image'          Attach one prompt image (menu C-c C-p a i)
 ;;   `pilish-abort'                 Abort current operation (C-c C-k)
 ;;   `pilish-quit'                  Close session
 ;;   `pilish-previous-input'        History backward (M-p)
 ;;   `pilish-next-input'            History forward (M-n)
+;;   `pilish-input-history-up'      Pi-style <up> history
+;;   `pilish-input-history-down'    Pi-style <down> history
 ;;   `pilish-input-previous-message' Navigate previous chat message
 ;;   `pilish-input-next-message'    Navigate next chat message
 ;;   `pilish-history-isearch-backward'  History search (C-r)
@@ -48,6 +51,48 @@
 
 (require 'pilish-render)
 (require 'ring)
+
+;;;; Sending with a double RET
+
+(defcustom pilish-send-on-double-return nil
+  "Seconds within which a second RET sends the prompt, or nil for never.
+When a number, RET at the end of the draft (only whitespace after
+point) that directly follows another RET within this many seconds
+removes the newline the first RET inserted and runs `pilish-send'.
+A slower second RET inserts a blank line as usual.  RET never sends
+while more input is pending, such as pasted text arriving as typed
+keys.  A numeric prefix argument always inserts newlines."
+  :type '(choice (const :tag "Never" nil)
+                 (number :tag "Seconds"))
+  :group 'pilish)
+
+(defvar-local pilish--last-return nil
+  "(TIME . POSITION) of the last newline `pilish-newline-or-send' inserted.
+POSITION is point right after that newline.")
+
+(defun pilish-newline-or-send (&optional arg)
+  "Insert a newline, or send the prompt on a quick second RET.
+See `pilish-send-on-double-return'.  ARG is passed to `newline';
+with ARG this always inserts newlines."
+  (interactive "*P")
+  (let ((last pilish--last-return))
+    (setq pilish--last-return nil)
+    (if (and pilish-send-on-double-return
+             (not arg)
+             last
+             (eq last-command this-command)
+             (< (- (float-time) (car last)) pilish-send-on-double-return)
+             (= (point) (cdr last))
+             (eq (char-before) ?\n)
+             (string-blank-p (buffer-substring-no-properties
+                              (point) (point-max)))
+             (not (input-pending-p)))
+        (progn
+          (delete-char -1)
+          (pilish-send))
+      (newline arg t)
+      (when pilish-send-on-double-return
+        (setq pilish--last-return (cons (float-time) (point)))))))
 
 ;;;; Input History (comint/eshell style)
 
@@ -146,6 +191,73 @@ appending duplicate copies."
                 pilish--input-saved nil)
           (dolist (entry (append older prompts))
             (pilish--history-add entry)))))))
+
+;;;; Arrow-key History (Pi editor style)
+
+(defcustom pilish-input-arrow-history nil
+  "Non-nil means <up> and <down> browse prompt history like Pi's editor.
+<up> on the first screen line of the input recalls the previous prompt
+when the input is empty, point is at its start, or a recalled prompt is
+shown unedited; elsewhere on that line it moves point to the start.
+<down> on the last screen line shows the next prompt while browsing and
+finally restores the draft; otherwise it moves point to the end.  On
+other lines both keys keep their usual bindings.  Editing a recalled
+prompt ends browsing, so the edit becomes the draft.  `M-p' and `M-n'
+browse history regardless of this option."
+  :type 'boolean
+  :group 'pilish)
+
+(defun pilish--input-history-browsing-p ()
+  "Return non-nil when the input shows an unedited recalled prompt."
+  (and pilish--input-ring-index
+       (equal (buffer-string)
+              (ring-ref (pilish--input-ring) pilish--input-ring-index))))
+
+(defun pilish--input-on-first-screen-line-p ()
+  "Return non-nil when point is on the input's first screen line."
+  (save-excursion
+    (vertical-motion 0)
+    (bobp)))
+
+(defun pilish--input-on-last-screen-line-p ()
+  "Return non-nil when point is on the input's last screen line."
+  (save-excursion
+    (zerop (vertical-motion 1))))
+
+(defun pilish--input-arrow-up-filter (command)
+  "Return COMMAND when <up> should act on prompt history, else nil."
+  (and pilish-input-arrow-history
+       (derived-mode-p 'pilish-input-mode)
+       (pilish--input-on-first-screen-line-p)
+       command))
+
+(defun pilish--input-arrow-down-filter (command)
+  "Return COMMAND when <down> should act on prompt history, else nil."
+  (and pilish-input-arrow-history
+       (derived-mode-p 'pilish-input-mode)
+       (pilish--input-on-last-screen-line-p)
+       command))
+
+(defun pilish-input-history-up ()
+  "Recall the previous prompt from the input's first screen line.
+See `pilish-input-arrow-history'."
+  (interactive)
+  (let ((browsing (pilish--input-history-browsing-p)))
+    (if (or browsing (bobp) (zerop (buffer-size)))
+        (progn
+          (unless browsing
+            (setq pilish--input-ring-index nil))
+          (pilish-previous-input)
+          (goto-char (point-min)))
+      (goto-char (point-min)))))
+
+(defun pilish-input-history-down ()
+  "Show the next prompt from the input's last screen line.
+See `pilish-input-arrow-history'."
+  (interactive)
+  (if (pilish--input-history-browsing-p)
+      (pilish-next-input)
+    (goto-char (point-max))))
 
 ;;;; History Isearch
 
