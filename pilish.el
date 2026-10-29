@@ -58,11 +58,13 @@
 ;; Key Bindings:
 ;;   Input buffer:
 ;;     C-c C-c        Send prompt (queues text as follow-up if busy)
+;;     RET RET        Send prompt with `pilish-send-on-double-return'
 ;;     C-c C-s        Queue steering (interrupts after current tool; busy only)
 ;;     C-c C-k        Abort current operation
 ;;     C-c C-p        Open menu
 ;;     C-c C-r        Browse sessions
 ;;     M-p / M-n      History navigation
+;;     <up> / <down>  Pi-style history with `pilish-input-arrow-history'
 ;;     C-r            Incremental history search (like readline)
 ;;     TAB            Path/file completion
 ;;     @              File reference (search project files)

@@ -175,7 +175,10 @@ of the suite."
      (should map)
      (should (eq (lookup-key map (kbd "RET")) #'pilish-send))
      (should (eq (lookup-key map "q") #'pilish-evil-close-input))
-     (should (eq (lookup-key map "?") #'pilish-menu)))))
+     (should (eq (lookup-key map "?") #'pilish-menu))
+     ;; Raw entries: `lookup-key' would apply the arrows' filters.
+     (should (equal (alist-get 'up (cdr map)) pilish--input-arrow-up-binding))
+     (should (equal (alist-get 'down (cdr map)) pilish--input-arrow-down-binding)))))
 
 (ert-deftest pilish-evil-test-copy-raw-markdown-default ()
   "Setup copies raw markdown buffer-locally in chat buffers by default."
