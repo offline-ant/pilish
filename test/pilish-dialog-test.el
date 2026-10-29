@@ -274,6 +274,13 @@ dialog hook calls as (ID STATE) and RESPONSES records sent responses."
             (with-current-buffer input (should (equal (buffer-string) "my draft"))))
         (kill-buffer input)))))
 
+(ert-deftest pilish-test-dialog-inline-context-lines-precede-question ()
+  (let ((text (substring-no-properties
+               (pilish--dialog-widget-string
+                '(:id "s1" :method "select"
+                  :title "✓ First? → A\n(2/2) Second?" :options ["C" "D"])))))
+    (should (string-prefix-p "  ✓ First? → A\n◉ Pi asks: (2/2) Second?\n  1 C\n" text))))
+
 (ert-deftest pilish-test-dialog-inline-keys-confirm-and-cancel ()
   (pilish-test--with-dialog-session (chat process events responses)
     (let ((pilish-extension-dialog-style 'inline))

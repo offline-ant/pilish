@@ -420,13 +420,14 @@ must be typed, or `cancel'.  The final choice always cancels."
          (timeout (plist-get request :timeout))
          (lines nil)
          (index 0))
-    ;; The first title line is the question; later lines add context.
+    ;; The last title line is the question, directly above its choices;
+    ;; earlier lines add context above it.
     (let ((title-lines (split-string title "\n")))
-      (push (propertize (concat "◉ Pi asks: " (car title-lines))
+      (dolist (line (butlast title-lines))
+        (push (propertize (concat "  " line) 'font-lock-face 'pilish-dialog-message) lines))
+      (push (propertize (concat "◉ Pi asks: " (car (last title-lines)))
                         'font-lock-face 'pilish-dialog-heading)
-            lines)
-      (dolist (line (cdr title-lines))
-        (push (propertize (concat "  " line) 'font-lock-face 'pilish-dialog-message) lines)))
+            lines))
     (unless (string-empty-p (string-trim detail))
       (push (propertize detail 'font-lock-face 'pilish-dialog-message) lines))
     (dolist (choice answers)
