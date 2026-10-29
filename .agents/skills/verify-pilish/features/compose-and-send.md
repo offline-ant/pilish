@@ -10,6 +10,7 @@ Pilish opens a chat and input pair, then sends consecutive prompts without losin
 - `compose-sequential` submits a second prompt after the first turn and returns to idle.
 - `compose-fit-input` sizes a `fit` input window to the typed draft, stops at its cap, refits on frame-width changes, and shrinks after sending.
 - `compose-fit-display` preserves a fitted draft when reopening the input, hides after sending in both `on-demand` and `hidden` styles, and reopens empty at one text line. Pressing `i` in the chat window opens or focuses the input in every display style, without the Evil integration.
+- `compose-header-toggles` hides the input header's activity phase, cost, and context usage when their options are customized off.
 
 ## How to get to it (user POV)
 
@@ -20,6 +21,7 @@ Pilish opens a chat and input pair, then sends consecutive prompts without losin
 - Enter and send another prompt after the first reply.
 - Set the global `pilish-input-window-height` option to `fit`, type a multi-line draft, resize the frame, and press `C-c C-c`.
 - Set `pilish-input-window-display` to `on-demand` or `hidden`. Press `i` in the chat window (or run `M-x pilish-open-input`) to compose or reopen the input after sending.
+- Customize `pilish-header-activity-phase`, `pilish-header-cost`, or `pilish-header-context-usage` with `setopt` or `M-x customize-group RET pilish`.
 
 ## Driving it with Pilish harnesses
 
@@ -35,6 +37,7 @@ Preconditions:
 - **Compose on demand.** Run `G1_CAPTURE="$RUN_DIR/display" ./test/run-gui-tests.sh --headless pilish-gui-test-input-fit-with-hide-after-send 2>&1 | tee "$RUN_DIR/display.log"`. Record `display.exit`. The test checks both display styles at launch, closes and reopens a three-line draft with keys, sends with `C-c C-c`, verifies the input disappears, and reopens an empty one-line input by pressing `i` in the chat window. It writes `fit-on-demand-draft`, `fit-on-demand-sent`, `fit-on-demand-reopened`, and the corresponding `fit-hidden-*` observations and PNG frames.
 - **Check the logs.** Require zero statuses, `PASS: TEST-NAME` for each named test, and `0 skipped` in every log. For each stem `layout`, `header`, `send`, `fit`, `resize`, and `display`, run `test "$(cat "$RUN_DIR/STEM.exit")" -eq 0` and `test -s "$RUN_DIR/STEM.log"`, replacing `STEM` with the stem.
 - **Check the captures.** Run `test -s "$RUN_DIR/header/header-in-chat.el"`, `test -s "$RUN_DIR/header/header-in-chat.png"`, `test -s "$RUN_DIR/header/header-in-input.el"`, `test -s "$RUN_DIR/header/header-in-input.png"`, `test -s "$RUN_DIR/fit/fit-capped.el"`, `test -s "$RUN_DIR/fit/fit-capped.png"`, `test -s "$RUN_DIR/resize/fit-narrow.el"`, `test -s "$RUN_DIR/resize/fit-narrow.png"`, `test -s "$RUN_DIR/resize/fit-wide-again.el"`, `test -s "$RUN_DIR/resize/fit-wide-again.png"`, `test -s "$RUN_DIR/display/fit-on-demand-reopened.el"`, `test -s "$RUN_DIR/display/fit-on-demand-reopened.png"`, `test -s "$RUN_DIR/display/fit-hidden-reopened.el"`, and `test -s "$RUN_DIR/display/fit-hidden-reopened.png"`.
+- **Hide header fields.** Run `G1_CAPTURE="$RUN_DIR/header-toggles" ./test/run-gui-tests.sh --headless pilish-gui-test-input-header-field-toggles 2>&1 | tee "$RUN_DIR/header-toggles.log"`. Record `header.exit`. After a fake turn reports session stats, the displayed input header shows `idle`, `$0.25`, and `25.0%/200k`. Turning the three options off with `setopt` repaints it without them, and turning cost back on restores only the cost. The test writes `header-default` and `header-hidden` traces and PNG frames.
 
 ## Gotchas
 
