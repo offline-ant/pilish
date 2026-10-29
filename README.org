@@ -196,10 +196,14 @@ chat window.  You can keep writing while Pi replies.
 
 The input header shows the model, thinking level, activity, cost,
 context usage, session name, and any extension status or attached
-image.  Click the model or thinking level to change it.  =queued N=
-shows known pending messages.  Hover it for follow-up and steering
-previews.  The count can lag and disappears at zero, which does not
-mean Pi has finished.
+image.  Click the model or thinking level to change it.  Set
+=pilish-header-activity-phase=, =pilish-header-cost= or
+=pilish-header-context-usage= to nil to hide that field, for example
+when a window manager's title bar already shows it; with the phase
+hidden, =waiting for Pi= and the no-output warning still appear.
+=queued N= shows known pending messages.  Hover it for follow-up and
+steering previews.  The count can lag and disappears at zero, which
+does not mean Pi has finished.
 
 Type in the input buffer and press =C-c C-c= (=M-x pilish-send=) to
 send.  If Pi is already working, the same key queues the text as a
