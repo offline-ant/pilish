@@ -964,6 +964,10 @@ Here are some common non-default preferences:
 ;; (see "Window pairs"):
 (pilish-window-pairing-mode 1)
 
+;; When a turn ends, show its final answer from the start
+;; (see "Jump to the answer"):
+(setopt pilish-jump-to-answer t)
+
 ;; Copy source Markdown from the chat buffer instead of only visible text:
 (setopt pilish-copy-raw-markdown t)
 
@@ -1144,6 +1148,22 @@ are unchanged; copying visible text omits the hidden headings.  The faces (=pili
 of Pi's built-in dark and light themes, chosen by the frame background.
 Customize them to match another Pi theme.  Changing the option through
 =setopt= or Customize restyles open buffers.
+
+** Jump to the answer
+
+With =pilish-jump-to-answer= non-nil, a turn that ends normally moves
+chat windows following the output to the start of the final assistant
+message, the answer after the last tool call, so a long answer is read
+from its beginning.  Windows where you scrolled elsewhere stay, and an
+answer already visible together with the end of the buffer moves
+nothing.  Stopped turns, and turns followed at once by a queued
+follow-up, do not jump.  A window that is not shown when the turn ends,
+such as one in another tab, lands when it is shown again.  When the
+next turn starts, a landed window whose point you left in place follows
+the output again.
+
+=pilish-toggle-jump-to-answer= toggles the setting for the current
+session only, buffer-locally in its chat buffer.
 
 ** Window pairs
 

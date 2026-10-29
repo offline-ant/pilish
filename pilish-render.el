@@ -46,6 +46,7 @@
 (require 'pilish-dialog)
 (require 'pilish-table)
 (require 'pilish-style)
+(require 'pilish-answer)
 (require 'cl-lib)
 (require 'ansi-color)
 (require 'image)
@@ -266,6 +267,8 @@ TRACK-REGION is non-nil, return a marker pair bounding the inserted turn."
   (let* ((chat-buffer (pilish--get-render-buffer))
          (start (with-current-buffer chat-buffer (point-max)))
          (previews (pilish--content-image-previews content)))
+    (with-current-buffer chat-buffer
+      (pilish--answer-turn-start))
     (pilish--append-to-chat
      (concat "\n" (pilish--make-separator "You" timestamp) "\n"
              (or text "") "\n"
@@ -318,6 +321,7 @@ full content vector, so an authoritative image transformation cannot be lost."
   "Display separator for new agent turn.
 Only shows the Assistant header once per prompt, even during retries.
 Note: status is set to `streaming' by the event handler."
+  (pilish--answer-turn-start)
   ;; Only show header if not already shown for this prompt.
   (unless pilish--assistant-header-shown
     (pilish--append-to-chat
@@ -1874,7 +1878,8 @@ Updates buffer-local state and renders display updates."
      (pilish--display-agent-end)
      (pilish--clear-live-details-state)
      (pilish--update-hot-tail-boundary)
-     (pilish--queue-tool-cooling-outside-hot-tail))
+     (pilish--queue-tool-cooling-outside-hot-tail)
+     (pilish--answer-turn-end))
     ("agent_settled" nil)
     ("auto_retry_start"
      (pilish--display-retry-start event))
