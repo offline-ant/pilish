@@ -1331,19 +1331,12 @@ Pilish has basic support for Pi
 extensions.  Extension commands show up in slash completion and the
 transient menu, extension tools run normally, and extensions can use
 notifications, confirm/select/input prompts, standard multiline editor dialogs,
-prefill the input buffer, show status text, and show text widgets.  Multiline
-editor dialogs own a separate buffer: =C-c C-c= submits and =C-c C-k= cancels
-without touching the session's prompt draft.
-
-Extension warnings and errors also stay in the chat as notices; during a run
-they follow its end.  Text widgets show above the prompt draft, in the input
-buffer, and are never part of the draft or the sent prompt; a widget placed
-below Pi's editor shows above the draft too.  Integrations read status text
-with =pilish-session-extension-status= and observe changes with
-=pilish-extension-status-functions=.
+prefill the input buffer, and show status text.  Multiline editor dialogs own a
+separate buffer: =C-c C-c= submits and =C-c C-k= cancels without touching the
+session's prompt draft.
 
 Rich TUI-specific extension UI is not supported in Emacs yet.
-Component widgets, custom editor components, custom headers and footers,
+Custom widgets, custom editor components, custom headers and footers,
 and other component-based views are unavailable or fall back.  Hover extension
 status text in the header line to see the exact =statusKey=, which you
 can use to change the font for that extension's status text using
