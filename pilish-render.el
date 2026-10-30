@@ -2691,13 +2691,7 @@ Script and output coordinates always use the actual old and new painted
 line maps.  TOGGLED-SECTION identifies an explicit fold in either direction.
 Parent output folds use the last painted presentation so captured row spans
 and preview line maps share one source.  Pending updates still paint newer
-retained facts through the existing queue.
-
-The body replacement is one edit for change hooks: md-ts hooks read the parse
-tree, so exposing each intermediate insertion would reparse the chat that many
-times.  The header and fontification stay outside it because they can touch
-text beyond the body.  `combine-change-calls' skips its final notification on
-a non-local exit, so a failure is re-signaled only after that notification."
+retained facts through the existing queue."
   (when-let* ((overlay (pilish--tool-block-overlay block))
               ((eq (overlay-buffer overlay) (current-buffer)))
               (header (pilish--tool-block-header-end block))
@@ -2716,7 +2710,11 @@ a non-local exit, so a failure is re-signaled only after that notification."
            (inhibit-read-only t)
            (failure nil))
       (save-excursion
+        ;; One edit for change hooks: md-ts hooks read the parse tree, so each
+        ;; intermediate insertion would reparse the chat.  The header and
+        ;; fontification can touch text outside this region.
         (combine-change-calls start old-end
+          ;; A non-local exit would skip the final after-change call.
           (condition-case err
               (progn
                 (remove-overlays start old-end 'pilish-diff-overlay t)
