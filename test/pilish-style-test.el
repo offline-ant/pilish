@@ -312,6 +312,25 @@ The setter changes the current binding, so a `let' scopes the change."
         (should-not (memq #'pilish--style-decorate jit-lock-functions))))
     (should (eq (default-toplevel-value 'pilish-chat-style) toplevel))))
 
+(ert-deftest pilish-style-test-input-background-follows-style ()
+  "The pi style gives input buffers the user message background.
+Customizing the style installs and removes it in open input buffers."
+  (let ((pilish-chat-style 'classic))
+    (with-temp-buffer
+      (pilish-input-mode)
+      (should-not (assq 'default face-remapping-alist))
+      (customize-set-variable 'pilish-chat-style 'pi)
+      (should (member 'pilish-pi-user-message
+                      (flatten-tree (assq 'default face-remapping-alist))))
+      (customize-set-variable 'pilish-chat-style 'classic)
+      (should-not (member 'pilish-pi-user-message
+                          (flatten-tree (assq 'default face-remapping-alist))))))
+  (let ((pilish-chat-style 'pi))
+    (with-temp-buffer
+      (pilish-input-mode)
+      (should (member 'pilish-pi-user-message
+                      (flatten-tree (assq 'default face-remapping-alist)))))))
+
 (ert-deftest pilish-style-test-face-defaults-are-pi-colours ()
   "Face specs carry Pi's dark and light theme colours."
   (dolist (case '((pilish-pi-user-message "#213b49" "#dfe7ec")
