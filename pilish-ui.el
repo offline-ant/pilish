@@ -2037,6 +2037,105 @@ canonical history, so rebuilding now would erase that visible turn."
   "Alist of extension status messages for header-line display.
 Keys are extension identifiers (strings), values are status text.")
 
+(defvar pilish-extension-status-functions nil
+  "Functions called after an extension status of a session changed.
+Each function receives CHAT-BUFFER, KEY and TEXT.  KEY is the extension's
+status key and TEXT its new text, or nil when the status was cleared,
+which includes a session reset.  Errors are reported as warnings and never
+break dispatch.  See `pilish-session-extension-status'.")
+
+(defun pilish--run-extension-status-functions (key text)
+  "Run `pilish-extension-status-functions' for this chat buffer, KEY and TEXT."
+  (let ((chat-buffer (current-buffer)))
+    (dolist (function pilish-extension-status-functions)
+      (condition-case-unless-debug err
+          (funcall function chat-buffer key text)
+        (error
+         (display-warning
+          'pilish
+          (format "Extension status function %S failed: %s"
+                  function (error-message-string err))
+          :error))))))
+
+(defvar-local pilish--extension-widgets nil
+  "Extension widgets of this session, in the order their keys first arrived.
+Elements are (KEY . LINES), LINES being sanitized single lines.")
+
+(defvar-local pilish--extension-widget-overlay nil
+  "Input buffer overlay showing the session's widgets, or nil.")
+
+(defface pilish-extension-widget
+  '((t :inherit font-lock-doc-face))
+  "Face for extension widget lines around the prompt draft."
+  :group 'pilish)
+
+(defun pilish--refresh-extension-widgets ()
+  "Show the current chat buffer's widgets above its input buffer's draft.
+They live in the before-string of an empty overlay that stays at the
+buffer start, so the draft and the sent text never hold them.  They scroll
+with a draft too long for its window."
+  (let ((lines (mapcan (lambda (widget) (copy-sequence (cdr widget)))
+                       (copy-sequence pilish--extension-widgets)))
+        (input pilish--input-buffer))
+    (when (buffer-live-p input)
+      (with-current-buffer input
+        (when (or lines pilish--extension-widget-overlay)
+          (unless pilish--extension-widget-overlay
+            (setq pilish--extension-widget-overlay
+                  (make-overlay (point-min) (point-min))))
+          (overlay-put pilish--extension-widget-overlay 'before-string
+                       (when lines
+                         (propertize (concat (string-join lines "\n") "\n")
+                                     'face 'pilish-extension-widget))))
+        (pilish--schedule-fit-input-windows)))))
+
+(defun pilish--set-extension-widget (key lines)
+  "Show LINES as widget KEY, or remove it when LINES is nil.
+Run in the chat buffer.  A key keeps its position when its widget changes."
+  (let ((widget (assoc key pilish--extension-widgets)))
+    (cond ((null lines)
+           (setq pilish--extension-widgets
+                 (assoc-delete-all key pilish--extension-widgets)))
+          (widget (setcdr widget lines))
+          (t (setq pilish--extension-widgets
+                   (append pilish--extension-widgets
+                           (list (cons key lines)))))))
+  (pilish--refresh-extension-widgets))
+
+(defun pilish--extension-widget-screen-lines (window)
+  "Return the screen lines the widgets of input WINDOW's buffer take."
+  (let ((chat pilish--chat-buffer)
+        (width (max 1 (window-body-width window))))
+    (if (buffer-live-p chat)
+        (cl-loop for (_key . lines)
+                 in (buffer-local-value 'pilish--extension-widgets chat)
+                 sum (cl-loop for line in lines
+                              sum (max 1 (ceiling (string-width line) width))))
+      0)))
+
+(defun pilish--input-draft-screen-lines (window)
+  "Return the screen lines of the draft of input WINDOW's buffer.
+Vertical motion would also count wrapped widget lines, so they leave for it."
+  (let* ((overlay pilish--extension-widget-overlay)
+         (widgets (and overlay (overlay-get overlay 'before-string))))
+    (unwind-protect
+        (progn
+          (when widgets (overlay-put overlay 'before-string nil))
+          (max 1 (count-screen-lines (point-min) (point-max) nil window)))
+      (when widgets (overlay-put overlay 'before-string widgets)))))
+
+(defun pilish--clear-extension-ui ()
+  "Forget the extension statuses and widgets of the current chat buffer."
+  (let ((keys (mapcar #'car pilish--extension-status)))
+    (setq pilish--extension-status nil
+          pilish--extension-widgets nil)
+    (pilish--refresh-extension-widgets)
+    (dolist (key keys)
+      (pilish--run-extension-status-functions key nil))))
+
+(defvar-local pilish--held-chat-notices nil
+  "Chat notices waiting for the current run to end, newest first.")
+
 (defvar-local pilish--working-message nil
   "Transient extension working message for header-line display.")
 
@@ -2241,15 +2340,16 @@ In both cases, clamp the result to the range
 
 (defun pilish--fit-input-height (input-win total)
   "Return the `fit' height for INPUT-WIN in a container of TOTAL lines.
-The height covers the draft's screen lines plus INPUT-WIN's header and
-mode lines, clamped between `pilish-input-window-min-height' and
+The height covers the draft's and extension widgets' screen lines plus
+INPUT-WIN's header and mode lines, clamped between
+`pilish-input-window-min-height' and
 `pilish-input-window-max-height', and always leaves `window-min-height'
 lines for the chat."
   (let* ((chrome (- (window-total-height input-win)
                     (window-body-height input-win)))
          (lines (with-current-buffer (window-buffer input-win)
-                  (max 1 (count-screen-lines (point-min) (point-max)
-                                             nil input-win))))
+                  (+ (pilish--input-draft-screen-lines input-win)
+                     (pilish--extension-widget-screen-lines input-win))))
          (cap (if (floatp pilish-input-window-max-height)
                   (round (* pilish-input-window-max-height total))
                 pilish-input-window-max-height))

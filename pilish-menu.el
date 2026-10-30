@@ -361,7 +361,7 @@ Call this when starting a new session to ensure no stale state persists."
         pilish--cached-stats nil
         pilish--assistant-header-shown nil
         pilish--local-user-message nil
-        pilish--extension-status nil
+        pilish--held-chat-notices nil
         pilish--working-message nil
         pilish--pre-compaction-status nil
         pilish--in-code-block nil
@@ -374,6 +374,7 @@ Call this when starting a new session to ensure no stale state persists."
         pilish--pending-tool-overlay nil
         pilish--tool-block-order-counter 0
         pilish--thinking-block-order-counter 0)
+  (pilish--clear-extension-ui)
   (pilish--set-activity-phase "idle" 'reset t)
   (pilish--clear-local-user-message-region)
   (pilish--invalidate-model-change)

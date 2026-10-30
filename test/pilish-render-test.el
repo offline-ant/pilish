@@ -7683,13 +7683,15 @@ since we don't display them locally. Let pi's message_start handle it."
         (should (string-match-p "Extension loaded successfully" message-shown))))))
 
 (ert-deftest pilish-test-mcp-notifies-use-existing-echo-area ()
-  "MCP info, warnings, and errors use the echo area without RPC responses."
+  "MCP info, warnings, and errors use the echo area without RPC responses.
+Only info leaves the chat unchanged."
   (pilish-test-with-rpc-session (chat _input _proc commands)
     (let (responses)
       (cl-letf (((symbol-function 'pilish--send-extension-ui-response)
                  (lambda (proc response) (push (list proc response) responses))))
         (with-current-buffer chat
-          (let ((before (buffer-string)))
+          (let ((before (buffer-string))
+                after-info)
             (dolist (case '(("info"
                             "MCP servers are still connecting; their tools become available once connected."
                             "Pi: MCP servers are still connecting; their tools become available once connected.")
@@ -7702,10 +7704,178 @@ since we don't display them locally. Let pi's message_start handle it."
                   (pilish--handle-display-event
                    (list :type "extension_ui_request" :id "mcp-notify"
                          :method "notify" :message (nth 1 case) :notifyType (car case))))
-                (should (equal notices (list (nth 2 case))))))
-            (should (equal (buffer-string) before))))
+                (should (equal notices (list (nth 2 case)))))
+              (when (equal (car case) "info")
+                (setq after-info (buffer-string))))
+            (should (equal after-info before))
+            (should (string-suffix-p "\n⚠ MCP configuration error\n\n✗ MCP connection failed\n"
+                                     (buffer-string)))))
         (should-not responses)
         (should-not commands)))))
+
+(defun pilish-test--notify (type text)
+  "Deliver a notify of TYPE with TEXT through the display handler."
+  (cl-letf (((symbol-function 'message) #'ignore))
+    (pilish--handle-display-event
+     (list :type "extension_ui_request" :id "n" :method "notify"
+           :message text :notifyType type))))
+
+(ert-deftest pilish-test-chat-notices-wait-for-the-run-to-end ()
+  "A notice never lands in live output; it follows the finished run, in order."
+  (pilish-test-with-rpc-session (chat _input _proc _commands)
+    (with-current-buffer chat
+      (pilish--handle-display-event '(:type "agent_start"))
+      (pilish--handle-display-event '(:type "message_start" :message (:role "assistant")))
+      (pilish--handle-display-event
+       '(:type "message_update"
+         :assistantMessageEvent (:type "text_delta" :delta "partial")))
+      (pilish--flush-stream-deltas)
+      (pilish-test--notify "warning" "first")
+      (pilish-test--notify "error" "second")
+      (should-not (string-search "first" (buffer-string)))
+      (pilish--handle-display-event
+       '(:type "message_update"
+         :assistantMessageEvent (:type "text_delta" :delta " reply")))
+      (pilish--flush-stream-deltas)
+      (pilish--handle-display-event '(:type "agent_end" :messages []))
+      (let ((text (buffer-string)))
+        (should (string-match-p
+                 "partial reply\n+⚠ first\n+✗ second\n\\'" text))))))
+
+(ert-deftest pilish-test-chat-notice-waits-for-compaction ()
+  "Compaction may rebuild the chat, so a notice follows its end."
+  (pilish-test-with-rpc-session (chat _input _proc _commands)
+    (with-current-buffer chat
+      (setq pilish--status 'compacting)
+      (pilish-test--notify "warning" "later")
+      (should-not (string-search "later" (buffer-string)))
+      (setq pilish--status 'idle)
+      (pilish--handle-display-event '(:type "agent_settled"))
+      (should (string-search "⚠ later" (buffer-string))))))
+
+(ert-deftest pilish-test-chat-notice-survives-process-exit ()
+  "A notice held for a run appears when the process dies inside that run."
+  (pilish-test-with-rpc-session (chat _input proc _commands)
+    (with-current-buffer chat
+      (setq pilish--status 'streaming)
+      (pilish-test--notify "error" "held")
+      (pilish--mark-process-exited proc '(:error "gone"))
+      (should (string-search "✗ held" (buffer-string))))))
+
+(ert-deftest pilish-test-chat-notice-in-background-session ()
+  "A session no window shows gets its notice, without taking a window."
+  (pilish-test-with-rpc-session (chat _input proc _commands)
+    (let ((handler (process-get proc 'pilish-display-handler)))
+      (should-not (get-buffer-window chat t))
+      (cl-letf (((symbol-function 'message) #'ignore))
+        (with-temp-buffer
+          (funcall handler '(:type "extension_ui_request" :id "n" :method "notify"
+                             :message "\e[33mwatch out\e[0m" :notifyType "warning"))))
+      (should-not (get-buffer-window chat t))
+      (with-current-buffer chat
+        (should (string-suffix-p "\n⚠ watch out\n" (buffer-string)))))))
+
+(ert-deftest pilish-test-chat-notice-stays-literal-and-coloured ()
+  "Fontification keeps a notice's face and shows its Markdown markup."
+  (pilish-test-with-rpc-session (chat _input _proc _commands)
+    (with-current-buffer chat
+      (pilish-test--notify "warning" "*not emphasis* and `code`")
+      (font-lock-ensure)
+      (goto-char (point-min))
+      (should (search-forward "*not emphasis*" nil t))
+      (should (eq (get-text-property (match-beginning 0) 'face) 'pilish-retry-notice))
+      (should-not (get-text-property (match-beginning 0) 'invisible)))))
+
+(ert-deftest pilish-test-session-reset-drops-held-chat-notices ()
+  "A notice of the previous session never appears in the next one."
+  (pilish-test-with-rpc-session (chat _input _proc _commands)
+    (with-current-buffer chat
+      (setq pilish--status 'streaming)
+      (pilish-test--notify "warning" "old session")
+      (pilish--clear-chat-buffer)
+      (setq pilish--status 'idle)
+      (pilish--flush-chat-notices)
+      (should-not (string-search "old session" (buffer-string))))))
+
+(defun pilish-test--widget (key lines)
+  "Deliver a setWidget for KEY with LINES through the display handler."
+  (pilish--handle-display-event
+   (append (list :type "extension_ui_request" :id "w" :method "setWidget"
+                 :widgetKey key)
+           (and lines (list :widgetLines lines)))))
+
+(defun pilish-test--widget-string (input)
+  "Return the widget text shown in INPUT, or nil."
+  (with-current-buffer input
+    (cl-some (lambda (overlay) (overlay-get overlay 'before-string))
+             (overlays-in (point-min) (point-max)))))
+
+(ert-deftest pilish-test-extension-widgets-show-above-the-draft ()
+  "String-line widgets show in order, are replaced in place, and clear."
+  (pilish-test-with-rpc-session (chat input _proc _commands)
+    (cl-letf (((symbol-function 'message)
+               (lambda (&rest _) (ert-fail "setWidget must not warn"))))
+      (with-current-buffer chat
+        (pilish-test--widget "b" ["\e[31mone\e[0m" "two\nthree"])
+        (pilish-test--widget "a" ["four"])
+        (should (equal (substring-no-properties (pilish-test--widget-string input))
+                       "one\ntwo\nthree\nfour\n"))
+        (should (eq (get-text-property 0 'face (pilish-test--widget-string input))
+                    'pilish-extension-widget))
+        (pilish-test--widget "b" ["five"])
+        (should (equal (pilish-test--widget-string input) "five\nfour\n"))
+        (pilish-test--widget "b" nil)
+        (should (equal (pilish-test--widget-string input) "four\n"))
+        (pilish-test--widget "a" [])
+        (should-not (pilish-test--widget-string input))))))
+
+(ert-deftest pilish-test-extension-widget-ignores-placement ()
+  "A belowEditor widget still shows, above the draft."
+  (pilish-test-with-rpc-session (chat input _proc _commands)
+    (with-current-buffer chat
+      (pilish--handle-display-event
+       '(:type "extension_ui_request" :id "w" :method "setWidget" :widgetKey "k"
+         :widgetLines ["line"] :widgetPlacement "belowEditor"))
+      (should (equal (pilish-test--widget-string input) "line\n")))))
+
+(ert-deftest pilish-test-extension-widget-stays-out-of-the-draft ()
+  "Widgets stay above draft edits and are never part of the sent text."
+  (pilish-test-with-rpc-session (chat input _proc commands)
+    (with-current-buffer chat
+      (pilish-test--widget "k" ["keep me"]))
+    (with-current-buffer input
+      (insert "draft")
+      (goto-char (point-min))
+      (insert "my ")
+      (should (equal (buffer-string) "my draft"))
+      (let ((overlay pilish--extension-widget-overlay))
+        (should (= (overlay-start overlay) 1))
+        (should (= (overlay-end overlay) 1))
+        (erase-buffer)
+        (insert "sent")
+        (should (= (overlay-start overlay) 1)))
+      (pilish-send)
+      (should (equal (buffer-string) ""))
+      (should (equal (pilish-test--widget-string input) "keep me\n")))
+    (should (equal (plist-get (seq-find (lambda (command)
+                                          (equal (plist-get command :type) "prompt"))
+                                        commands)
+                              :message)
+                   "sent"))))
+
+(ert-deftest pilish-test-session-reset-clears-extension-ui ()
+  "A session reset clears widgets and reports each cleared status."
+  (pilish-test-with-rpc-session (chat input _proc _commands)
+    (let (changes)
+      (with-current-buffer chat
+        (pilish-test--widget "k" ["line"])
+        (pilish--extension-ui-set-status '(:statusKey "s" :statusText "on"))
+        (let ((pilish-extension-status-functions
+               (list (lambda (buffer key text) (push (list buffer key text) changes)))))
+          (pilish--clear-chat-buffer))
+        (should-not pilish--extension-widgets)
+        (should (equal changes (list (list chat "s" nil)))))
+      (should-not (pilish-test--widget-string input)))))
 
 (ert-deftest pilish-test-extension-ui-confirm-yes ()
   "extension_ui_request confirm method uses yes-or-no-p and sends response."
@@ -8061,13 +8231,13 @@ See https://github.com/dnouri/pilish/issues/176."
              :id "req-widget-1"
              :method "setWidget"
              :widgetKey "my-ext"
-             :widgetLines ["Line 1"]))
+             :widgetLines "component"))
           (pilish--handle-extension-ui-request
            '(:type "extension_ui_request"
              :id "req-widget-2"
              :method "setWidget"
              :widgetKey "my-ext"
-             :widgetLines ["Line 2"]))
+             :widgetLines "component"))
           (pilish--handle-extension-ui-request
            '(:type "extension_ui_request"
              :id "req-title"
@@ -8104,7 +8274,7 @@ See https://github.com/dnouri/pilish/issues/176."
                    :id "req-widget"
                    :method "setWidget"
                    :widgetKey "my-ext"
-                   :widgetLines ["Line 1"])))))
+                   :widgetLines "component")))))
           (with-current-buffer buf-a
             (let ((pilish--process t))
               (pilish--handle-extension-ui-request
@@ -8112,7 +8282,7 @@ See https://github.com/dnouri/pilish/issues/176."
                  :id "req-widget-again"
                  :method "setWidget"
                  :widgetKey "my-ext"
-                 :widgetLines ["Line 2"]))))
+                 :widgetLines "component"))))
           (should (= 2 (cl-count-if (lambda (m) (string-match-p "setWidget" m))
                                     warnings-logged))))
       (when (buffer-live-p buf-a) (kill-buffer buf-a))
