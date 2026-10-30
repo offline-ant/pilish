@@ -8390,6 +8390,100 @@ since we don't display them locally. Let pi's message_start handle it."
       (pilish--flush-chat-notices)
       (should-not (string-search "stale" (buffer-string))))))
 
+(ert-deftest pilish-test-chat-notice-in-background-session ()
+  "A session no window shows gets its notice, without taking a window."
+  (let ((pilish-notify-in-chat t))
+    (pilish-test-with-rpc-session (chat _input proc _commands)
+      (let ((handler (process-get proc 'pilish-display-handler)))
+        (should-not (get-buffer-window chat t))
+        (cl-letf (((symbol-function 'message) #'ignore))
+          (with-temp-buffer
+            (funcall handler '(:type "extension_ui_request" :id "n" :method "notify"
+                               :message "\e[33mwatch out\e[0m" :notifyType "warning"))))
+        (should-not (get-buffer-window chat t))
+        (with-current-buffer chat
+          (should (string-search "⚠ watch out\n" (buffer-string))))))))
+
+(defun pilish-test--widget (key lines)
+  "Deliver a setWidget for KEY with LINES through the display handler."
+  (pilish--handle-display-event
+   (append (list :type "extension_ui_request" :id "w" :method "setWidget"
+                 :widgetKey key)
+           (and lines (list :widgetLines lines)))))
+
+(defun pilish-test--widget-string (input)
+  "Return the widget text shown in INPUT, or nil."
+  (with-current-buffer input
+    (cl-some (lambda (overlay) (overlay-get overlay 'before-string))
+             (overlays-in (point-min) (point-max)))))
+
+(ert-deftest pilish-test-extension-widgets-show-above-the-draft ()
+  "String-line widgets show in order, are replaced in place, and clear."
+  (pilish-test-with-rpc-session (chat input _proc _commands)
+    (cl-letf (((symbol-function 'message)
+               (lambda (&rest _) (ert-fail "setWidget must not warn"))))
+      (with-current-buffer chat
+        (pilish-test--widget "b" ["\e[31mone\e[0m" "two\nthree"])
+        (pilish-test--widget "a" ["four"])
+        (should (equal (substring-no-properties (pilish-test--widget-string input))
+                       "one\ntwo\nthree\nfour\n"))
+        (should (eq (get-text-property 0 'face (pilish-test--widget-string input))
+                    'pilish-extension-widget))
+        (pilish-test--widget "b" ["five"])
+        (should (equal (pilish-test--widget-string input) "five\nfour\n"))
+        (pilish-test--widget "b" nil)
+        (should (equal (pilish-test--widget-string input) "four\n"))
+        (pilish-test--widget "a" [])
+        (should-not (pilish-test--widget-string input))))))
+
+(ert-deftest pilish-test-extension-widget-ignores-placement ()
+  "A belowEditor widget still shows, above the draft."
+  (pilish-test-with-rpc-session (chat input _proc _commands)
+    (with-current-buffer chat
+      (pilish--handle-display-event
+       '(:type "extension_ui_request" :id "w" :method "setWidget" :widgetKey "k"
+         :widgetLines ["line"] :widgetPlacement "belowEditor"))
+      (should (equal (pilish-test--widget-string input) "line\n")))))
+
+(ert-deftest pilish-test-extension-widget-stays-out-of-the-draft ()
+  "Widgets stay above draft edits and are never part of the sent text."
+  (pilish-test-with-rpc-session (chat input _proc commands)
+    (with-current-buffer chat
+      (pilish-test--widget "k" ["keep me"]))
+    (with-current-buffer input
+      (insert "draft")
+      (goto-char (point-min))
+      (insert "my ")
+      (should (equal (buffer-string) "my draft"))
+      (let ((overlay pilish--extension-widget-overlay))
+        (should (= (overlay-start overlay) 1))
+        (should (= (overlay-end overlay) 1))
+        (erase-buffer)
+        (insert "sent")
+        (should (= (overlay-start overlay) 1)))
+      (pilish-send)
+      (should (equal (buffer-string) ""))
+      (should (equal (pilish-test--widget-string input) "keep me\n")))
+    (should (equal (plist-get (seq-find (lambda (command)
+                                          (equal (plist-get command :type) "prompt"))
+                                        commands)
+                              :message)
+                   "sent"))))
+
+(ert-deftest pilish-test-session-reset-clears-extension-ui ()
+  "A session reset clears widgets and reports each cleared status."
+  (pilish-test-with-rpc-session (chat input _proc _commands)
+    (let (changes)
+      (with-current-buffer chat
+        (pilish-test--widget "k" ["line"])
+        (pilish--extension-ui-set-status '(:statusKey "s" :statusText "on"))
+        (let ((pilish-extension-status-functions
+               (list (lambda (buffer key text) (push (list buffer key text) changes)))))
+          (pilish--clear-chat-buffer))
+        (should-not pilish--extension-widgets)
+        (should (equal changes (list (list chat "s" nil)))))
+      (should-not (pilish-test--widget-string input)))))
+
 (ert-deftest pilish-test-extension-ui-confirm-yes ()
   "extension_ui_request confirm method uses yes-or-no-p and sends response."
   (let ((response-sent nil))
@@ -8744,13 +8838,13 @@ See https://github.com/dnouri/pilish/issues/176."
              :id "req-widget-1"
              :method "setWidget"
              :widgetKey "my-ext"
-             :widgetLines ["Line 1"]))
+             :widgetLines "component"))
           (pilish--handle-extension-ui-request
            '(:type "extension_ui_request"
              :id "req-widget-2"
              :method "setWidget"
              :widgetKey "my-ext"
-             :widgetLines ["Line 2"]))
+             :widgetLines "component"))
           (pilish--handle-extension-ui-request
            '(:type "extension_ui_request"
              :id "req-title"
@@ -8787,7 +8881,7 @@ See https://github.com/dnouri/pilish/issues/176."
                    :id "req-widget"
                    :method "setWidget"
                    :widgetKey "my-ext"
-                   :widgetLines ["Line 1"])))))
+                   :widgetLines "component")))))
           (with-current-buffer buf-a
             (let ((pilish--process t))
               (pilish--handle-extension-ui-request
@@ -8795,7 +8889,7 @@ See https://github.com/dnouri/pilish/issues/176."
                  :id "req-widget-again"
                  :method "setWidget"
                  :widgetKey "my-ext"
-                 :widgetLines ["Line 2"]))))
+                 :widgetLines "component"))))
           (should (= 2 (cl-count-if (lambda (m) (string-match-p "setWidget" m))
                                     warnings-logged))))
       (when (buffer-live-p buf-a) (kill-buffer buf-a))
