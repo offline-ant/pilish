@@ -19,8 +19,8 @@
 ;;
 ;; Pi never reports requests it settles itself.  A request closes when it is
 ;; answered, cancelled, expires (its own timeout), its session is stopped
-;; (`pilish-abort' cancels pending requests before aborting), or its process
-;; exits.
+;; (`pilish-abort' cancels pending requests before aborting), a new run
+;; starts (agent_start cancels older requests), or its process exits.
 
 ;;; Code:
 

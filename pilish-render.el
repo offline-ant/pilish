@@ -58,6 +58,7 @@
 (declare-function pilish-compact "pilish-menu" (&optional custom-instructions))
 (declare-function pilish-open-subagent-snapshot "pilish-snapshot" (&optional target))
 (declare-function pilish--seed-input-history "pilish-input" (input-buf messages))
+(declare-function pilish--cancel-process-dialogs "pilish-dialog" (process))
 ;; Declare the Emacs 29 minimum API.  Adding Emacs 30's optional TAG here makes
 ;; its byte compiler pad three-argument calls, producing incompatible bytecode.
 (declare-function treesit-parser-create "treesit.c"
@@ -1716,6 +1717,10 @@ Updates buffer-local state and renders display updates."
     ("agent_start"
      (pilish--clear-live-details-state)
      (pilish--note-prompt-start)
+     ;; Dialogs a run asks come after its start, so older ones lost their
+     ;; question; Pi may have settled them already without telling us.
+     (when pilish--process
+       (pilish--cancel-process-dialogs pilish--process))
      (pilish--display-agent-start)
      (when pilish--aborted
        (pilish--send-abort)))

@@ -427,6 +427,24 @@ dialog hook calls as (ID STATE) and RESPONSES records sent responses."
       (with-current-buffer chat
         (should-not (pilish-test--dialog-widget-p "run"))))))
 
+(ert-deftest pilish-test-dialog-new-run-cancels-older-requests ()
+  ;; Pi settles a dialog abort itself and never reports it: a new run must
+  ;; not leave the session looking blocked on a question nobody waits for.
+  (pilish-test--with-dialog-session (chat process events responses)
+    (let ((pilish-extension-dialog-style 'inline))
+      (with-current-buffer chat
+        (setq pilish--process process)
+        (pilish--handle-extension-ui-request
+         '(:type "extension_ui_request" :id "stale" :method "select"
+           :title "Error: refused" :options ["Continue"]))
+        (should (pilish-session-pending-dialogs chat))
+        (pilish--handle-display-event '(:type "agent_start")))
+      (should-not (pilish-session-pending-dialogs chat))
+      (should (equal (car responses)
+                     '(:type "extension_ui_response" :id "stale" :cancelled t)))
+      (with-current-buffer chat
+        (should-not (pilish-test--dialog-widget-p "stale"))))))
+
 (ert-deftest pilish-test-dialog-inline-stays-below-later-output ()
   (pilish-test--with-dialog-session (chat process events responses)
     (let ((pilish-extension-dialog-style 'inline))
