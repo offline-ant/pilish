@@ -1620,8 +1620,9 @@ and a window displays it there.  Return the buffer."
 
 (defun pilish--extension-ui-set-status (event)
   "Handle setStatus method from EVENT."
-  (let ((key (plist-get event :statusKey))
-        (text (plist-get event :statusText)))
+  (let* ((key (plist-get event :statusKey))
+         (text (plist-get event :statusText))
+         (old (cdr (assoc key pilish--extension-status))))
     (when text
       (setq text (ansi-color-filter-apply
                   (pilish--render-safe-string text))))
@@ -1631,7 +1632,26 @@ and a window displays it there.  Return the buffer."
                     (assoc-delete-all key pilish--extension-status)))
       (setq pilish--extension-status
             (assoc-delete-all key pilish--extension-status)))
-    (force-mode-line-update t)))
+    (force-mode-line-update t)
+    (unless (equal text old)
+      (pilish--run-extension-status-functions key text))))
+
+(defun pilish--extension-ui-set-widget (event proc)
+  "Handle setWidget method from EVENT, using PROC for unsupported content.
+Pi's RPC mode sends string lines, or nothing to clear the widget.  Every
+widget shows above the draft, whatever its `widgetPlacement': the input
+buffer's line counting and cursor assume the draft ends the buffer."
+  (let ((lines (plist-get event :widgetLines)))
+    (if (or (null lines) (pilish--json-null-p lines) (vectorp lines))
+        (pilish--set-extension-widget
+         (plist-get event :widgetKey)
+         (when (vectorp lines)
+           (mapcan (lambda (line)
+                     (split-string
+                      (ansi-color-filter-apply (pilish--render-safe-string line))
+                      "\n"))
+                   (append lines nil))))
+      (pilish--extension-ui-unsupported event proc))))
 
 ;; Pi RPC currently suppresses this method; retain client protocol support.
 (defun pilish--extension-ui-set-working-message (event)
@@ -1685,6 +1705,7 @@ Dispatches to appropriate handler based on method."
        (pilish--handle-extension-dialog event proc))
       ("set_editor_text" (pilish--extension-ui-set-editor-text event))
       ("setStatus"      (pilish--extension-ui-set-status event))
+      ("setWidget"      (pilish--extension-ui-set-widget event proc))
       ("setWorkingMessage" (pilish--extension-ui-set-working-message event))
       (_                (pilish--extension-ui-unsupported event proc)))))
 

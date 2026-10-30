@@ -198,5 +198,61 @@
       (kill-buffer buffer)
       (delete-directory dir t))))
 
+(ert-deftest pilish-test-closing-a-session-runs-kill-hooks-in-its-own-buffers ()
+  "Global `kill-buffer-hook' functions never run in an unrelated buffer.
+Chat and input kill each other; a cycle would kill one of them twice and run
+the rest of its hook in whatever buffer became current."
+  (dolist (killed '(chat input))
+    (let* ((chat (generate-new-buffer " *pilish-kill-chat*"))
+           (input (generate-new-buffer " *pilish-kill-input*"))
+           (bystander (generate-new-buffer " *pilish-kill-bystander*"))
+           seen
+           (observer (lambda () (push (current-buffer) seen))))
+      (unwind-protect
+          (progn
+            (with-current-buffer chat
+              (pilish-chat-mode)
+              (pilish--set-input-buffer input))
+            (with-current-buffer input
+              (pilish-input-mode)
+              (pilish--set-chat-buffer chat))
+            (add-hook 'kill-buffer-hook observer)
+            (with-current-buffer bystander
+              (kill-buffer (if (eq killed 'chat) chat input)))
+            (should-not (buffer-live-p chat))
+            (should-not (buffer-live-p input))
+            (should-not (memq bystander seen))
+            (should (= (length (cl-remove-if-not
+                                (lambda (buffer) (memq buffer (list chat input)))
+                                seen))
+                       2)))
+        (remove-hook 'kill-buffer-hook observer)
+        (dolist (buffer (list chat input bystander))
+          (when (buffer-live-p buffer) (kill-buffer buffer)))))))
+
+(ert-deftest pilish-test-extension-status-accessor-and-hook ()
+  "Integrations read statuses and hear each real change, without `pilish--' state."
+  (let ((chat (generate-new-buffer "*pilish-status*"))
+        changes)
+    (unwind-protect
+        (with-current-buffer chat
+          (pilish-chat-mode)
+          (let ((pilish-extension-status-functions
+                 (list (lambda (&rest args) (push args changes))
+                       (lambda (&rest _) (error "Broken observer")))))
+            (cl-letf (((symbol-function 'display-warning) #'ignore))
+              (should-not (pilish-session-extension-status chat "key"))
+              (pilish--extension-ui-set-status '(:statusKey "key" :statusText "\e[33mon\e[0m"))
+              (should (equal (pilish-session-extension-status chat "key") "on"))
+              ;; An unchanged status is no change.
+              (pilish--extension-ui-set-status '(:statusKey "key" :statusText "on"))
+              (pilish--extension-ui-set-status '(:statusKey "key"))
+              (should-not (pilish-session-extension-status chat "key"))
+              (pilish--extension-ui-set-status '(:statusKey "other"))))
+          (should (equal (reverse changes)
+                         (list (list chat "key" "on") (list chat "key" nil)))))
+      (kill-buffer chat))
+    (should-not (pilish-session-extension-status chat "key"))))
+
 (provide 'pilish-session-api-test)
 ;;; pilish-session-api-test.el ends here
