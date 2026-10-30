@@ -3799,7 +3799,7 @@ Binds `chat-win' and `input-win' for use in BODY."
   (with-temp-buffer
     (pilish-chat-mode)
     (should (memq #'pilish--maybe-rebalance-windows
-                  window-size-change-functions))))
+                  (default-value 'window-size-change-functions)))))
 
 (ert-deftest pilish-test-repeating-timer-observation-uses-real-scheduling-and-cleanup ()
   "Observe both scheduling APIs once, retain cancelled allocations, and unwind."

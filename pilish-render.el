@@ -47,6 +47,7 @@
 (require 'pilish-table)
 (require 'pilish-style)
 (require 'pilish-answer)
+(require 'pilish-terminal-image)
 (require 'cl-lib)
 (require 'ansi-color)
 (require 'image)
@@ -1275,16 +1276,44 @@ Include optional STDERR in a text fence and optional DETAIL before it."
                          'face 'pilish-error-notice)
              "\n"))))
 
+(defun pilish--flush-chat-notices ()
+  "Append held chat notices unless a run or compaction owns the chat's end.
+Live output goes to markers that follow the end of the buffer, so a notice
+appended now would land inside it and be replaced with it."
+  (when (and pilish--held-chat-notices
+             (not (memq pilish--status '(streaming compacting))))
+    (let ((notices (reverse pilish--held-chat-notices)))
+      (setq pilish--held-chat-notices nil)
+      (dolist (notice notices)
+        (pilish--append-to-chat notice)))))
+
+(defun pilish--add-chat-notice (text face)
+  "Add TEXT in FACE to the chat transcript once that is safe.
+Extension text is literal, so `pilish-chat-notice' keeps it from Markdown
+rendering; see `pilish--restore-tool-properties'."
+  (push (concat "\n"
+                (propertize (string-trim-right text)
+                            'face face 'pilish-chat-notice face)
+                "\n")
+        pilish--held-chat-notices)
+  (pilish--flush-chat-notices))
+
 (defun pilish--extension-ui-notify (event)
-  "Handle notify method from EVENT."
-  (let ((msg (plist-get event :message))
-        (notify-type (plist-get event :notifyType)))
-    (message "Pi: %s%s"
-             (pcase notify-type
-               ("warning" "⚠ ")
-               ("error" "✗ ")
-               (_ ""))
-             msg)))
+  "Handle notify method from EVENT.
+Warnings and errors also stay in the chat, where they outlive the echo area."
+  (let* ((msg (pilish--render-safe-string (plist-get event :message)))
+         (notify-type (plist-get event :notifyType))
+         (prefix (pcase notify-type
+                   ("warning" "⚠ ")
+                   ("error" "✗ ")
+                   (_ ""))))
+    (message "Pi: %s%s" prefix msg)
+    (unless (string-empty-p prefix)
+      (pilish--add-chat-notice
+       (concat prefix (ansi-color-filter-apply msg))
+       (if (equal notify-type "error")
+           'pilish-error-notice
+         'pilish-retry-notice)))))
 
 (defun pilish--complete-extension-ui-dialog (event proc read-response)
   "Attempt one response to supported-dialog EVENT on PROC.
@@ -1395,8 +1424,9 @@ completes normally."
 
 (defun pilish--extension-ui-set-status (event)
   "Handle setStatus method from EVENT."
-  (let ((key (plist-get event :statusKey))
-        (text (plist-get event :statusText)))
+  (let* ((key (plist-get event :statusKey))
+         (text (plist-get event :statusText))
+         (old (cdr (assoc key pilish--extension-status))))
     (when text
       (setq text (ansi-color-filter-apply
                   (pilish--render-safe-string text))))
@@ -1406,7 +1436,26 @@ completes normally."
                     (assoc-delete-all key pilish--extension-status)))
       (setq pilish--extension-status
             (assoc-delete-all key pilish--extension-status)))
-    (force-mode-line-update t)))
+    (force-mode-line-update t)
+    (unless (equal text old)
+      (pilish--run-extension-status-functions key text))))
+
+(defun pilish--extension-ui-set-widget (event proc)
+  "Handle setWidget method from EVENT, using PROC for unsupported content.
+Pi's RPC mode sends string lines, or nothing to clear the widget.  Every
+widget shows above the draft, whatever its `widgetPlacement': the input
+buffer's line counting and cursor assume the draft ends the buffer."
+  (let ((lines (plist-get event :widgetLines)))
+    (if (or (null lines) (pilish--json-null-p lines) (vectorp lines))
+        (pilish--set-extension-widget
+         (plist-get event :widgetKey)
+         (when (vectorp lines)
+           (mapcan (lambda (line)
+                     (split-string
+                      (ansi-color-filter-apply (pilish--render-safe-string line))
+                      "\n"))
+                   (append lines nil))))
+      (pilish--extension-ui-unsupported event proc))))
 
 ;; Pi RPC currently suppresses this method; retain client protocol support.
 (defun pilish--extension-ui-set-working-message (event)
@@ -1460,6 +1509,7 @@ Dispatches to appropriate handler based on method."
        (pilish--handle-extension-dialog event proc))
       ("set_editor_text" (pilish--extension-ui-set-editor-text event))
       ("setStatus"      (pilish--extension-ui-set-status event))
+      ("setWidget"      (pilish--extension-ui-set-widget event proc))
       ("setWorkingMessage" (pilish--extension-ui-set-working-message event))
       (_                (pilish--extension-ui-unsupported event proc)))))
 
@@ -1512,7 +1562,10 @@ which asks upfront before any buffers are touched."
           (delete-process proc))))
     (when (and pilish--input-buffer (buffer-live-p pilish--input-buffer))
       (let ((input-buf pilish--input-buffer))
-        (pilish--set-input-buffer nil) ; break cycle before kill
+        ;; Break the cycle both ways: a buffer killed again from its own
+        ;; kill-buffer-hook runs the rest of that hook in some other buffer.
+        (pilish--set-input-buffer nil)
+        (with-current-buffer input-buf (pilish--set-chat-buffer nil))
         (kill-buffer input-buf)))
     (pilish--cleanup-visible-string-buffer)))
 
@@ -1527,7 +1580,9 @@ which asks upfront before any buffers are touched."
     (when (and pilish--chat-buffer (buffer-live-p pilish--chat-buffer))
       (let* ((chat-buf pilish--chat-buffer)
              (proc (buffer-local-value 'pilish--process chat-buf)))
-        (pilish--set-chat-buffer nil) ; break cycle before kill
+        ;; See `pilish--cleanup-on-kill'.
+        (pilish--set-chat-buffer nil)
+        (with-current-buffer chat-buf (pilish--set-input-buffer nil))
         (when (and proc (process-live-p proc))
           (pilish--skip-process-kill-confirmation proc)
           (set-process-query-on-exit-flag proc nil))
@@ -1584,7 +1639,8 @@ which asks upfront before any buffers are touched."
                error-msg
                (plist-get response :stderr)
                (plist-get response :exitCode))
-              (process-put process 'pilish-exit-error-rendered t)))
+              (process-put process 'pilish-exit-error-rendered t))
+            (pilish--flush-chat-notices))
         (pilish--cancel-tool-update-flush)
         (pilish--finalize-live-tool-blocks
          'pilish-tool-block-error)
@@ -1890,7 +1946,8 @@ Updates buffer-local state and renders display updates."
     ("extension_error"
      (pilish--display-extension-error event))
     ("extension_ui_request"
-     (pilish--handle-extension-ui-request event)))))
+     (pilish--handle-extension-ui-request event)))
+    (pilish--flush-chat-notices)))
 
 
 ;;;; Tool Output
@@ -9500,9 +9557,9 @@ Display-only table decoration is applied after the content is stable."
 (defun pilish--restore-tool-properties (beg end)
   "Restore literal metadata after tree-sitter fontification in BEG..END.
 Strip Markdown hiding, faces and link buttons from literal argument text,
-inline extension dialogs, saved assistant outcomes, child summaries and
-full-output paths, including cold text without overlays.
-Preserve image preview display properties and the outcome notice face.
+inline extension dialogs, saved assistant outcomes, chat notices, child
+summaries and full-output paths, including cold text without overlays.
+Preserve image preview display properties and the notice faces.
 Restore `font-lock-face' values for all
 overlapping tool headers, live or finalized."
   (let ((inhibit-read-only t)
@@ -9514,16 +9571,19 @@ overlapping tool headers, live or finalized."
                          (next-single-property-change pos 'pilish-argument-guard nil end)
                          (next-single-property-change pos 'pilish-tool-diagnostic-guard nil end)
                          (next-single-property-change pos 'pilish-assistant-outcome nil end)
+                         (next-single-property-change pos 'pilish-chat-notice nil end)
                          (next-single-property-change pos 'pilish-dialog nil end)))
              (outcome (get-text-property pos 'pilish-assistant-outcome))
+             (notice (get-text-property pos 'pilish-chat-notice))
              (argument-p (or (get-text-property pos 'pilish-argument-literal)
                              (get-text-property pos 'pilish-dialog))))
-        (when (or outcome argument-p (get-text-property pos 'pilish-nested-summary)
+        (when (or outcome notice argument-p (get-text-property pos 'pilish-nested-summary)
                   (eq (get-text-property pos 'pilish-tool-section) 'full-output))
           (when (fboundp 'md-ts--remove-link-button-properties)
             (md-ts--remove-link-button-properties pos limit))
           (remove-text-properties pos limit '(invisible nil display nil face nil))
           (when outcome (put-text-property pos limit 'face 'pilish-error-notice))
+          (when notice (put-text-property pos limit 'face notice))
           (when (or (get-text-property pos 'pilish-argument-guard)
                     (get-text-property pos 'pilish-tool-diagnostic-guard))
             (put-text-property pos limit 'display ""))

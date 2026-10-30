@@ -289,8 +289,9 @@ The chat renders Markdown with syntax highlighting for code, file
 operations, and edit diffs.  Commands stream their output live, and
 long tool output collapses to a preview.  Wide pipe tables wrap to
 fit the window without changing the Markdown text.  Images appear
-inline in graphical Emacs and as type-and-size placeholders in
-terminals.  See =Images= in Advanced for the limits.
+inline in graphical Emacs and in Ghostty and Kitty, and as
+type-and-size labels in other terminals.  See =Images= in Advanced for
+the limits.
 
 Click a left-margin caret or press =TAB= in a section to expand or
 collapse tools, completed thinking, startup details, or browser rows.
@@ -1238,8 +1239,9 @@ extraction, automatic detection of paths typed into the prompt, and
 multiple attachments are deferred.
 
 *Inline display:* image content in sent user turns and completed tool
-results renders inline in graphical Emacs and as a type-and-size
-placeholder in terminals.  Sent and returned images share the same
+results renders inline in graphical Emacs and in terminals with Kitty
+graphics Unicode placeholders, and as a type-and-size label in other
+terminals.  Sent and returned images share the same
 bounded renderer.  Pi's built-in =read= already returns raster images
 as image content, resized to at most 2000x2000.  For SVG, Pilish makes
 a preview only from complete, standalone SVG text supplied by =read=.
@@ -1254,6 +1256,17 @@ including chats rendered before any graphical frame existed; those
 previews are sized by =pilish-image-preview-max-width= alone.
 Resizing previews or applying a later extension replacement may
 require a toggle or history reload.
+
+*Terminal display:* Pilish shows images on terminals whose =tty-type=
+matches =pilish-terminal-image-types= (Ghostty and Kitty by default) and
+that have 24-bit color; set the option to nil to keep the label.  This
+works directly and over =ssh=, which carries =TERM=.  =mosh= and =tmux=
+do not pass the protocol through and keep the label.  Images near the
+visible text are sent to the terminal once per client, so opening a
+chat with many large images can pause Emacs briefly, particularly over
+a slow connection.  PNG is sent as is.  JPEG, GIF and WebP need
+ImageMagick (=magick= or =convert=) and show their first frame; without
+it they keep the label, as SVG always does.
 
 ** Sessions, transcripts, and exports
 
@@ -1318,12 +1331,19 @@ Pilish has basic support for Pi
 extensions.  Extension commands show up in slash completion and the
 transient menu, extension tools run normally, and extensions can use
 notifications, confirm/select/input prompts, standard multiline editor dialogs,
-prefill the input buffer, and show status text.  Multiline editor dialogs own a
-separate buffer: =C-c C-c= submits and =C-c C-k= cancels without touching the
-session's prompt draft.
+prefill the input buffer, show status text, and show text widgets.  Multiline
+editor dialogs own a separate buffer: =C-c C-c= submits and =C-c C-k= cancels
+without touching the session's prompt draft.
+
+Extension warnings and errors also stay in the chat as notices; during a run
+they follow its end.  Text widgets show above the prompt draft, in the input
+buffer, and are never part of the draft or the sent prompt; a widget placed
+below Pi's editor shows above the draft too.  Integrations read status text
+with =pilish-session-extension-status= and observe changes with
+=pilish-extension-status-functions=.
 
 Rich TUI-specific extension UI is not supported in Emacs yet.
-Custom widgets, custom editor components, custom headers and footers,
+Component widgets, custom editor components, custom headers and footers,
 and other component-based views are unavailable or fall back.  Hover extension
 status text in the header line to see the exact =statusKey=, which you
 can use to change the font for that extension's status text using
