@@ -3969,7 +3969,7 @@ Binds `chat-win' and `input-win' for use in BODY."
   (with-temp-buffer
     (pilish-chat-mode)
     (should (memq #'pilish--maybe-rebalance-windows
-                  window-size-change-functions))))
+                  (default-value 'window-size-change-functions)))))
 
 ;;; Input window fitted to the draft
 
