@@ -343,6 +343,12 @@ Pilish's own follow-ups awaiting submission, as the header shows them."
                 (plist-get snapshot :steering)
                 nil)))))
 
+(defun pilish-session-extension-status (chat-buffer key)
+  "Return the text of extension status KEY in CHAT-BUFFER, or nil.
+`pilish-extension-status-functions' report changes."
+  (when (buffer-live-p chat-buffer)
+    (cdr (assoc key (buffer-local-value 'pilish--extension-status chat-buffer)))))
+
 (defun pilish-session-busy-p (chat-buffer)
   "Return non-nil when CHAT-BUFFER's session works or has work queued.
 That covers sending, streaming, compacting, running tools, session
