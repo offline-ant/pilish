@@ -516,6 +516,16 @@ at most one empty paragraph separator while preserving indentation."
   "Return COUNT formatted as a singular or plural hidden-line label."
   (format "%d more line%s" count (if (= count 1) "" "s")))
 
+(defun pilish--thinking-content-line-count (normalized)
+  "Return the number of non-blank lines in NORMALIZED thinking."
+  (length (split-string normalized "\n" t "[ \t]*")))
+
+(defun pilish--thinking-foldable-p (normalized)
+  "Return non-nil when completed NORMALIZED thinking is long enough to fold.
+See `pilish-thinking-fold-min-lines'."
+  (>= (pilish--thinking-content-line-count normalized)
+      (max 1 pilish-thinking-fold-min-lines)))
+
 (defun pilish--thinking-first-content-line (normalized)
   "Return the first non-empty trimmed line from NORMALIZED, or nil."
   (catch 'first
@@ -526,7 +536,7 @@ at most one empty paragraph separator while preserving indentation."
 
 (defun pilish--thinking-hidden-stub (normalized)
   "Return the collapsed completed-thinking stub for NORMALIZED."
-  (let* ((line-count (length (split-string normalized "\n" nil)))
+  (let* ((line-count (pilish--thinking-content-line-count normalized))
          (first-line (pilish--thinking-first-content-line normalized))
          (previewable (and pilish-thinking-hidden-preview
                            (> line-count 1)
@@ -563,19 +573,20 @@ OBJECT is a rendered string, or nil for the current buffer."
        rear-nonsticky t) object)
     (pilish--set-details start end details object)
     (pilish--put-disclosure start end nil nil object)
-    (let* ((text (if object (substring object start end)
-                   (buffer-substring-no-properties start end)))
-           (footer (+ start (1+ (or (string-match "\n[^\n]*\\'" text) -1))))
-           (button (make-text-button
-                    (substring text (- footer start)) nil
-                    'face 'pilish-collapsed-indicator
-                    'action #'pilish--toggle-thinking-button
-                    'keymap pilish--tool-button-map
-                    'follow-link t 'pilish-tool-toggle t
-                    'pilish-thinking-footer t)))
-      (add-text-properties footer end (text-properties-at 0 button) object)
-      (pilish--put-disclosure footer end (eq display 'visible)
-                             #'pilish--toggle-thinking-block-at-point object))))
+    (when (pilish--thinking-foldable-p normalized)
+      (let* ((text (if object (substring object start end)
+                     (buffer-substring-no-properties start end)))
+             (footer (+ start (1+ (or (string-match "\n[^\n]*\\'" text) -1))))
+             (button (make-text-button
+                      (substring text (- footer start)) nil
+                      'face 'pilish-collapsed-indicator
+                      'action #'pilish--toggle-thinking-button
+                      'keymap pilish--tool-button-map
+                      'follow-link t 'pilish-tool-toggle t
+                      'pilish-thinking-footer t)))
+        (add-text-properties footer end (text-properties-at 0 button) object)
+        (pilish--put-disclosure footer end (eq display 'visible)
+                               #'pilish--toggle-thinking-block-at-point object)))))
 
 (defun pilish--toggle-thinking-button (button)
   "Toggle the exact completed thinking owning BUTTON."
@@ -4181,7 +4192,7 @@ renders with the normal absent-path placeholder."
     (substring-no-properties
      (concat (pilish--details-title "Thinking" message)
              " · " (pilish--thinking-line-count-label
-                      (length (split-string normalized "\n" nil)))
+                      (pilish--thinking-content-line-count normalized))
              (unless (string-empty-p provenance) (concat "\n" provenance))))))
 
 (defun pilish--format-tool-duration-seconds (seconds &optional tenths)
@@ -6466,7 +6477,8 @@ coordinates from before the rewrites."
   (let (replacements)
     (save-excursion
       (dolist (block (nreverse (pilish--completed-thinking-blocks)))
-        (unless (eq (plist-get block :display) display)
+        (unless (or (eq (plist-get block :display) display)
+                    (not (pilish--thinking-foldable-p (plist-get block :normalized))))
           (when-let* ((rendered
                        (pilish--completed-thinking-rendered-from-normalized
                         (plist-get block :normalized)
@@ -6487,6 +6499,7 @@ Returns non-nil when point was inside a completed thinking block and the block
 was toggled successfully."
   (when-let* ((block (pilish--thinking-block-metadata-at-pos (point)))
               (normalized (plist-get block :normalized))
+              ((pilish--thinking-foldable-p normalized))
               (order (plist-get block :order))
               (display (plist-get block :display))
               (rendered (pilish--completed-thinking-rendered-from-normalized
@@ -10106,11 +10119,14 @@ BLOCK-ORDER identifies the logical completed-thinking block across rerenders.
 DETAILS is the owning message's literal report when known.
 Returns nil when NORMALIZED has no visible completed-thinking content."
   (unless (string-empty-p normalized)
-    (let ((display (or display (pilish--thinking-display-mode))))
+    (let ((display (if (pilish--thinking-foldable-p normalized)
+                       (or display (pilish--thinking-display-mode))
+                     'visible)))
       (pilish--propertize-completed-thinking
        (pcase display
          ('hidden (pilish--thinking-hidden-stub normalized))
-         (_ (concat (pilish--thinking-blockquote-text normalized) "\nShow less")))
+         (_ (concat (pilish--thinking-blockquote-text normalized)
+                    (when (pilish--thinking-foldable-p normalized) "\nShow less"))))
        (or block-order (pilish--next-thinking-block-order))
        normalized
        display
