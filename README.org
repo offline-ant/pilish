@@ -295,6 +295,8 @@ the limits.
 
 Click a left-margin caret or press =TAB= in a section to expand or
 collapse tools, completed thinking, startup details, or browser rows.
+Completed thinking shorter than three non-blank lines, such as
+one-heading reasoning summaries, stays expanded and has no caret.
 Press =TAB= on a =You= or =Assistant= heading to fold a whole turn.
 Tool arguments appear in the header or on separate rows and fold
 independently of output.  Expanded shell commands have syntax
@@ -1029,6 +1031,9 @@ Less common tuning knobs:
 
 ;; Hidden thinking uses generic line-count stubs instead of first-line previews:
 ;; (setopt pilish-thinking-hidden-preview nil)
+
+;; Make all completed thinking foldable, however short (default 3 lines):
+;; (setopt pilish-thinking-fold-min-lines 1)
 
 ;; New browser buffers can start elsewhere; existing browsers keep
 ;; their toggled state (see the Sessions and context section):
