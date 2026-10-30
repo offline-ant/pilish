@@ -295,7 +295,7 @@ Prevents huge single-line outputs from blowing up the chat buffer."
 
 (defcustom pilish-image-preview-max-width 900
   "Maximum pixel width for inline image previews.
-Previews are also constrained to the visible chat window."
+Previews are also constrained to a graphical window, when one exists."
   :type 'natnum
   :group 'pilish)
 
