@@ -2695,6 +2695,98 @@ execution cannot retain a temporary record on this setup's evaluator stack."
    :result '(:content [(:type "text" :text "PARENT-OUTPUT")]))
   (pilish--tool-block-overlay (pilish--nested-tool-owner "literal-root")))
 
+(defmacro pilish-test--with-compound-change-log (spec &rest body)
+  "Bind SPEC (BLOCK BEFORE AFTER) around BODY for a logged compound tool.
+BLOCK is the rendered compound block.  BEFORE and AFTER accumulate the
+arguments of each change hook call during BODY."
+  (declare (indent 1) (debug t))
+  (pcase-let ((`(,block ,before ,after) spec))
+    `(with-temp-buffer
+       (pilish-chat-mode)
+       (pilish-test--nested-markup-summary)
+       (let ((,block (pilish--nested-tool-owner "literal-root"))
+             (,before nil)
+             (,after nil))
+         (add-hook 'before-change-functions
+                   (lambda (&rest args) (push args ,before)) nil t)
+         (add-hook 'after-change-functions
+                   (lambda (&rest args) (push args ,after)) nil t)
+         ,@body))))
+
+(ert-deftest pilish-test-compound-redraw-notifies-change-hooks-once ()
+  "One compound rewrite is one edit for change hooks."
+  ;; md-ts change hooks read the parse tree, so exposing each intermediate
+  ;; insertion costs one reparse of the whole chat per insertion.
+  (pilish-test--with-compound-change-log (block before after)
+    (let ((start (marker-position (pilish--tool-block-header-end block)))
+          (old-end (marker-position (pilish--tool-block-end-marker block)))
+          (text (buffer-string)))
+      (cl-letf (((symbol-function 'pilish--font-lock-ensure-excluding-property) #'ignore))
+        (pilish--redraw-compound-tool block))
+      (should (equal text (buffer-string)))
+      (should (equal before (list (list start old-end))))
+      (should (equal after (list (list start old-end (- old-end start))))))))
+
+(ert-deftest pilish-test-compound-redraw-reports-grown-and-shrunk-bodies ()
+  "The combined notification spans the body that actually replaced the old one."
+  ;; A stale end would leave the rest of a grown body unfontified or make
+  ;; md-ts inspect text past the block after a shrink.
+  (pilish-test--with-compound-change-log (block before after)
+    (let* ((start (marker-position (pilish--tool-block-header-end block)))
+           (end (pilish--tool-block-end-marker block))
+           (old-end (marker-position end)))
+      (cl-letf (((symbol-function 'pilish--font-lock-ensure-excluding-property) #'ignore)
+                ((symbol-function 'pilish--insert-compound-tool-body)
+                 (lambda (&rest _) (insert "grown\n\nbody\n"))))
+        (pilish--redraw-compound-tool block)
+        (should (equal (car after)
+                       (list start (+ start 12) (- old-end start))))
+        (should (= (marker-position end) (+ start 12)))
+        (setq before nil after nil)
+        (fset 'pilish--insert-compound-tool-body #'ignore)
+        (pilish--redraw-compound-tool block))
+      (should (equal before (list (list start (+ start 12)))))
+      (should (equal after (list (list start start 12))))
+      (should (= (marker-position end) start)))))
+
+(ert-deftest pilish-test-compound-redraw-failure-still-notifies-after-change ()
+  "A failed rewrite restores change hooks and reports what changed."
+  ;; `combine-change-calls' restores its hooks on a non-local exit but skips
+  ;; the final notification, leaving partial text invisible to jit-lock.
+  (pilish-test--with-compound-change-log (block before after)
+    (let ((start (marker-position (pilish--tool-block-header-end block)))
+          (hooks after-change-functions))
+      (dolist (condition '(error quit))
+        (setq before nil after nil)
+        (cl-letf (((symbol-function 'pilish--insert-compound-tool-body)
+                   (lambda (&rest _)
+                     (insert "partial")
+                     (signal condition nil))))
+          (should (eq condition
+                      (condition-case err
+                          (pilish--redraw-compound-tool block)
+                        (t (car err))))))
+        (should (= 1 (length before)))
+        (should (equal (mapcar #'cl-first after) (list start)))
+        (should (equal (cl-second (car after)) (+ start 7)))
+        (should (equal hooks after-change-functions))))))
+
+(ert-deftest pilish-test-compound-redraw-keeps-distant-reference-links ()
+  "Batching a rewrite keeps Markdown's distant reference-definition semantics."
+  ;; Reference links resolve across the whole buffer, so a single combined
+  ;; notification must still leave an earlier link fontified after the rewrite.
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (pilish--append-to-chat "Read [the guide][ref] first.\n\n[ref]: https://example.org/guide\n\n")
+    (pilish-test--nested-markup-summary)
+    (font-lock-ensure)
+    (pilish--redraw-compound-tool (pilish--nested-tool-owner "literal-root"))
+    (font-lock-ensure)
+    (save-excursion
+      (goto-char (point-min))
+      (search-forward "the guide")
+      (should (button-at (match-beginning 0))))))
+
 (ert-deftest pilish-test-nested-summary-arguments-decode-json-utf8 ()
   "Native JSON bytes must display as the received Unicode argument characters."
   ;; Passing json-serialize's unibyte UTF-8 output to character escaping
