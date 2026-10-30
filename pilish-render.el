@@ -9965,6 +9965,7 @@ Consecutive assistant messages are grouped under one header.
 Tool calls are rendered with headers, output, overlays, and toggles."
   (let ((prev-role nil)
         (results (pilish--build-tool-result-index messages)))
+    (setq pilish--history-answer-marker nil)
     (dotimes (i (length messages))
       (let* ((message (aref messages i))
              (role (plist-get message :role)))
@@ -9983,6 +9984,10 @@ Tool calls are rendered with headers, output, overlays, and toggles."
            (when (not (equal prev-role "assistant"))
              (pilish--append-to-chat
               (concat "\n" (pilish--make-separator "Assistant") "\n")))
+           (when (and (= i (1- (length messages)))
+                      (not (member (plist-get message :stopReason)
+                                   '("error" "aborted" "toolUse"))))
+             (setq pilish--history-answer-marker (copy-marker (point-max))))
            (pilish--render-history-assistant-content message results)
            (setq prev-role "assistant"))
           ("custom"

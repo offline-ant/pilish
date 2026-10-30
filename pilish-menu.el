@@ -435,6 +435,7 @@ from async callbacks, pass CHAT-BUF explicitly."
                                                      0)))
                                        (pilish--display-session-history
                                         messages chat-buf)
+                                       (pilish--answer-history-loaded)
                                        ;; Refresh header after loading history (resume/fork).
                                        (pilish--refresh-header)
                                        (when callback
