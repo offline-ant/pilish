@@ -1141,8 +1141,9 @@ Pi's terminal interface: turn headings are hidden, assistant text is
 plain Markdown, user messages are padded blocks with Pi's user message
 background, tool blocks are padded and coloured by state (running,
 success, error) with muted output (except =read=, =write= and =edit=,
-see =pilish-pi-highlighted-output-tools=), thinking is muted italic, and
-custom messages and summaries get Pi's custom message background.
+see =pilish-pi-highlighted-output-tools=), thinking is muted italic,
+custom messages and summaries get Pi's custom message background, and
+the input buffer has the user message background.
 
 The buffer text is identical in both styles; =pi= only adds overlays and
 buffer-local face remapping, so navigation, folding and saved transcripts

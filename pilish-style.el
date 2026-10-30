@@ -27,7 +27,9 @@
 ;; `pi' style imitates Pi's terminal interface on top of the unchanged
 ;; buffer text: turn headings are hidden by overlays, user messages,
 ;; custom messages and summaries become background blocks, thinking is
-;; muted, and tool block faces are remapped to Pi's state colours.
+;; muted, and tool block faces are remapped to Pi's state colours.  Input
+;; buffers get the user message background, so a draft reads as one block
+;; that ends where the next window starts.
 ;;
 ;; Decoration runs as a `jit-lock' function, so it follows every way text
 ;; reaches the buffer (streaming, history loads, rewrites) without hooks in
@@ -54,10 +56,10 @@ backgrounds.  `pi' follows Pi's terminal interface: turn headings are
 hidden, assistant text is plain Markdown, user messages are padded
 blocks with Pi's user message background, tool blocks are coloured by
 their state (pending, success, error), thinking is muted italic, and
-custom messages get Pi's custom message background.  The buffer text
-is the same in both styles, so navigation is unchanged; copying omits
-the hidden headings.  Setting this through Customize restyles open
-buffers."
+custom messages get Pi's custom message background.  The input buffer
+has the user message background too.  The buffer text is the same in
+both styles, so navigation is unchanged; copying omits the hidden
+headings.  Setting this through Customize restyles open buffers."
   :type '(choice (const :tag "Classic Pilish headings" classic)
                  (const :tag "Pi's terminal interface" pi))
   :initialize #'custom-initialize-default
@@ -65,8 +67,10 @@ buffers."
          (set-default symbol value)
          (dolist (buffer (buffer-list))
            (with-current-buffer buffer
-             (when (derived-mode-p 'pilish-transcript-mode)
-               (pilish--apply-chat-style)))))
+             (cond ((derived-mode-p 'pilish-transcript-mode)
+                    (pilish--apply-chat-style))
+                   ((derived-mode-p 'pilish-input-mode)
+                    (pilish--apply-input-style))))))
   :group 'pilish)
 
 ;;;; Faces
@@ -184,6 +188,22 @@ follow a changed setting."
     (add-hook 'jit-lock-functions #'pilish--style-decorate 90 t)
     (jit-lock-mode t)
     (jit-lock-refontify)))
+
+(defvar-local pilish--input-style-cookie nil
+  "Face remapping cookie of the input background, or nil.")
+
+(defun pilish--apply-input-style ()
+  "Install `pilish-chat-style' in the current input buffer.
+Removes a previously installed style first, so this is also how buffers
+follow a changed setting."
+  (when pilish--input-style-cookie
+    (face-remap-remove-relative pilish--input-style-cookie)
+    (setq pilish--input-style-cookie nil))
+  (when (eq pilish-chat-style 'pi)
+    (setq pilish--input-style-cookie
+          (face-remap-add-relative 'default 'pilish-pi-user-message))))
+
+(add-hook 'pilish-input-mode-hook #'pilish--apply-input-style)
 
 (defun pilish--remove-chat-style ()
   "Remove the installed chat style from the current buffer."
