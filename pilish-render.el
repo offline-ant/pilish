@@ -2758,7 +2758,13 @@ line maps.  TOGGLED-SECTION identifies an explicit fold in either direction.
 OUTPUT-SELECTION requests the next output selection without changing old paint.
 Parent output folds use the last painted presentation so captured row spans
 and preview line maps share one source.  Pending updates still paint newer
-retained facts through the existing queue."
+retained facts through the existing queue.
+
+The body replacement is one edit for change hooks: md-ts hooks read the parse
+tree, so exposing each intermediate insertion would reparse the chat that many
+times.  The header and fontification stay outside it because they can touch
+text beyond the body.  `combine-change-calls' skips its final notification on
+a non-local exit, so a failure is re-signaled only after that notification."
   (when-let* ((overlay (pilish--tool-block-overlay block))
               ((eq (overlay-buffer overlay) (current-buffer)))
               (header (pilish--tool-block-header-end block))
@@ -2772,18 +2778,29 @@ retained facts through the existing queue."
              (list (cons 'script (pilish--tool-block-script-line-map block))
                    (cons 'output (pilish--tool-block-line-map block)))))
            (view (pilish--capture-tool-rewrite-view))
-           (inhibit-read-only t))
+           (inhibit-read-only t)
+           (failure nil))
       (save-excursion
-        (remove-overlays start old-end 'pilish-diff-overlay t)
-        ;; A hidden child list can omit sections from the next paint entirely.
-        (pilish--detach-tool-output-footer (pilish--tool-block-output-view block))
-        (dolist (call (pilish--tool-block-nested-calls block))
-          (pilish--detach-tool-output-footer (pilish--nested-call-output-view call)))
-        (delete-region start old-end)
-        (goto-char start)
-        (pilish--insert-compound-tool-body block toggled-section output-selection)
-        (set-marker header start)
-        (set-marker end (point))
+        (combine-change-calls start old-end
+          (condition-case err
+              (progn
+                (remove-overlays start old-end 'pilish-diff-overlay t)
+                ;; A hidden child list can omit sections from the next paint
+                ;; entirely.
+                (pilish--detach-tool-output-footer
+                 (pilish--tool-block-output-view block))
+                (dolist (call (pilish--tool-block-nested-calls block))
+                  (pilish--detach-tool-output-footer
+                   (pilish--nested-call-output-view call)))
+                (delete-region start old-end)
+                (goto-char start)
+                (pilish--insert-compound-tool-body
+                 block toggled-section output-selection)
+                (set-marker header start)
+                (set-marker end (point)))
+            (t (setq failure err))))
+        (when failure
+          (signal (car failure) (cdr failure)))
         (pilish--tool-block-refresh-overlay block)
         (pilish--font-lock-ensure-excluding-property start (point) 'pilish-no-fontify))
       (let* ((new-end (marker-position end))
