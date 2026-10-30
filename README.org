@@ -1248,9 +1248,12 @@ or external resources stays as text.  Images in partial tool updates
 appear when the final result arrives.  Unresized prompt images and
 custom tools can supply animated or highly compressed data whose
 decoder cost is not bounded by the source-byte cap.  The preview
-settings in Configuration bound what renders.  Moving a
-terminal-rendered chat to a GUI, resizing previews, or applying a
-later extension replacement may require a toggle or history reload.
+settings in Configuration bound what renders.  A daemon's graphical
+and terminal frames can show the same chat, each in its own form,
+including chats rendered before any graphical frame existed; those
+previews are sized by =pilish-image-preview-max-width= alone.
+Resizing previews or applying a later extension replacement may
+require a toggle or history reload.
 
 ** Sessions, transcripts, and exports
 

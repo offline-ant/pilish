@@ -3510,8 +3510,7 @@ The caller saves the window configuration; queued paints need a visible chat."
               (should (string-match-p
                        (regexp-quote (if read-svg-p "Image: image/svg+xml" "Image: image/png"))
                        (buffer-string)))
-              (if (and (display-images-p)
-                       (image-type-available-p (if read-svg-p 'svg 'png)))
+              (if (image-type-available-p (if read-svg-p 'svg 'png))
                   (should (eq 'image (car (get-text-property position 'display))))
                 (should-not (get-text-property position 'display))))
             (when read-svg-p
@@ -8594,8 +8593,9 @@ no payload at all."
   "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAADklEQVR4nGP4z8DwHwQBEPgD/U6VwW8AAAAASUVORK5CYII="
   "Base64 for a two-by-one PNG used by image preview tests.")
 
-(ert-deftest pilish-test-tool-result-image-has-terminal-placeholder ()
-  "An image result is useful text inside its tool block in a terminal."
+(ert-deftest pilish-test-tool-result-image-has-terminal-fallback ()
+  "A terminal render keeps useful text and the image for graphical frames."
+  ;; Omitting the image here left daemon chats as text in every later GUI frame.
   (with-temp-buffer
     (pilish-chat-mode)
     (let ((block (pilish--display-tool-start
@@ -8614,10 +8614,37 @@ no payload at all."
         (should (<= (overlay-start overlay) position))
         (should (< position (overlay-end overlay)))
         (should (get-text-property position 'pilish-no-fontify))
-        (should-not (get-text-property position 'display))
+        (should (eq 'image (car (get-text-property position 'display))))
         (should (string-match-p
                  "Image: image/png, 71 B"
                  (buffer-substring-no-properties position (overlay-end overlay))))))))
+
+(ert-deftest pilish-test-image-preview-limits-prefer-graphical-window ()
+  "A terminal frame never sizes previews while a graphical window exists."
+  (let ((pilish-image-preview-max-width 2000)
+        (terminal (selected-window))
+        (graphical 'graphical-window))
+    (cl-letf (((symbol-function 'get-buffer-window-list)
+               (lambda (&rest _) (list terminal)))
+              ((symbol-function 'frame-selected-window)
+               (lambda (&rest _) graphical))
+              ((symbol-function 'window-frame) #'identity)
+              ((symbol-function 'display-images-p)
+               (lambda (frame) (eq frame graphical)))
+              ((symbol-function 'window-pixel-width) (lambda (_) 1000))
+              ((symbol-function 'window-pixel-height) (lambda (_) 600)))
+      (should (equal (pilish--image-preview-pixel-limits)
+                     '(:max-width 900 :max-height 300))))))
+
+(ert-deftest pilish-test-image-preview-limits-without-graphical-window ()
+  "With only terminal frames, the configured width sizes previews."
+  (cl-letf (((symbol-function 'display-images-p) #'ignore))
+    (let ((pilish-image-preview-max-width 640))
+      (should (equal (pilish--image-preview-pixel-limits)
+                     '(:max-width 640 :max-height 320))))
+    (let ((pilish-image-preview-max-width nil))
+      (should (equal (pilish--image-preview-pixel-limits)
+                     '(:max-width 900 :max-height 450))))))
 
 (ert-deftest pilish-test-prompt-image-live-and-history-use-image-preview ()
   "Live and replayed user image blocks use the bounded #221 renderer."
