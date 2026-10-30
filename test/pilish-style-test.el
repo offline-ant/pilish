@@ -380,6 +380,47 @@ Customizing the style installs and removes it in open input buffers."
       (pilish-fit-input-window input-win)
       (should (= (window-total-height input-win) 3)))))
 
+(ert-deftest pilish-style-test-fit-input-allows-for-extension-widgets ()
+  "A `fit' input window makes room for widgets, also wrapped ones, and gives it back."
+  (pilish-style-test--with-fit-layout
+    (let ((chat (generate-new-buffer " *test-fit-chat*")))
+      (unwind-protect
+          (progn
+            (with-current-buffer chat
+              (setq pilish--input-buffer input-buf))
+            (with-current-buffer input-buf
+              (setq pilish--chat-buffer chat)
+              (insert "one\ntwo"))
+            (with-current-buffer chat
+              (pilish--set-extension-widget
+               "k" (list "short" (make-string (1+ (window-body-width input-win)) ?x))))
+            (pilish-fit-input-window input-win)
+            ;; Two draft lines, three widget screen lines, header and mode lines.
+            (should (= (window-total-height input-win) 7))
+            (with-current-buffer chat
+              (pilish--set-extension-widget "k" nil))
+            (pilish-fit-input-window input-win)
+            (should (= (window-total-height input-win) 4)))
+        (kill-buffer chat)))))
+
+(ert-deftest pilish-style-test-extension-widget-schedules-a-fit ()
+  "Changing a widget refits the input window like editing the draft does."
+  (let ((pilish-input-window-height 'fit)
+        (chat (generate-new-buffer " *test-fit-chat*"))
+        (input (generate-new-buffer " *test-fit-input*")))
+    (unwind-protect
+        (cl-letf* ((scheduled 0)
+                   ((symbol-function 'pilish--schedule-fit-input-windows)
+                    (lambda (&rest _)
+                      (should (eq (current-buffer) input))
+                      (cl-incf scheduled))))
+          (with-current-buffer chat
+            (setq pilish--input-buffer input)
+            (pilish--set-extension-widget "k" '("line"))
+            (should (= scheduled 1))))
+      (kill-buffer chat)
+      (kill-buffer input))))
+
 (ert-deftest pilish-style-test-fit-input-keeps-preserved-size-current ()
   "Fitting updates a preserved height so balancing keeps the new size."
   (pilish-style-test--with-fit-layout
