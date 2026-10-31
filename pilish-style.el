@@ -294,7 +294,7 @@ A closing code fence is such a line.  Return nil otherwise."
         (setq pos (1+ pos)))
       (and (= pos end) (1- end)))))
 
-;; WORKAROUND for Emacs bug#PENDING (`move_it_by_lines' in src/xdisp.c, 31.1
+;; WORKAROUND for Emacs bug#82151 (`move_it_by_lines' in src/xdisp.c, 31.1
 ;; and master), the text property sibling of bug#80989, which fixed this for
 ;; overlays.  An overlay string with a newline that is shown at a line whose
 ;; start is hidden by the `invisible' text property makes
