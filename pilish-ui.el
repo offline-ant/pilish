@@ -3427,19 +3427,23 @@ header line under `pilish-header-line-location'."
         (with-current-buffer buf
           (force-mode-line-update))))))
 
-(defvar pilish--header-model-map
+(defun pilish--header-click-map (command)
+  "Return a keymap running COMMAND on a left or middle click.
+The bindings work in the header line and in the mode line, so the
+input status line stays clickable when a user shows it as a mode line."
   (let ((map (make-sparse-keymap)))
-    (define-key map [header-line mouse-1] #'pilish-select-model)
-    (define-key map [header-line mouse-2] #'pilish-select-model)
-    map)
-  "Keymap for clicking model name in header-line.")
+    (dolist (area '(header-line mode-line))
+      (define-key map (vector area 'mouse-1) command)
+      (define-key map (vector area 'mouse-2) command))
+    map))
+
+(defvar pilish--header-model-map
+  (pilish--header-click-map #'pilish-select-model)
+  "Keymap for clicking the model name in the input status line.")
 
 (defvar pilish--header-thinking-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map [header-line mouse-1] #'pilish-cycle-thinking)
-    (define-key map [header-line mouse-2] #'pilish-cycle-thinking)
-    map)
-  "Keymap for clicking thinking level in header-line.")
+  (pilish--header-click-map #'pilish-cycle-thinking)
+  "Keymap for clicking the thinking level in the input status line.")
 
 (defun pilish--header-format-context (percent context-window)
   "Format context usage for header-line display.
