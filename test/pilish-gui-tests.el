@@ -1679,6 +1679,77 @@ next to that line used to stop `line-move' and scrolling at every block."
               (should (<= (window-start) top)))))
       (kill-buffer buf))))
 
+(ert-deftest pilish-gui-test-pi-style-motion-crosses-blocks-before-hidden-markup ()
+  "Line motion and scrolling cross blocks followed by hidden markup.
+A codemode block ends in a visible line, and each kind of following text
+starts with Markdown markup.  A padding string next to that hidden text
+stopped `vertical-motion' there (Emacs bug#PENDING), so `line-move' and
+scrolling signalled `beginning-of-buffer' in the middle of the chat."
+  (let ((buf (get-buffer-create "*pi-gui-style-hidden-markup*"))
+        (pilish-chat-style 'pi)
+        (messages (list '(:role "user" :content "First question"
+                          :timestamp 1784817120000)))
+        (followers '([(:type "thinking" :thinking "**Reasoning**\n\nDetails of it.")]
+                     [(:type "text" :text "**Bold** start")]
+                     [(:type "text" :text "`code` start")]
+                     [(:type "text" :text "## Heading")]
+                     [(:type "text" :text "```sh\nls\n```")])))
+    (seq-do-indexed
+     (lambda (content i)
+       (let ((id (format "call-%d" i)))
+         (setq messages
+               (append messages
+                       (list `(:role "assistant" :timestamp 1784817121000
+                               :content [(:type "toolCall" :id ,id :name "codemode"
+                                          :arguments (:code "text(1);"))])
+                             `(:role "toolResult" :toolCallId ,id :toolName "codemode"
+                               :isError :false :timestamp 1784817122000
+                               :content [(:type "text" :text "1")]
+                               :details (:calls [(:id ,(concat id "/1") :name "bash"
+                                                  :status "ok" :args "seq 2")]))
+                             `(:role "assistant" :timestamp 1784817123000
+                               :content ,content))))))
+     followers)
+    (unwind-protect
+        (progn
+          (switch-to-buffer buf)
+          (delete-other-windows)
+          (pilish-chat-mode)
+          (pilish--display-history-messages (vconcat messages))
+          (pilish--display-custom-message "**Bold** note")
+          (let ((top (save-excursion
+                       (goto-char (point-min))
+                       (search-forward "First question")
+                       (line-beginning-position))))
+            (jit-lock-fontify-now)
+            (goto-char (point-max))
+            (redisplay)
+            ;; The block's padding sits where hidden text cannot follow it.
+            (let* ((block (car (pilish--tool-block-overlays-in-region
+                                (point-min) (point-max))))
+                   (end (overlay-end block)))
+              (should-not (pilish--style-hidden-tail (overlay-start block) end))
+              (should (invisible-p (get-text-property end 'invisible))))
+            (let ((last (point)))
+              (while (condition-case nil
+                         (progn (line-move -1) t)
+                       (beginning-of-buffer nil))
+                (should (< (point) last))
+                (setq last (point))
+                (redisplay))
+              (should (<= (point) top)))
+            (goto-char (point-max))
+            (recenter -1)
+            (redisplay)
+            (let ((last (window-start)))
+              (while (condition-case nil
+                         (progn (scroll-down 1) (redisplay) t)
+                       (beginning-of-buffer nil))
+                (should (< (window-start) last))
+                (setq last (window-start)))
+              (should (<= (window-start) top)))))
+      (kill-buffer buf))))
+
 (ert-deftest pilish-gui-test-tool-streaming-restores-deleted-point-to-body-start ()
   (let ((buf (get-buffer-create "*pi-gui-tool-deleted-preview-point*")))
     (unwind-protect

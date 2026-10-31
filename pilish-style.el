@@ -294,26 +294,67 @@ A closing code fence is such a line.  Return nil otherwise."
         (setq pos (1+ pos)))
       (and (= pos end) (1- end)))))
 
+;; WORKAROUND for Emacs bug#PENDING (`move_it_by_lines' in src/xdisp.c, 31.1
+;; and master), the text property sibling of bug#80989, which fixed this for
+;; overlays.  An overlay string with a newline that is shown at a line whose
+;; start is hidden by the `invisible' text property makes
+;; `vertical-motion' return 0: the string's newline puts the screen line's
+;; start past the hidden text, one line up is the same physical line, and
+;; reseating there skips the hidden text back to where the motion began.
+;; `line-move', Evil `k' and `scroll-down' then report "Beginning of buffer"
+;; in the middle of the chat.  The hidden text can be the end of the line
+;; before the string or the start of the line after it, such as a thinking
+;; quote's "> **", other Markdown markup or a code fence.  So block padding
+;; shows no such string at a line boundary.  A padding string belongs on the
+;; block's last newline, not after it, and never as a `display' string on
+;; that newline: a narrowing ending there, as in
+;; `pilish--count-screen-lines-up-to', makes `vertical-motion' signal
+;; `args-out-of-range'.  Once the minimum Emacs includes the fix, plain
+;; `before-string' and `after-string' padding works, so
+;; `pilish--style-top-pad', `pilish--style-bottom-pad' and
+;; `pilish--style-hidden-tail' can go.
+
+(defun pilish--style-top-pad (kind start end face)
+  "Return KIND decorations padding the top of block START..END with FACE.
+The value is (PROPS . SPECS), like `pilish--style-bottom-pad'.  When the
+block starts with hidden text, the blank line the renderer leaves above
+it is painted as the padding row.  Otherwise the padding is a
+`before-string'."
+  (if (and (< start end)
+           (pilish--style-text-hidden-p start)
+           (> start (1+ (point-min)))
+           (eq (char-before start) ?\n)
+           (eq (char-before (1- start)) ?\n))
+      (cons (list 'before-string nil)
+            (list (list kind (1- start) start 'face face)))
+    (cons (list 'before-string (pilish--style-pad face)) nil)))
+
 (defun pilish--style-bottom-pad (kind start end face)
   "Return KIND decorations padding the bottom of block START..END with FACE.
 The value is (PROPS . SPECS): PROPS for the block's own overlay and
-SPECS for separate decorations.  When the block's last line is hidden,
-its newline is shown instead and becomes the padding row, painted by
-the block's extended face: an overlay string with a newline next to a
-wholly hidden line stops `vertical-motion' and `line-move' moving up
-past it, which would trap line motion and scrolling at the block.
-Otherwise the padding is an `after-string'."
-  (if-let* ((newline (pilish--style-hidden-tail start end)))
-      ;; An `invisible' value outside the spec and a display spec that
-      ;; replaces no text override the hiding text properties.
-      (cons nil (list (list kind newline end
-                            'invisible 'pilish-style-shown
-                            'display '(raise 0))))
-    (let ((pad (pilish--style-pad face)))
-      (cons (list 'after-string (if (eq (char-before end) ?\n)
-                                    pad
-                                  (concat "\n" pad)))
-            nil))))
+SPECS for separate decorations.  The padding row comes from the block's
+last newline, so no overlay string sits at the line that follows: a
+hidden last line shows its newline, and a visible one gets a padding
+string in front of it.  Either way the block's extended face paints the
+row, which takes no line prefix, so a disclosure is not repeated.  Only
+a block that does not end in a newline has an `after-string'."
+  (if (not (eq (char-before end) ?\n))
+      (cons (list 'after-string (concat "\n" (pilish--style-pad face))) nil)
+    (cons (list 'after-string nil)
+          (list (if (pilish--style-hidden-tail start end)
+                    ;; An `invisible' value outside the spec and a display
+                    ;; spec that replaces no text override the hiding text
+                    ;; properties.
+                    (list kind (1- end) end
+                          'invisible 'pilish-style-shown
+                          'display '(raise 0)
+                          'before-string nil
+                          'line-prefix nil 'wrap-prefix nil)
+                  (list kind (1- end) end
+                        'invisible nil
+                        'display nil
+                        'before-string (pilish--style-pad face)
+                        'line-prefix "" 'wrap-prefix ""))))))
 
 (defun pilish--style-sync (beg end kinds wanted)
   "Make the KINDS decorations overlapping BEG..END exactly WANTED.
@@ -448,8 +489,10 @@ applies to the bodies of all other tool blocks."
   "Return padding and output decorations for the tool blocks in FROM..TO.
 Like Pi's tool boxes, each block gets a padding line above and below in
 its current state colour, which follows the tool overlay's face (see
-`pilish--style-bottom-pad').  The renderer keeps tool block overlays
-disjoint; nested calls are text inside their parent's block."
+`pilish--style-bottom-pad').  A tool's first line is its visible title,
+so the top needs no `pilish--style-top-pad'.  The renderer keeps tool
+block overlays disjoint; nested calls are text inside their parent's
+block."
   (let (wanted)
     (dolist (tool (seq-filter (lambda (ov) (overlay-get ov 'pilish-tool-block))
                               (overlays-in from to)))
@@ -460,8 +503,7 @@ disjoint; nested calls are text inside their parent's block."
           (pcase-let ((`(,props . ,specs)
                        (pilish--style-bottom-pad 'tool-tail start end face)))
             (push (append (list 'tool-pad start end
-                                'before-string (pilish--style-pad face)
-                                'after-string nil)
+                                'before-string (pilish--style-pad face))
                           props)
                   wanted)
             (setq wanted (append specs wanted)))
@@ -477,20 +519,20 @@ disjoint; nested calls are text inside their parent's block."
 (defun pilish--style-custom-decorations (beg end)
   "Return the decorations of the custom message spans in BEG..END.
 Each span is a padded block in Pi's custom message colour (see
-`pilish--style-bottom-pad')."
+`pilish--style-top-pad' and `pilish--style-bottom-pad')."
   (let* ((face 'pilish-pi-custom-message)
          (prefix (pilish--style-prefix face))
          wanted)
     (pcase-dolist (`(,kind ,start ,stop . ,props)
                    (pilish--style-property-decorations
                     beg end 'pilish-custom-message 'custom
-                    (list 'face face 'line-prefix prefix 'wrap-prefix prefix
-                          'before-string (pilish--style-pad face)
-                          'after-string nil)))
-      (pcase-let ((`(,pad-props . ,specs)
+                    (list 'face face 'line-prefix prefix 'wrap-prefix prefix)))
+      (pcase-let ((`(,top-props . ,top-specs)
+                   (pilish--style-top-pad 'custom-head start stop face))
+                  (`(,bottom-props . ,bottom-specs)
                    (pilish--style-bottom-pad 'custom-tail start stop face)))
-        (push (append (list kind start stop) props pad-props) wanted)
-        (setq wanted (append specs wanted))))
+        (push (append (list kind start stop) props top-props bottom-props) wanted)
+        (setq wanted (append top-specs bottom-specs wanted))))
     wanted))
 
 (defun pilish--style-decorate (start end)
@@ -516,7 +558,7 @@ region was chunked and the cost does not grow with the turn."
                                  '(face pilish-pi-thinking))))
           (pcase-let ((`(,beg . ,stop)
                        (pilish--style-property-bounds start end 'pilish-custom-message)))
-            (pilish--style-sync beg stop '(custom custom-tail)
+            (pilish--style-sync beg stop '(custom custom-head custom-tail)
                                 (pilish--style-custom-decorations beg stop))))))))
 
 (provide 'pilish-style)
