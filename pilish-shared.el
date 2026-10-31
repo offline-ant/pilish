@@ -55,7 +55,8 @@ other frontends can attach to the process."
         ("pimux_gap"
          ;; Updates were lost: paint nothing more until the snapshot.
          (pilish--cancel-stream-delta-flush)
-         (pilish--cancel-tool-update-flush))
+         (pilish--cancel-tool-update-flush)
+         (pilish--cancel-tool-times-state))
         ("pimux_snapshot" (pilish--shared-apply-snapshot proc event))
         ("pimux_live" (pilish--shared-finish-snapshot proc event))
         ("pimux_snapshot_failed"
@@ -66,6 +67,14 @@ other frontends can attach to the process."
          (force-mode-line-update t))))))
 
 ;;;; Snapshots
+
+(defun pilish--shared-replaying-p ()
+  "Return non-nil while the current chat's process replays a snapshot.
+Replayed records keep their content but not their time: a tool start
+arrives when it is replayed, not when the tool started."
+  (and (processp pilish--process)
+       (process-get pilish--process 'pilish-mux-snapshot)
+       t))
 
 (defun pilish--shared-apply-snapshot (proc snapshot)
   "Rebuild the current chat from PROC's SNAPSHOT before its replay arrives."
