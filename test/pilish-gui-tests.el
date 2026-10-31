@@ -1384,7 +1384,7 @@ next to that line used to stop `line-move' and scrolling at every block."
   "Line motion and scrolling cross blocks followed by hidden markup.
 A codemode block ends in a visible line, and each kind of following text
 starts with Markdown markup.  A padding string next to that hidden text
-stopped `vertical-motion' there (Emacs bug#PENDING), so `line-move' and
+stopped `vertical-motion' there (Emacs bug#82151), so `line-move' and
 scrolling signalled `beginning-of-buffer' in the middle of the chat."
   (let ((buf (get-buffer-create "*pi-gui-style-hidden-markup*"))
         (pilish-chat-style 'pi)
