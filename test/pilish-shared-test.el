@@ -309,7 +309,7 @@ The replayed tool still gets Pi's recorded duration at completion."
       (with-current-buffer input
         (should-not (string-match-p
                      "old widget"
-                     (overlay-get pilish--extension-widget-overlay 'before-string)))))))
+                     (overlay-get pilish--input-preamble-overlay 'before-string)))))))
 
 (ert-deftest pilish-shared-test-truncated-replay-marks-and-refreshes-after-the-run ()
   "A replay missing part of the run says so; settling brings the full text."

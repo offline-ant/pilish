@@ -62,6 +62,8 @@
 ;;     RET RET        Send prompt with `pilish-send-on-double-return'
 ;;     C-c C-s        Queue steering (interrupts after current tool; busy only)
 ;;     M-RET          Send prompt, or always queue as follow-up if busy
+;;     M-<up>         Move queued messages into the draft
+;;     C-c C-u        Clear queued messages
 ;;     C-c C-k        Abort current operation
 ;;     C-c C-p        Open menu
 ;;     C-c C-r        Browse sessions

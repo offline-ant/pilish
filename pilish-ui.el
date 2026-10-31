@@ -87,6 +87,11 @@
 (declare-function pilish-next-input "pilish-input")
 (declare-function pilish-history-isearch-backward "pilish-input")
 (declare-function pilish-queue-steering "pilish-input")
+(declare-function pilish-restore-queued-messages "pilish-queue")
+(declare-function pilish-clear-queued-messages "pilish-queue")
+(declare-function pilish--queue-panel-lines "pilish-queue")
+(declare-function pilish--cleared-messages "pilish-queue")
+(declare-function pilish--restore-messages "pilish-queue")
 (declare-function pilish-queue-followup "pilish-input")
 (declare-function pilish-newline-or-send "pilish-input")
 (declare-function pilish-input-mode "pilish-input")
@@ -714,6 +719,8 @@ Return nil when PATH is not a string."
     (define-key map (kbd "q") #'pilish-quit)
     (define-key map (kbd "C-c C-p") #'pilish-menu)
     (define-key map (kbd "C-c C-k") #'pilish-abort)
+    (define-key map (kbd "M-<up>") #'pilish-restore-queued-messages)
+    (define-key map (kbd "C-c C-u") #'pilish-clear-queued-messages)
     (define-key map (kbd "C-c C-n") #'pilish-new-session)
     (define-key map (kbd "C-c C-r") #'pilish-session-browser)
     (define-key map (kbd "C-c C-e") #'pilish-export-html)
@@ -1263,6 +1270,8 @@ removing the instructional header that would otherwise appear."
     ;; Explicit steering and follow-up; C-c C-c follows `pilish-send-while-busy'.
     (define-key map (kbd "C-c C-s") #'pilish-queue-steering)
     (define-key map (kbd "M-RET") #'pilish-queue-followup)
+    (define-key map (kbd "M-<up>") #'pilish-restore-queued-messages)
+    (define-key map (kbd "C-c C-u") #'pilish-clear-queued-messages)
     map)
   "Keymap for `pilish-input-mode'.")
 
@@ -1508,6 +1517,7 @@ new live processes in interactive sessions."
     (force-mode-line-update t))
   (setq pilish--process process
         pilish--process-version nil)
+  (pilish--refresh-input-preamble)
   (pilish--reconcile-inactivity-timer)
   (when (and (processp process)
              (process-live-p process)
@@ -1754,7 +1764,7 @@ Arming never overwrites the stdout receipt that preceded a state event."
        (format (concat "No stdout received from Pi for %d seconds. "
                        "Pi may still be working. Use M-x pilish-abort "
                        "(normally C-c C-k) in this session to stop and "
-                       "discard queued continuations.")
+                       "return queued messages to the draft.")
                (floor age))))))
 
 (defun pilish--run-activity-phase-functions
@@ -1915,10 +1925,15 @@ oldest message is sent after the session settles, and dropped only after
 prompt preflight accepts it.  This is simpler than using pi's RPC follow_up
 command.")
 
+(defun pilish--queue-changed ()
+  "Show the current chat buffer's changed queues."
+  (force-mode-line-update t)
+  (pilish--refresh-input-preamble))
+
 (defun pilish--push-followup (message)
   "Push MESSAGE onto the follow-up queue."
   (prog1 (push message pilish--followup-queue)
-    (force-mode-line-update t)))
+    (pilish--queue-changed)))
 
 (defun pilish--dequeue-followup ()
   "Dequeue and return the oldest follow-up message, or nil if empty.
@@ -1927,19 +1942,31 @@ Follow-ups are processed in FIFO order: first pushed, first sent."
     (let ((text (car (last pilish--followup-queue))))
       (setq pilish--followup-queue
             (butlast pilish--followup-queue))
-      (force-mode-line-update t)
+      (pilish--queue-changed)
       text)))
 
 (defun pilish--clear-followup-queue ()
   "Clear all pending follow-up messages."
   (when pilish--followup-queue
     (setq pilish--followup-queue nil)
-    (force-mode-line-update t))
+    (pilish--queue-changed))
   nil)
 
 (defun pilish--followups-in-fifo-order ()
   "Return queued follow-up messages in the order they would be sent."
   (reverse pilish--followup-queue))
+
+(defun pilish--queued-steering ()
+  "Return Pi's reported steering messages for the current chat buffer."
+  (append (plist-get (pilish--process-queue-snapshot pilish--process) :steering)
+          nil))
+
+(defun pilish--queued-followups ()
+  "Return the known follow-ups of the current chat buffer, in send order.
+An unavailable backend snapshot contributes no entries, not a claim that
+its queues are empty."
+  (append (plist-get (pilish--process-queue-snapshot pilish--process) :followUp)
+          (pilish--followups-in-fifo-order)))
 
 (defun pilish--restore-input-text (text &optional prompt-image)
   "Restore TEXT and optional PROMPT-IMAGE to the linked input buffer.
@@ -2002,7 +2029,7 @@ example, after prompt or image transformation).")
 
 (cl-defstruct (pilish--prompt-wait (:constructor pilish--make-prompt-wait))
   "Ownership of one prompt request, separate from observed run activity."
-  process accepted started echoed restore-followups disposition)
+  process accepted started echoed restore-followups disposition followup)
 
 (defvar-local pilish--prompt-wait nil
   "Current prompt request record, or nil after its ownership is released.
@@ -2095,32 +2122,39 @@ break dispatch.  See `pilish-session-extension-status'.")
   "Extension widgets of this session, in the order their keys first arrived.
 Elements are (KEY . LINES), LINES being sanitized single lines.")
 
-(defvar-local pilish--extension-widget-overlay nil
-  "Input buffer overlay showing the session's widgets, or nil.")
+(defvar-local pilish--input-preamble-overlay nil
+  "Input buffer overlay showing the lines above the draft, or nil.")
 
 (defface pilish-extension-widget
   '((t :inherit font-lock-doc-face))
   "Face for extension widget lines around the prompt draft."
   :group 'pilish)
 
-(defun pilish--refresh-extension-widgets ()
-  "Show the current chat buffer's widgets above its input buffer's draft.
+(defun pilish--input-preamble-lines ()
+  "Return the lines above the draft of the current chat buffer's session.
+These are the extension widgets, then the queued messages next to the draft."
+  (append (mapcan (lambda (widget)
+                    (mapcar (lambda (line)
+                              (propertize line 'face 'pilish-extension-widget))
+                            (cdr widget)))
+                  (copy-sequence pilish--extension-widgets))
+          (pilish--queue-panel-lines)))
+
+(defun pilish--refresh-input-preamble ()
+  "Show the current chat buffer's lines above its input buffer's draft.
 They live in the before-string of an empty overlay that stays at the
 buffer start, so the draft and the sent text never hold them.  They scroll
 with a draft too long for its window."
-  (let ((lines (mapcan (lambda (widget) (copy-sequence (cdr widget)))
-                       (copy-sequence pilish--extension-widgets)))
-        (input pilish--input-buffer))
-    (when (buffer-live-p input)
-      (with-current-buffer input
-        (when (or lines pilish--extension-widget-overlay)
-          (unless pilish--extension-widget-overlay
-            (setq pilish--extension-widget-overlay
+  (when (buffer-live-p pilish--input-buffer)
+    (let ((lines (pilish--input-preamble-lines)))
+      (with-current-buffer pilish--input-buffer
+        (when (or lines pilish--input-preamble-overlay)
+          (unless pilish--input-preamble-overlay
+            (setq pilish--input-preamble-overlay
                   (make-overlay (point-min) (point-min))))
-          (overlay-put pilish--extension-widget-overlay 'before-string
+          (overlay-put pilish--input-preamble-overlay 'before-string
                        (when lines
-                         (propertize (concat (string-join lines "\n") "\n")
-                                     'face 'pilish-extension-widget))))
+                         (concat (string-join lines "\n") "\n"))))
         (pilish--schedule-fit-input-windows)))))
 
 (defun pilish--set-extension-widget (key lines)
@@ -2134,36 +2168,24 @@ Run in the chat buffer.  A key keeps its position when its widget changes."
           (t (setq pilish--extension-widgets
                    (append pilish--extension-widgets
                            (list (cons key lines)))))))
-  (pilish--refresh-extension-widgets))
+  (pilish--refresh-input-preamble))
 
-(defun pilish--extension-widget-screen-lines (window)
-  "Return the screen lines the widgets of input WINDOW's buffer take."
+(defun pilish--input-preamble-screen-lines (window)
+  "Return the screen lines above the draft of input WINDOW's buffer."
   (let ((chat pilish--chat-buffer)
         (width (max 1 (window-body-width window))))
     (if (buffer-live-p chat)
-        (cl-loop for (_key . lines)
-                 in (buffer-local-value 'pilish--extension-widgets chat)
-                 sum (cl-loop for line in lines
-                              sum (max 1 (ceiling (string-width line) width))))
+        (cl-loop for line in (with-current-buffer chat
+                               (pilish--input-preamble-lines))
+                 sum (max 1 (ceiling (string-width line) width)))
       0)))
-
-(defun pilish--input-draft-screen-lines (window)
-  "Return the screen lines of the draft of input WINDOW's buffer.
-Vertical motion would also count wrapped widget lines, so they leave for it."
-  (let* ((overlay pilish--extension-widget-overlay)
-         (widgets (and overlay (overlay-get overlay 'before-string))))
-    (unwind-protect
-        (progn
-          (when widgets (overlay-put overlay 'before-string nil))
-          (max 1 (count-screen-lines (point-min) (point-max) nil window)))
-      (when widgets (overlay-put overlay 'before-string widgets)))))
 
 (defun pilish--clear-extension-ui ()
   "Forget the extension statuses and widgets of the current chat buffer."
   (let ((keys (mapcar #'car pilish--extension-status)))
     (setq pilish--extension-status nil
           pilish--extension-widgets nil)
-    (pilish--refresh-extension-widgets)
+    (pilish--refresh-input-preamble)
     (dolist (key keys)
       (pilish--run-extension-status-functions key nil))))
 
@@ -2402,11 +2424,17 @@ Resize only when INPUT-WIN is directly below CHAT-WIN and
 
 (defun pilish--input-draft-lines (window limit)
   "Return the screen lines of WINDOW's draft, counting at most LIMIT.
-A trailing newline starts a line of its own, since point can be there."
+A trailing newline starts a line of its own, since point can be there.
+Temporarily hide the preamble; fitting counts its screen lines separately."
   (with-current-buffer (window-buffer window)
-    (save-excursion
-      (goto-char (point-min))
-      (1+ (vertical-motion (max 0 (1- limit)) window)))))
+    (let* ((overlay pilish--input-preamble-overlay)
+           (preamble (and overlay (overlay-get overlay 'before-string))))
+      (unwind-protect
+          (save-excursion
+            (when preamble (overlay-put overlay 'before-string nil))
+            (goto-char (point-min))
+            (1+ (vertical-motion (max 0 (1- limit)) window)))
+        (when preamble (overlay-put overlay 'before-string preamble))))))
 
 (defun pilish--fit-input-chat-window (input-win)
   "Return the chat window directly above INPUT-WIN, or nil."
@@ -2443,8 +2471,14 @@ lines plus any header and mode lines the window shows, up to
                     (round (* pilish-input-window-max-height total))
                   pilish-input-window-max-height))
            (cap (max (1+ chrome) (min cap (- total window-min-height))))
-           ;; One line beyond the cap tells whether the draft overflows.
-           (lines (pilish--input-draft-lines input-win (- (1+ cap) chrome)))
+           (preamble-lines
+            (with-current-buffer (window-buffer input-win)
+              (pilish--input-preamble-screen-lines input-win)))
+           ;; Count the widget/queue overlay once, leaving a bounded draft scan.
+           ;; One line beyond the cap tells whether the content overflows.
+           (lines (+ preamble-lines
+                     (pilish--input-draft-lines
+                      input-win (- (1+ cap) chrome preamble-lines))))
            ;; Ignoring INPUT-WIN's own limits allows less than
            ;; `window-min-height' and moves a preserved size; the chat
            ;; window's limits still bound the change.
@@ -3592,14 +3626,11 @@ Return nil when MESSAGES is empty; otherwise include its exact count."
 
 (defun pilish--header-format-queue (chat-buffer)
   "Format known queued messages belonging to CHAT-BUFFER.
-An unavailable backend snapshot contributes no entries, not a claim that
-its queues are empty.  Follow-ups retain backend order then FIFO order."
+Follow-ups retain backend order then FIFO order."
   (when (buffer-live-p chat-buffer)
     (with-current-buffer chat-buffer
-      (let* ((snapshot (pilish--process-queue-snapshot pilish--process))
-             (followups (append (plist-get snapshot :followUp)
-                                (pilish--followups-in-fifo-order)))
-             (steering (plist-get snapshot :steering))
+      (let* ((followups (pilish--queued-followups))
+             (steering (pilish--queued-steering))
              (count (+ (length followups) (length steering))))
         (when (> count 0)
           (let ((help (mapconcat
@@ -3832,13 +3863,19 @@ Safely handles dead buffers by checking liveness first."
 (defun pilish--send-abort ()
   "Clear backend queues before aborting the current operation.
 Send both commands in wire order.  Their acknowledgments must not release
-local ownership or mutate a later operation on the same process.
-Open extension editors are cancelled in between: Pi's RPC editor request
-has no abort signal, so its waiting tool settles only after a response."
+local ownership or mutate a later operation on the same process; the
+messages Pi removed only return to the draft."
   (when-let* ((proc (pilish--get-process)))
-    (pilish--rpc-async proc '(:type "clear_queue") #'ignore)
-    ;; Cancel tracked dialogs and any remaining editor before aborting so their
-    ;; waiting extension tools settle even though RPC editors lack AbortSignal.
+    (let ((chat-buf (pilish--get-chat-buffer)))
+      (pilish--rpc-async
+       proc '(:type "clear_queue")
+       (lambda (response)
+         (when (buffer-live-p chat-buf)
+           (with-current-buffer chat-buf
+             (pilish--restore-messages (pilish--cleared-messages response)))))))
+    ;; RPC editors have no agent-side AbortSignal option, and Pi never reports
+    ;; dialogs it settles itself.  Cancel pending dialogs after clearing the
+    ;; queue, then abort so their waiting tools settle.
     (pilish--cancel-process-dialogs proc)
     (pilish--close-process-editors proc)
     (pilish--rpc-async proc '(:type "abort") #'ignore)))
