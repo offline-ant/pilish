@@ -122,6 +122,7 @@
 ;;; Code:
 
 (require 'pilish-menu)
+(require 'pilish-shared)
 (require 'pilish-input)
 (require 'pilish-browse)
 (require 'pilish-snapshot)
