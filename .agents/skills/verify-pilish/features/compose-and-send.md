@@ -11,6 +11,7 @@ Pilish opens a chat and input pair, then sends consecutive prompts without losin
 - `compose-fit-input` sizes a `fit` input window to the typed draft, stops at its cap, refits on frame-width changes, and shrinks after sending.
 - `compose-fit-display` preserves a fitted draft when reopening the input, hides after sending in both `on-demand` and `hidden` styles, and reopens empty at one text line. Pressing `i` in the chat window opens or focuses the input in every display style, without the Evil integration.
 - `compose-submit-navigation` returns a scrolled-back chat to the live end on submission, keeps input focus, and preserves the reading position when `pilish-jump-to-end-on-submit` is nil.
+- `compose-queued-messages` shows steering and follow-ups above the draft; its Restore and Clear controls and Stop take them back, and only Stop ends the run.
 
 ## How to get to it (user POV)
 
@@ -22,6 +23,7 @@ Pilish opens a chat and input pair, then sends consecutive prompts without losin
 - Set the global `pilish-input-window-height` option to `fit`, type a multi-line draft, resize the frame, and press `C-c C-c`.
 - Set `pilish-input-window-display` to `on-demand` or `hidden`. Press `i` in the chat window (or run `M-x pilish-open-input`) to compose or reopen the input after sending.
 - Scroll the chat back while composing, then submit with `C-c C-c`. Set `pilish-jump-to-end-on-submit` to nil to keep the reading position instead.
+- While Pi works, queue with `C-c C-s` and `M-RET`, then click Restore or Clear above the draft, press `M-<up>` or `C-c C-u`, or stop with `C-c C-k`.
 
 ## Driving it with Pilish harnesses
 
@@ -38,6 +40,7 @@ Preconditions:
 - **Check the logs.** Require zero statuses, `PASS: TEST-NAME` for each named test, and `0 skipped` in every log. For each stem `layout`, `header`, `send`, `fit`, `resize`, and `display`, run `test "$(cat "$RUN_DIR/STEM.exit")" -eq 0` and `test -s "$RUN_DIR/STEM.log"`, replacing `STEM` with the stem.
 - **Check the captures.** Run `test -s "$RUN_DIR/header/header-in-chat.el"`, `test -s "$RUN_DIR/header/header-in-chat.png"`, `test -s "$RUN_DIR/header/header-in-input.el"`, `test -s "$RUN_DIR/header/header-in-input.png"`, `test -s "$RUN_DIR/fit/fit-capped.el"`, `test -s "$RUN_DIR/fit/fit-capped.png"`, `test -s "$RUN_DIR/resize/fit-narrow.el"`, `test -s "$RUN_DIR/resize/fit-narrow.png"`, `test -s "$RUN_DIR/resize/fit-wide-again.el"`, `test -s "$RUN_DIR/resize/fit-wide-again.png"`, `test -s "$RUN_DIR/display/fit-on-demand-reopened.el"`, `test -s "$RUN_DIR/display/fit-on-demand-reopened.png"`, `test -s "$RUN_DIR/display/fit-hidden-reopened.el"`, and `test -s "$RUN_DIR/display/fit-hidden-reopened.png"`.
 - **Submit while reading earlier text.** Run `G1_CAPTURE="$RUN_DIR/submit" ./test/run-gui-tests.sh --headless pilish-gui-test-submit-jump-to-end-option 2>&1 | tee "$RUN_DIR/submit.log"`. Record `submit.exit`. With Pi style and a long earlier exchange, typing preserves the view. `C-c C-c` returns to the live end with the option on; with it off, the point and viewport stay on the earlier text. Both cases keep input focus and display the fake reply. Require zero status, `PASS: pilish-gui-test-submit-jump-to-end-option`, `0 skipped`, and nonempty `submit/submit-jump-on.png` and `submit/submit-jump-off.png`. `make test-answer` also covers steering, follow-ups, double-RET, refused/empty submissions and hidden chats.
+- **Take queued messages back.** Run `G1_CAPTURE="$RUN_DIR/queue" ./test/run-gui-tests.sh --headless pilish-gui-test-queue-restore-clear-and-stop 2>&1 | tee "$RUN_DIR/queue.log"`. Record `queue.exit`. During a slow fake run, real steering and a local follow-up show above the draft. A real click on Restore moves them into the draft ahead of it, a click on Clear leaves the draft and fills the kill ring, and both keep the run going; `C-c C-k` restores them and stops it. Require zero status, `PASS: pilish-gui-test-queue-restore-clear-and-stop`, `0 skipped`, and nonempty `queue/queue-panel.png`, `queue/queue-restore.png`, `queue/queue-clear.png` and `queue/queue-stop.png`. `make test-queue` covers ordering, the bounded panel, a follow-up being submitted, failed clears and session switches.
 
 ## Gotchas
 
@@ -47,4 +50,4 @@ Preconditions:
 - Input height and maximum height are global options, not session-local settings. `fit` may shrink the input below `window-min-height`; the chat window keeps its minimum.
 - Edits share a pending fit timer until it runs. Commands that yield may allow several fits, so this is not a once-per-command guarantee.
 - The echo area can change the pair's height during the fit test, so the cap is checked against the pair height at that moment.
-- Steering, abort, completion, and image attachment are outside this seed entry. Do not claim them from this run.
+- Completion and image attachment are outside this seed entry, as are steering and abort beyond the queued message journey. Do not claim them from this run.

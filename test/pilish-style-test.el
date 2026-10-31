@@ -442,6 +442,7 @@ Customizing the style installs and removes it in open input buffers."
     (let ((chat (generate-new-buffer " *test-fit-chat*")))
       (unwind-protect
           (progn
+            (set-window-buffer chat-win chat)
             (with-current-buffer chat
               (setq pilish--input-buffer input-buf))
             (with-current-buffer input-buf

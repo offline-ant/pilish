@@ -128,7 +128,7 @@ Required now:
 - `agent_start`
 - `agent_end`
 - `agent_settled`
-- `queue_update` (the empty queue notification from `clear_queue`)
+- `queue_update` (for the single steering slot)
 - `message_start`
 - `message_update`
 - `message_end`
@@ -245,7 +245,8 @@ uses ordinary `prompt`, without a `streamingBehavior` option, for its local FIFO
 `clear_queue` removes the pending text-only steering message and returns
 `data: {"steering": ["removed text"], "followUp": []}` (empty arrays when
 nothing was queued). It emits `queue_update` with empty arrays before its
-correlated response. The fake does not model a complete queue-update stream.
+correlated response. Queuing and delivering a steering message emit `queue_update`
+too. The fake has no backend follow-up queue.
 
 `abort` waits for the worker to settle before acknowledging. Like Pi, abort
 alone does not discard a pending steering continuation: the text-stream
