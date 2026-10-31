@@ -214,6 +214,7 @@ directory, under a free name if another chat has theirs there."
     (pilish--reset-session-state)
     (setq pilish--followup-queue followups
           pilish--prompt-wait prompt-wait)
+    (pilish--queue-changed)
     (pilish--shared-rebuild snapshot)
     (pilish--answer-history-loaded)
     (pilish--refresh-header)

@@ -202,7 +202,7 @@ level to change it.  Set =pilish-header-activity-phase=,
 that field, for example when a window manager's title bar already
 shows it; with the phase hidden, =waiting for Pi= and the no-output
 warning still appear.  =queued N= shows known pending messages.
-Hover it for follow-up and steering previews.  The count can lag and
+The count can lag and
 disappears at zero, which does not mean Pi has finished.
 
 Type in the input buffer and press =C-c C-c= (=M-x pilish-send=) to
@@ -217,7 +217,25 @@ settling, =C-c C-s= queues a local follow-up instead, sent when Pi is
 ready for another prompt.  Press =M-RET= (=M-x pilish-queue-followup=),
 like Alt+Enter in Pi, to queue a follow-up whatever that option says.
 Press =C-c C-k=
-(=M-x pilish-abort=) to abort the current response or compaction.
+(=M-x pilish-abort=) to abort the current response or compaction; queued
+messages return to the draft.
+
+Queued messages show above the draft, like in Pi's terminal UI, with
+their controls below them:
+
+#+begin_example
+Steering: check the Firefox case too
+Follow-up: commit once the tests pass
+↳ [Restore M-<up>] [Clear C-c C-u]
+#+end_example
+
+Click =Restore= or press =M-<up>= (=M-x pilish-restore-queued-messages=),
+like Alt+Up in Pi, to move them into the draft for editing, ahead of what
+you were typing.  Click =Clear= or press =C-c C-u=
+(=M-x pilish-clear-queued-messages=) to discard them; the text stays in
+the kill ring.  Neither stops Pi.  Both act on all queued messages,
+including those another frontend queued on a shared session, because Pi
+has no command to remove a single one.
 
 Submitting a draft returns the chat window in the current frame to the
 end, keeping focus in the input.  This includes steering and queued
@@ -257,6 +275,14 @@ has reported.  An unreported backend queue contributes nothing to
 the count.  Follow-ups include text waiting for prompt acceptance.
 The hover groups follow-ups and steering messages separately, with
 backend follow-ups before local follow-ups in send order.
+
+The panel above the draft shows four messages, then =+N more=.  A
+message disappears when it leaves the queue, which is not proof of
+delivery; its user turn in the chat is.  Restoring and clearing take
+what Pi reports having removed, so a message delivered in the meantime
+stays delivered.  A follow-up already submitted as a prompt stays in the
+queue until Pi answers.  Pi drops messages that extensions queued along
+with the rest; they have no text to restore.
 
 #+html: </details>
 
@@ -709,6 +735,8 @@ The main buffers:
 | =C-c C-s=                 | input        | Send steering message while Pi is busy      |
 | =M-RET=                   | input        | Send prompt, or queue follow-up if busy     |
 | =RET= =RET=               | input        | Send (=pilish-send-on-double-return=)       |
+| =M-<up>=                  | input, chat  | Move queued messages into the draft         |
+| =C-c C-u=                 | input, chat  | Clear queued messages                       |
 | =C-c C-k=                 | input, chat  | Abort current response or compaction        |
 | =C-c C-p=                 | input, chat  | Open the transient menu                     |
 | =C-c C-r=                 | input, chat  | Browse sessions                             |
@@ -849,8 +877,8 @@ positive number to change the threshold, or =nil= to disable it:
 (setopt pilish-session-inactivity-timeout nil)
 #+end_src
 
-Hover the status for help.  To stop the current operation and discard
-queued continuations, press =C-c C-k= (=M-x pilish-abort=).
+Hover the status for help.  To stop the current operation and return
+queued messages to the draft, press =C-c C-k= (=M-x pilish-abort=).
 
 #+html: <details>
 #+html: <summary><strong>Inactivity timing reference</strong></summary>

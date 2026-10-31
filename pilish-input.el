@@ -46,6 +46,7 @@
 ;;   `pilish-history-isearch-backward'  History search (C-r)
 ;;   `pilish-queue-steering'        Steering message (C-c C-s)
 ;;   `pilish-queue-followup'        Follow-up message (M-RET)
+;; `pilish-queue.el' shows queued messages and takes them back.
 
 ;;; Code:
 
@@ -69,9 +70,9 @@ the two."
   "Non-nil means submitting a draft returns its chat window to the end.
 Applies to direct prompts, steering and queued follow-ups accepted from
 an input buffer.  Only the chat window in the submitting frame moves;
-input focus is preserved.  Typing, refused or empty submissions, and
-background sends do not move the view.  Set nil to keep reading earlier
-conversation text after submitting."
+input focus is preserved.  Typing, empty or locally refused submissions,
+and background sends do not move the view.  Set nil to keep reading
+earlier conversation text after submitting."
   :type 'boolean
   :group 'pilish)
 
@@ -419,6 +420,9 @@ markup visibility, mode identity, and keybindings.  Set
   ;; The input window hosts the session header line only when
   ;; `pilish-header-line-location' says so; chat buffers own it by default.
   (pilish--apply-header-line-location)
+  ;; A window fitted to its draft has no rows to spare.  A margin puts the
+  ;; last row in it, so redisplay scrolls away the lines above the draft.
+  (setq-local scroll-margin 0)
   ;; Reset inherited completions (text-mode adds ispell, etc.) — our
   ;; input buffer should only offer slash commands, file refs, and paths.
   (setq-local completion-at-point-functions nil)
@@ -641,9 +645,10 @@ sent to pi."
         (pilish--prepare-and-send text))))))
 
 (defun pilish-abort ()
-  "Stop the current pi operation and discard queued continuations.
+  "Stop the current pi operation and return queued messages to the draft.
 Works while sending, streaming or compacting.  A stop during preflight is
-retained if Pi subsequently starts the accepted prompt."
+retained if Pi subsequently starts the accepted prompt, whose text is
+therefore not restored."
   (interactive)
   (when-let* ((chat-buf (pilish--get-chat-buffer)))
     (with-current-buffer chat-buf
@@ -657,6 +662,7 @@ retained if Pi subsequently starts the accepted prompt."
         (let ((retired (pilish--cancel-tool-times-state)))
           (unwind-protect
               (progn
+                (pilish--restore-messages (pilish--take-unsubmitted-followups))
                 (pilish--clear-followup-queue)
                 (pilish--send-abort))
             (pilish--paint-retired-tool-times retired)))
