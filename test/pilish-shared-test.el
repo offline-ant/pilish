@@ -111,6 +111,54 @@
                    (save-excursion (goto-char (point-min))
                                    (search-forward "hello"))))))))
 
+(defun pilish-shared-test--bash-start (id)
+  "Return the `tool_execution_start' of bash call ID."
+  (list :type "tool_execution_start" :toolCallId id :toolName "bash"
+        :args (list :command "sleep 600")))
+
+(ert-deftest pilish-shared-test-gap-stops-tool-clock ()
+  "A gap stops the clock with the other painters until its snapshot."
+  (pilish-test-with-rpc-session (chat _input proc _commands)
+    (pilish-shared-test--hello proc)
+    (pilish-test--stdout proc '(:type "agent_start")
+                         (pilish-shared-test--bash-start "t1"))
+    (with-current-buffer chat
+      (should pilish--tool-time-timer)
+      (should pilish--running-tool-blocks))
+    (pilish-test--stdout proc '(:type "pimux_gap" :generation 5 :dropped 12))
+    (with-current-buffer chat
+      (should-not pilish--tool-time-timer)
+      (should-not pilish--running-tool-blocks))))
+
+(ert-deftest pilish-shared-test-replayed-tool-start-runs-no-clock ()
+  "A replayed start is not the tool's start; a live one is.
+The replayed tool still gets Pi's recorded duration at completion."
+  (pilish-test-with-rpc-session (chat _input proc _commands)
+    (pilish-shared-test--hello proc)
+    (pilish-test--stdout
+     proc
+     (pilish-shared-test--snapshot 1 "resync" nil :active t :replay 2)
+     '(:type "agent_start")
+     (pilish-shared-test--bash-start "replayed")
+     '(:type "pimux_live" :generation 1))
+    (let ((replayed (with-current-buffer chat (pilish--tool-block-get "replayed"))))
+      (with-current-buffer chat
+        (should (eq (pilish--tool-block-timing replayed) 'untimed))
+        (should-not pilish--tool-time-timer))
+      (pilish-test--stdout proc (pilish-shared-test--bash-start "live"))
+      (with-current-buffer chat
+        (should (pilish--running-tool-time-p
+                 (pilish--tool-block-timing (pilish--tool-block-get "live"))))
+        (should pilish--tool-time-timer))
+      (pilish-test--stdout
+       proc
+       (list :type "tool_execution_end" :toolCallId "replayed" :toolName "bash"
+             :result (list :content (vector (list :type "text" :text "done")))
+             :isError :false :durationMs 125000))
+      (let ((timing (pilish--tool-block-timing replayed)))
+        (should (pilish--recorded-tool-time-p timing))
+        (should (= (pilish--recorded-tool-time-milliseconds timing) 125000))))))
+
 (ert-deftest pilish-shared-test-gap-rebuilds-and-replays-run-in-flight ()
   "After a gap the transcript is rebuilt and the run in flight continues."
   (pilish-test-with-rpc-session (chat _input proc _commands)
