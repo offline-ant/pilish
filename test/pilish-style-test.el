@@ -139,7 +139,7 @@
 (ert-deftest pilish-style-test-pi-hidden-tail-becomes-bottom-padding ()
   "A block ending in a hidden line shows that line as its bottom padding.
 An overlay string with a newline next to a hidden line stops line motion
-and scrolling from moving up past it (Emacs bug#PENDING), so such blocks
+and scrolling from moving up past it (Emacs bug#82151), so such blocks
 have no padding string."
   (pilish-style-test--with-chat 'pi
     (pilish--display-history-messages pilish-style-test--history)
@@ -183,7 +183,7 @@ have no padding string."
 (ert-deftest pilish-style-test-pi-visible-tail-pads-before-its-newline ()
   "A block ending in a visible line has its padding before the last newline.
 A string after that newline would stop motion when the next line starts
-with hidden markup (Emacs bug#PENDING), which only arrives later while
+with hidden markup (Emacs bug#82151), which only arrives later while
 streaming.  A `display' string on the newline is no alternative: a
 narrowing ending there makes `vertical-motion' signal.  The padding row
 takes no line prefix, so a disclosure on the last line is not repeated."
@@ -207,7 +207,7 @@ takes no line prefix, so a disclosure on the last line is not repeated."
 
 (ert-deftest pilish-style-test-pi-custom-hidden-start-paints-the-blank-line ()
   "A custom message starting with hidden text has no padding string.
-The blank line above it becomes the padding row (Emacs bug#PENDING);
+The blank line above it becomes the padding row (Emacs bug#82151);
 one starting with visible text keeps its `before-string'."
   (pilish-style-test--with-chat 'pi
     (pilish--display-history-messages pilish-style-test--history)
