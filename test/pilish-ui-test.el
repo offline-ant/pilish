@@ -3881,7 +3881,7 @@ Binds `chat-win' and `input-win' for use in BODY."
                   (should (string-match-p "Pi may still be working" help))
                   (should (string-match-p "M-x pilish-abort" help))
                   (should (string-match-p "normally C-c C-k" help))
-                  (should (string-match-p "discard queued continuations" help)))
+                  (should (string-match-p "return queued messages to the draft" help)))
                 ;; Redisplay must be pure, not start another observer.
                 (let ((scheduled (copy-sequence timer-list)))
                   (dotimes (_ 3)
