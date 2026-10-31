@@ -10,6 +10,7 @@ Pilish opens a chat and input pair, then sends consecutive prompts without losin
 - `compose-sequential` submits a second prompt after the first turn and returns to idle.
 - `compose-fit-input` sizes a `fit` input window to the typed draft, stops at its cap, refits on frame-width changes, and shrinks after sending.
 - `compose-fit-display` preserves a fitted draft when reopening the input, hides after sending in both `on-demand` and `hidden` styles, and reopens empty at one text line. Pressing `i` in the chat window opens or focuses the input in every display style, without the Evil integration.
+- `compose-submit-navigation` returns a scrolled-back chat to the live end on submission, keeps input focus, and preserves the reading position when `pilish-jump-to-end-on-submit` is nil.
 
 ## How to get to it (user POV)
 
@@ -20,6 +21,7 @@ Pilish opens a chat and input pair, then sends consecutive prompts without losin
 - Enter and send another prompt after the first reply.
 - Set the global `pilish-input-window-height` option to `fit`, type a multi-line draft, resize the frame, and press `C-c C-c`.
 - Set `pilish-input-window-display` to `on-demand` or `hidden`. Press `i` in the chat window (or run `M-x pilish-open-input`) to compose or reopen the input after sending.
+- Scroll the chat back while composing, then submit with `C-c C-c`. Set `pilish-jump-to-end-on-submit` to nil to keep the reading position instead.
 
 ## Driving it with Pilish harnesses
 
@@ -35,6 +37,7 @@ Preconditions:
 - **Compose on demand.** Run `G1_CAPTURE="$RUN_DIR/display" ./test/run-gui-tests.sh --headless pilish-gui-test-input-fit-with-hide-after-send 2>&1 | tee "$RUN_DIR/display.log"`. Record `display.exit`. The test checks both display styles at launch, closes and reopens a three-line draft with keys, sends with `C-c C-c`, verifies the input disappears, and reopens an empty one-line input by pressing `i` in the chat window. It writes `fit-on-demand-draft`, `fit-on-demand-sent`, `fit-on-demand-reopened`, and the corresponding `fit-hidden-*` observations and PNG frames.
 - **Check the logs.** Require zero statuses, `PASS: TEST-NAME` for each named test, and `0 skipped` in every log. For each stem `layout`, `header`, `send`, `fit`, `resize`, and `display`, run `test "$(cat "$RUN_DIR/STEM.exit")" -eq 0` and `test -s "$RUN_DIR/STEM.log"`, replacing `STEM` with the stem.
 - **Check the captures.** Run `test -s "$RUN_DIR/header/header-in-chat.el"`, `test -s "$RUN_DIR/header/header-in-chat.png"`, `test -s "$RUN_DIR/header/header-in-input.el"`, `test -s "$RUN_DIR/header/header-in-input.png"`, `test -s "$RUN_DIR/fit/fit-capped.el"`, `test -s "$RUN_DIR/fit/fit-capped.png"`, `test -s "$RUN_DIR/resize/fit-narrow.el"`, `test -s "$RUN_DIR/resize/fit-narrow.png"`, `test -s "$RUN_DIR/resize/fit-wide-again.el"`, `test -s "$RUN_DIR/resize/fit-wide-again.png"`, `test -s "$RUN_DIR/display/fit-on-demand-reopened.el"`, `test -s "$RUN_DIR/display/fit-on-demand-reopened.png"`, `test -s "$RUN_DIR/display/fit-hidden-reopened.el"`, and `test -s "$RUN_DIR/display/fit-hidden-reopened.png"`.
+- **Submit while reading earlier text.** Run `G1_CAPTURE="$RUN_DIR/submit" ./test/run-gui-tests.sh --headless pilish-gui-test-submit-jump-to-end-option 2>&1 | tee "$RUN_DIR/submit.log"`. Record `submit.exit`. With Pi style and a long earlier exchange, typing preserves the view. `C-c C-c` returns to the live end with the option on; with it off, the point and viewport stay on the earlier text. Both cases keep input focus and display the fake reply. Require zero status, `PASS: pilish-gui-test-submit-jump-to-end-option`, `0 skipped`, and nonempty `submit/submit-jump-on.png` and `submit/submit-jump-off.png`. `make test-answer` also covers steering, follow-ups, double-RET, refused/empty submissions and hidden chats.
 
 ## Gotchas
 

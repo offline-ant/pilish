@@ -4,7 +4,8 @@
 
 ;; Tests for `pilish-jump-to-answer': landing on the final answer when a
 ;; turn ends or the reader arrives, once per answer, and following again
-;; on the next turn.
+;; on the next turn.  Submission viewport tests cover returning from older
+;; text to the live end without changing input focus.
 
 ;;; Code:
 
@@ -281,6 +282,103 @@ Return the start of the answer's first line."
             (should-not (buffer-local-value 'pilish-jump-to-answer buffer))
             (should (default-value 'pilish-jump-to-answer)))
         (kill-buffer input)))))
+
+;;;; Submission viewport
+
+(defmacro pilish-answer-test--with-input (&rest body)
+  "Run BODY with `input' below the chat's `window', selected for typing."
+  (declare (indent 0) (debug t))
+  `(pilish-answer-test--with-chat
+     (let ((input (generate-new-buffer " *pilish-submit-input*"))
+           (pilish-input-window-display 'always))
+       (unwind-protect
+           (progn
+             (pilish--append-to-chat
+              (concat (pilish-answer-test--lines "Earlier" 100) "\n"))
+             (goto-char (point-min))
+             (set-window-start window (point-min))
+             (setq pilish--input-buffer input)
+             (let ((input-window (split-window window -5 'below)))
+               (set-window-buffer input-window input)
+               (with-current-buffer input
+                 (pilish-input-mode)
+                 (setq pilish--chat-buffer buffer))
+               (select-window input-window)
+               ,@body))
+         (kill-buffer input)))))
+
+(ert-deftest pilish-answer-test-submit-jumps-by-default ()
+  "Submission jumping is enabled unless explicitly disabled."
+  (should (default-value 'pilish-jump-to-end-on-submit)))
+
+(ert-deftest pilish-answer-test-submit-viewport-and-focus ()
+  "Accepted drafts follow the end only when enabled, with input focus kept."
+  (dolist (enabled '(t nil))
+    (dolist (kind '(direct follow-up steer double-return))
+      (pilish-answer-test--with-input
+        (let ((pilish-jump-to-end-on-submit enabled)
+              (pilish-send-on-double-return 0.4)
+              (last-command 'pilish-newline-or-send)
+              (this-command 'pilish-newline-or-send)
+              (start (window-start window))
+              (position (window-point window)))
+          (with-current-buffer buffer
+            (setq pilish--status (if (memq kind '(follow-up steer))
+                                     'streaming 'idle)))
+          (insert "new prompt")
+          ;; Composing alone never changes the reading position.
+          (should (= (window-point window) position))
+          (cl-letf (((symbol-function 'pilish--prepare-and-send)
+                     (lambda (text &rest _) (pilish--display-user-message text)))
+                    ((symbol-function 'pilish--send-steer-message)
+                     (lambda (_) t))
+                    ((symbol-function 'input-pending-p) (lambda () nil)))
+            (pcase kind
+              ('direct (pilish-send))
+              ('follow-up (pilish-queue-followup))
+              ('steer (pilish-queue-steering))
+              ('double-return
+               (insert "\n")
+               (setq pilish--last-return (cons (float-time) (point)))
+               (pilish-newline-or-send))))
+          (should (string-empty-p (buffer-string)))
+          (should (eq (selected-window) input-window))
+          (with-current-buffer buffer
+            (if enabled
+                (progn
+                  (should (= (window-point window) (point-max)))
+                  (should (> (window-start window) start)))
+              (should (= (window-point window) position))
+              (should (= (window-start window) start)))))))))
+
+(ert-deftest pilish-answer-test-refused-submit-keeps-reading-position ()
+  "Empty, refused and unavailable-steering submissions do not move the chat."
+  (dolist (text '("" "/compact" "steer without a process"))
+    (pilish-answer-test--with-input
+      (let ((position (window-point window))
+            (start (window-start window))
+            (pilish-jump-to-end-on-submit t))
+        (with-current-buffer buffer (setq pilish--status 'streaming))
+        (insert text)
+        (if (string-prefix-p "steer" text)
+            (pilish-queue-steering)
+          (pilish-send))
+        (should (equal (buffer-string) text))
+        (should (= (window-point window) position))
+        (should (= (window-start window) start))))))
+
+(ert-deftest pilish-answer-test-submit-does-not-display-hidden-chat ()
+  "Queuing a draft never opens a hidden chat or moves its stored point."
+  (pilish-answer-test--with-input
+    (with-current-buffer buffer (setq pilish--status 'streaming))
+    (set-window-buffer window "*scratch*")
+    (let ((position (with-current-buffer buffer (point)))
+          (pilish-jump-to-end-on-submit t))
+      (insert "queued while hidden")
+      (pilish-queue-followup)
+      (should-not (get-buffer-window buffer))
+      (should (= (with-current-buffer buffer (point)) position))
+      (should (eq (selected-window) input-window)))))
 
 (provide 'pilish-answer-test)
 ;;; pilish-answer-test.el ends here

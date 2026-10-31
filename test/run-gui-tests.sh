@@ -85,6 +85,7 @@ cat >> "$RUNNER_FILE" << EOF
 ;; Load test utilities and tests
 (require 'pilish-gui-test-utils)
 (require 'pilish-gui-tests)
+(require 'pilish-submit-gui-tests)
 
 ;; Redirect messages to file for results
 (defvar pilish-gui-test--output-file "$RESULTS_FILE")
