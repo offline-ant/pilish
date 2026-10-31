@@ -60,6 +60,9 @@
 (declare-function pilish-open-subagent-snapshot "pilish-snapshot" (&optional target))
 (declare-function pilish--seed-input-history "pilish-input" (input-buf messages))
 (declare-function pilish--cancel-process-dialogs "pilish-dialog" (process))
+(declare-function pilish--shared-handle-record "pilish-shared" (event))
+(declare-function pilish--shared-note-ui-replay "pilish-shared" (proc event))
+(declare-function pilish--shared-refresh-after-run "pilish-shared" (proc))
 ;; Declare the Emacs 29 minimum API.  Adding Emacs 30's optional TAG here makes
 ;; its byte compiler pad three-argument calls, producing incompatible bytecode.
 (declare-function treesit-parser-create "treesit.c"
@@ -1662,6 +1665,7 @@ See URL `https://github.com/dnouri/pilish/issues/176'."
 Dispatches to appropriate handler based on method."
   (let ((method (plist-get event :method))
         (proc pilish--process))
+    (pilish--shared-note-ui-replay proc event)
     (pcase method
       ("notify"         (pilish--extension-ui-notify event))
       ((or "confirm" "select" "input" "editor")
@@ -1717,8 +1721,7 @@ which asks upfront before any buffers are touched."
                                                pilish--session-transition-process))))
       (when (processp proc)
         (pilish--unregister-display-handler proc)
-        (when (process-live-p proc)
-          (delete-process proc))))
+        (pilish--terminate-process proc)))
     (when (and pilish--input-buffer (buffer-live-p pilish--input-buffer))
       (let ((input-buf pilish--input-buffer))
         ;; Break the cycle both ways: a buffer killed again from its own
@@ -1785,6 +1788,8 @@ which asks upfront before any buffers are touched."
   "Mark current chat buffer idle after PROCESS exits with RESPONSE."
   (when (eq pilish--process process)
     (let ((error-msg (or (plist-get response :error) "Process exited")))
+      (when (pilish--process-shared-p process)
+        (setq pilish--exited-shared-process process))
       (setq pilish--status 'idle)
       (setq pilish--state
             (plist-put pilish--state :last-error error-msg))
@@ -1889,7 +1894,10 @@ Updates buffer-local state and renders display updates."
      (pilish--note-prompt-start)
      ;; Dialogs a run asks come after its start, so older ones lost their
      ;; question; Pi may have settled them already without telling us.
-     (when pilish--process
+     ;; A shared process reports closed dialogs, and another frontend's
+     ;; run may start while a command's dialog still waits.
+     (when (and pilish--process
+                (not (pilish--process-shared-p pilish--process)))
        (pilish--cancel-process-dialogs pilish--process))
      (pilish--display-agent-start)
      (when pilish--aborted
@@ -2116,7 +2124,7 @@ Updates buffer-local state and renders display updates."
      (pilish--update-hot-tail-boundary)
      (pilish--queue-tool-cooling-outside-hot-tail)
      (pilish--answer-turn-end))
-    ("agent_settled" nil)
+    ("agent_settled" (pilish--shared-refresh-after-run pilish--process))
     ("auto_retry_start"
      (pilish--display-retry-start event))
     ("auto_retry_end"
@@ -2126,7 +2134,17 @@ Updates buffer-local state and renders display updates."
     ("extension_error"
      (pilish--display-extension-error event))
     ("extension_ui_request"
-     (pilish--handle-extension-ui-request event)))
+     (pilish--handle-extension-ui-request event))
+    ("thinking_level_changed"
+     (setq pilish--state
+           (plist-put pilish--state :thinking-level (plist-get event :level)))
+     (force-mode-line-update t))
+    ("session_info_changed"
+     (let ((name (plist-get event :name)))
+       (setq pilish--session-name (and (stringp name) name)))
+     (force-mode-line-update t))
+    ((and (pred stringp) type (guard (string-prefix-p "pimux_" type)))
+     (pilish--shared-handle-record event)))
     (pilish--flush-chat-notices)))
 
 
