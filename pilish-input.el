@@ -65,6 +65,16 @@ the two."
                  (const :tag "Steer the current run" steer))
   :group 'pilish)
 
+(defcustom pilish-jump-to-end-on-submit t
+  "Non-nil means submitting a draft returns its chat window to the end.
+Applies to direct prompts, steering and queued follow-ups accepted from
+an input buffer.  Only the chat window in the submitting frame moves;
+input focus is preserved.  Typing, refused or empty submissions, and
+background sends do not move the view.  Set nil to keep reading earlier
+conversation text after submitting."
+  :type 'boolean
+  :group 'pilish)
+
 ;;;; Sending with a double RET
 
 (defcustom pilish-send-on-double-return nil
@@ -553,13 +563,20 @@ replaces the previous draft image."
 
 (defun pilish--accept-input-text (text &optional prompt-image)
   "Accept TEXT from input buffer state, consuming optional PROMPT-IMAGE.
-Adds only TEXT to history, resets history navigation, and clears input."
+Adds only TEXT to history, resets history navigation, and clears input.
+Return the visible chat to its end when `pilish-jump-to-end-on-submit' is on."
   (pilish--history-add text)
   (setq pilish--input-ring-index nil
         pilish--input-saved nil)
   (when prompt-image
     (pilish--clear-prompt-image))
-  (erase-buffer))
+  (erase-buffer)
+  (when pilish-jump-to-end-on-submit
+    (when-let* ((chat (pilish--get-chat-buffer))
+                (window (get-buffer-window chat)))
+      (with-selected-window window
+        (goto-char (point-max))
+        (recenter -1)))))
 
 (defun pilish--queue-followup-text (chat-buf text)
   "Accept TEXT and enqueue it as a follow-up in CHAT-BUF."

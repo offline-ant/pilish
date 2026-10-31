@@ -219,6 +219,13 @@ like Alt+Enter in Pi, to queue a follow-up whatever that option says.
 Press =C-c C-k=
 (=M-x pilish-abort=) to abort the current response or compaction.
 
+Submitting a draft returns the chat window in the current frame to the
+end, keeping focus in the input.  This includes steering and queued
+follow-ups; typing alone does not move the chat.  Set
+=pilish-jump-to-end-on-submit= to =nil= to keep your reading position
+when submitting.  Background submissions and automatic queue delivery
+never trigger this jump, and a hidden chat is not opened.
+
 To send with a quick double =RET= instead of =C-c C-c=, set
 =pilish-send-on-double-return= to a number of seconds, such as =0.4=.
 A second =RET= within that time at the end of the draft removes the
