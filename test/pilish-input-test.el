@@ -5691,6 +5691,11 @@ reads it through the session link instead of the current buffer."
       (should (eq (lookup-key map [header-line mouse-1])
                   #'pilish-cycle-thinking))
       (should (eq (lookup-key map [header-line mouse-2])
+                  #'pilish-cycle-thinking))
+      ;; Users may show the status line as the input's mode line.
+      (should (eq (lookup-key map [mode-line mouse-1])
+                  #'pilish-cycle-thinking))
+      (should (eq (lookup-key map [mode-line mouse-2])
                   #'pilish-cycle-thinking)))))
 
 (ert-deftest pilish-test-header-format-context-returns-nil-when-no-window ()
