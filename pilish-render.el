@@ -63,6 +63,7 @@
 (declare-function pilish--shared-handle-record "pilish-shared" (event))
 (declare-function pilish--shared-note-ui-replay "pilish-shared" (proc event))
 (declare-function pilish--shared-refresh-after-run "pilish-shared" (proc))
+(declare-function pilish--shared-replaying-p "pilish-shared" ())
 ;; Declare the Emacs 29 minimum API.  Adding Emacs 30's optional TAG here makes
 ;; its byte compiler pad three-argument calls, producing incompatible bytecode.
 (declare-function treesit-parser-create "treesit.c"
@@ -2045,7 +2046,8 @@ Updates buffer-local state and renders display updates."
          (unless block
            (setq block (pilish--display-tool-start
                         (plist-get event :toolName) args tool-call-id)))
-         (pilish--tool-block-start-execution block boundary-time args)
+         (pilish--tool-block-start-execution
+          block (unless (pilish--shared-replaying-p) boundary-time) args)
          (pilish--argument-observe
           block nil (plist-get event :toolName) args)
          (when (equal (plist-get event :toolName) "codemode")
@@ -4139,10 +4141,14 @@ needed for compatibility, the current non-keyed pending block."
 
 (defun pilish--tool-block-start-execution (block time args)
   "Start BLOCK's live timing once at local seconds TIME with authoritative ARGS.
-Repeated starts never reset the estimate or reopen terminal timing."
+Nil TIME means the start time is unknown, so no estimate runs; Pi's recorded
+duration still applies at completion.  Repeated starts never reset the estimate
+or reopen terminal timing."
   (unless (pilish--tool-block-timing block)
     (setf (pilish--tool-block-timing block)
-          (if pilish--aborted 'untimed (pilish--make-running-tool-time time))))
+          (if (or pilish--aborted (null time))
+              'untimed
+            (pilish--make-running-tool-time time))))
   (setf (pilish--tool-block-args block) args)
   (when (pilish--running-tool-clock-p block)
     (cl-pushnew block pilish--running-tool-blocks :test #'eq)
