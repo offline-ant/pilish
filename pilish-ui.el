@@ -2330,9 +2330,13 @@ Return nil to abort the exit."
 
 (defun pilish--retarget-session-buffers (dir)
   "Retarget the current chat/input session buffers to DIR."
+  (let ((chat-buf (pilish--get-chat-buffer)))
+    (pilish--retarget-session-identity
+     dir (and (buffer-live-p chat-buf) (pilish--chat-session-name chat-buf)))))
+
+(defun pilish--retarget-session-identity (dir session)
+  "Retarget the current chat/input session buffers to session SESSION of DIR."
   (let* ((chat-buf (pilish--get-chat-buffer))
-         (session (and (buffer-live-p chat-buf)
-                       (pilish--chat-session-name chat-buf)))
          (input-buf (and (buffer-live-p chat-buf)
                          (buffer-local-value 'pilish--input-buffer
                                              chat-buf)))
@@ -2348,7 +2352,9 @@ Return nil to abort the exit."
       (with-current-buffer input-buf
         (setq default-directory dir)
         (rename-buffer (pilish--buffer-name :input dir session))
-        (pilish--set-chat-buffer chat-buf)))))
+        (pilish--set-chat-buffer chat-buf)))
+    (with-current-buffer chat-buf
+      (pilish--note-session-identity))))
 
 ;;;; Display
 
@@ -3762,6 +3768,35 @@ the session's input buffer."
                        (when (buffer-live-p chat-buf)
                          (pilish--force-header-line-update chat-buf)))))))
 
+(defvar pilish-session-identity-functions nil
+  "Functions called with CHAT-BUFFER after its session identity changed.
+The identity is the session file (`pilish-session-file'), the session
+directory (`pilish-session-directory') and the chat buffer's name.  They
+change when the session is first reported, resumed, forked or replaced,
+also from another frontend sharing the process.  Errors are reported as
+warnings and never break dispatch.")
+
+(defvar-local pilish--announced-session-identity nil
+  "Session identity last reported to `pilish-session-identity-functions'.")
+
+(defun pilish--note-session-identity ()
+  "Run `pilish-session-identity-functions' if the current chat's identity changed."
+  (let ((identity (list (plist-get pilish--state :session-file)
+                        (pilish--chat-session-directory)
+                        (buffer-name))))
+    (unless (equal identity pilish--announced-session-identity)
+      (setq pilish--announced-session-identity identity)
+      (let ((chat-buffer (current-buffer)))
+        (dolist (function pilish-session-identity-functions)
+          (condition-case-unless-debug err
+              (funcall function chat-buffer)
+            (error
+             (display-warning
+              'pilish
+              (format "Session identity function %S failed: %s"
+                      function (error-message-string err))
+              :error))))))))
+
 (defun pilish--apply-state-response (chat-buf response)
   "Apply get_state RESPONSE to CHAT-BUF.
 Updates buffer-local state variables and refreshes mode-line.
@@ -3788,6 +3823,7 @@ Safely handles dead buffers by checking liveness first."
           (plist-put new-state :status new-status)
           (setq pilish--status new-status
                 pilish--state new-state)))
+      (pilish--note-session-identity)
       (pilish--reconcile-inactivity-timer)
       (force-mode-line-update t))))
 

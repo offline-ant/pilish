@@ -30,7 +30,7 @@ SELECTOR ?=
 # Example: make test VERBOSE=1
 VERBOSE ?=
 
-.PHONY: test test-unit test-core test-ui test-render test-arguments test-table test-input test-menu test-browse test-jsonl test-snapshot test-build test-answer test-session-api test-dialog test-style test-pair test-terminal-image
+.PHONY: test test-unit test-core test-ui test-render test-arguments test-table test-input test-menu test-browse test-jsonl test-snapshot test-build test-answer test-session-api test-dialog test-shared test-style test-pair test-terminal-image
 .PHONY: test-integration test-integration-fake test-integration-real test-integration-ci test-integration-ci-real test-gui test-gui-ci test-all
 .PHONY: bench bench-batch bench-reload-resume bench-reload-resume-batch bench-reload-resume-smoke
 .PHONY: bench-tool-update bench-tool-update-batch bench-tool-update-smoke
@@ -128,6 +128,7 @@ test: .deps-stamp
 		-l pilish-core-test \
 		-l pilish-session-api-test \
 		-l pilish-dialog-test \
+		-l pilish-shared-test \
 		-l pilish-style-test \
 		-l pilish-pair-test \
 		-l pilish-terminal-image-test \
@@ -172,6 +173,8 @@ test-session-api: .deps-stamp
 	@$(BATCH_TEST) -l pilish-session-api-test $(ERT_RUN)
 test-dialog: .deps-stamp
 	@$(BATCH_TEST) -l pilish-dialog-test $(ERT_RUN)
+test-shared: .deps-stamp
+	@$(BATCH_TEST) -l pilish-shared-test $(ERT_RUN)
 test-style: .deps-stamp
 	@$(BATCH_TEST) -l pilish-style-test $(ERT_RUN)
 
@@ -403,7 +406,7 @@ compile: .deps-stamp
 		--eval "(package-initialize)" \
 		$(LOCAL_LOAD_PATH) \
 		--eval "(setq byte-compile-error-on-warn t)" \
-		-f batch-byte-compile scripts/pilish-build.el scripts/install-deps.el scripts/install-ts-grammars.el pilish-core.el pilish-jsonl.el pilish-grammars.el pilish-ui.el pilish-answer.el pilish-dialog.el pilish-style.el pilish-terminal-image.el pilish-pair.el pilish-table.el pilish-render.el pilish-snapshot.el pilish-input.el pilish-menu.el pilish-browse.el pilish-evil.el pilish.el
+		-f batch-byte-compile scripts/pilish-build.el scripts/install-deps.el scripts/install-ts-grammars.el pilish-core.el pilish-jsonl.el pilish-grammars.el pilish-ui.el pilish-answer.el pilish-dialog.el pilish-style.el pilish-terminal-image.el pilish-pair.el pilish-table.el pilish-render.el pilish-snapshot.el pilish-input.el pilish-menu.el pilish-shared.el pilish-browse.el pilish-evil.el pilish.el
 
 lint: lint-checkdoc lint-package
 
@@ -429,6 +432,7 @@ lint-checkdoc:
 		--eval "(checkdoc-file \"pilish-snapshot.el\")" \
 		--eval "(checkdoc-file \"pilish-input.el\")" \
 		--eval "(checkdoc-file \"pilish-menu.el\")" \
+		--eval "(checkdoc-file \"pilish-shared.el\")" \
 		--eval "(checkdoc-file \"pilish-browse.el\")" \
 		--eval "(checkdoc-file \"pilish-evil.el\")" \
 		--eval "(checkdoc-file \"pilish.el\")" 2>&1); \
@@ -447,7 +451,7 @@ lint-package:
 		            (package-install 'package-lint)))" \
 		--eval "(require 'package-lint)" \
 		--eval "(setq package-lint-main-file \"pilish.el\")" \
-		-f package-lint-batch-and-exit pilish.el pilish-ui.el pilish-answer.el pilish-dialog.el pilish-style.el pilish-terminal-image.el pilish-pair.el pilish-table.el pilish-render.el pilish-snapshot.el pilish-input.el pilish-menu.el pilish-browse.el pilish-core.el pilish-jsonl.el pilish-grammars.el
+		-f package-lint-batch-and-exit pilish.el pilish-ui.el pilish-answer.el pilish-dialog.el pilish-style.el pilish-terminal-image.el pilish-pair.el pilish-table.el pilish-render.el pilish-snapshot.el pilish-input.el pilish-menu.el pilish-shared.el pilish-browse.el pilish-core.el pilish-jsonl.el pilish-grammars.el
 
 check: compile lint test
 

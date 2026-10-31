@@ -1534,7 +1534,12 @@ resolves the session from a chat or input buffer.  =pilish-session-process= and
 =pilish-submit-prompt= submits without modifying a draft and acknowledges
 actual RPC acceptance; while Pi is busy, Pi queues the prompt itself.
 =pilish-reload= takes an optional callback, called exactly once with nil or
-a failure reason.
+a failure reason.  A process shared through pimux stops first, and its
+replacement opens the session file once its Pi has exited.
+=pilish-restart-refusal-functions= receive the chat buffer and can refuse
+replacing its process by returning the reason, for a host that tracks the
+process; =pilish-reload= then reloads in place if Pi has an extension command
+=reload=, and otherwise reports the reason.
 =pilish-close-session= stops only the explicitly supplied session without a
 confirmation prompt; callers must establish ownership.
 
@@ -1544,6 +1549,24 @@ and returns an environment alist.  This runs before the initial spawn for
 both interactive and non-displaying sessions; the result is retained on reload.
 Explicit =:environment= entries take precedence, then functions in hook order.
 Pilish itself does not depend on an Emacs server or any external integration.
+
+=pilish-session-identity-functions= is called with the chat buffer whenever
+its session file, directory or buffer name changes: when Pi first reports
+the session, and after a resume, fork, new session or a change made by
+another frontend sharing the process.
+
+*** Sharing a session with other frontends
+
+With =pilish-executable= set to =("pimux" "--" "pi")=, Pi runs under
+pi-ant's =pimux=, and other frontends (such as Tau in a phone browser)
+can attach to the same Pi process.  Every frontend then sees the same
+conversation live: prompts, steering, replies, tools and questions from any
+of them.  A question answered elsewhere disappears here; a model, thinking
+level or session name change shows up at once.  When another frontend
+starts a new session, resumes or forks, the chat follows in place: same
+buffers, draft and queued follow-ups, its history rebuilt from the new
+session.  =pilish-session-mux= returns the shared process's identity.
+Closing a shared session ends its Pi for every frontend.
 
 ** Custom input-window layouts
 
