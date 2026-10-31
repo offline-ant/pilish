@@ -20,7 +20,9 @@
 ;; Pi never reports requests it settles itself.  A request closes when it is
 ;; answered, cancelled, expires (its own timeout), its session is stopped
 ;; (`pilish-abort' cancels pending requests before aborting), a new run
-;; starts (agent_start cancels older requests), or its process exits.
+;; starts (agent_start cancels older requests), or its process exits.  A
+;; process shared through pimux reports closed requests instead, so there
+;; a new run cancels nothing (`pilish-shared').
 
 ;;; Code:
 
@@ -175,7 +177,15 @@ signal in Pi, so only its cancellation lets the waiting tool settle."
 (defun pilish--handle-extension-dialog (event proc)
   "Register the dialog EVENT owned by PROC and ask the user.
 Editor requests open an editor buffer; the others follow
-`pilish-extension-dialog-style'."
+`pilish-extension-dialog-style'.  A request that is already pending was
+announced again (a shared process's snapshot replays open dialogs): it
+loses its `:pilish-stale' mark and is not asked twice."
+  (if (pilish--extension-dialog-request proc (plist-get event :id))
+      (pilish--extension-dialog-set proc (plist-get event :id) :pilish-stale nil)
+    (pilish--ask-extension-dialog event proc)))
+
+(defun pilish--ask-extension-dialog (event proc)
+  "Register the new dialog EVENT owned by PROC and ask the user."
   (let ((request (pilish--extension-dialog-open proc event)))
     (cond
      ((equal (plist-get event :method) "editor")

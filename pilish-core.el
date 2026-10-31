@@ -645,11 +645,106 @@ from dead processes are unavailable."
   "Handle an EVENT from pi PROC.
 Calls only the handler registered for this specific process."
   ;; Observe before display registration or adoption, including reload candidates.
-  (when (equal (plist-get event :type) "queue_update")
-    (process-put proc 'pilish-queue-snapshot event))
+  (pcase (plist-get event :type)
+    ("queue_update" (process-put proc 'pilish-queue-snapshot event))
+    ("pimux_hello" (pilish--note-shared-process proc event)))
   ;; Call only this process's handler
   (when-let* ((handler (process-get proc 'pilish-display-handler)))
     (funcall handler event)))
+
+;;;; Shared processes
+
+;; pimux runs Pi for one frontend and lets others attach to the same
+;; process; its first record, `pimux_hello', marks the process shared.
+;; `pilish-shared' handles the rest of its protocol.
+
+(defun pilish--process-shared-p (process)
+  "Return PROCESS's `pimux_hello' record when other frontends may share it."
+  (and (processp process) (process-get process 'pilish-mux)))
+
+(defun pilish--note-shared-process (process hello)
+  "Record PROCESS as shared from its HELLO, with its Pi's start time.
+A replacement process says hello before it is its chat's process."
+  (process-put process 'pilish-mux hello)
+  (let* ((chat (process-get process 'pilish-chat-buffer))
+         (default-directory (if (buffer-live-p chat)
+                                (buffer-local-value 'default-directory chat)
+                              default-directory)))
+    (process-put process 'pilish-mux-pi-start
+                 (alist-get 'start (process-attributes (plist-get hello :piPid))))))
+
+(defconst pilish--shared-close-seconds 5
+  "Seconds a shared Pi has to exit after end of input before it is killed.")
+
+(defconst pilish--shared-kill-seconds 1
+  "Seconds a killed shared Pi has to disappear before stopping fails.")
+
+(defconst pilish--shared-stop-poll-seconds 0.05
+  "Seconds between checks that a stopping shared process is gone.")
+
+(defun pilish--shared-pi-running-p (process)
+  "Return non-nil while the Pi of shared PROCESS runs.
+PROCESS is pimux, which outlives Pi unless it is killed: Pi then still
+finishes on its own, writing its session file.  The start time recorded
+at `pimux_hello' keeps a recycled PID from counting as Pi.
+`default-directory' selects the host."
+  (when-let* ((pid (plist-get (process-get process 'pilish-mux) :piPid))
+              (recorded (process-get process 'pilish-mux-pi-start))
+              (attributes (process-attributes pid))
+              (start (alist-get 'start attributes)))
+    (and (not (equal (alist-get 'state attributes) "Z"))
+         ;; Emacs derives it from the uptime on each call, so it varies a little.
+         (< (abs (- (float-time start) (float-time recorded))) 2))))
+
+(defun pilish--poll-shared-stop (process kill-time give-up-time callback)
+  "Call CALLBACK once PROCESS and its Pi are gone, killing them at KILL-TIME.
+CALLBACK gets nil, or a reason when something still runs at GIVE-UP-TIME."
+  (let ((directory default-directory)
+        (now (float-time)))
+    (cond
+     ((not (or (process-live-p process) (pilish--shared-pi-running-p process)))
+      (funcall callback nil))
+     ((> now give-up-time)
+      (funcall callback "Pi did not exit"))
+     (t
+      (when (and kill-time (>= now kill-time))
+        (setq kill-time nil)
+        (when (pilish--shared-pi-running-p process)
+          (ignore-errors
+            (signal-process (plist-get (process-get process 'pilish-mux) :piPid)
+                            'SIGKILL directory)))
+        (when (process-live-p process)
+          (delete-process process)))
+      (run-at-time pilish--shared-stop-poll-seconds nil
+                   (lambda ()
+                     (let ((default-directory directory))
+                       (pilish--poll-shared-stop
+                        process kill-time give-up-time callback))))))))
+
+(defun pilish--stop-shared-process (process callback)
+  "Stop shared PROCESS and its Pi, then call CALLBACK with nil or a reason.
+End of input makes pimux stop Pi and tell the other frontends, which
+killing pimux would not.  What still runs `pilish--shared-close-seconds'
+later is killed.  PROCESS may be gone already while its Pi, which then
+saw its input end, is not.  CALLBACK runs with this `default-directory',
+possibly at once."
+  (let* ((unreachable (and (process-live-p process)
+                           (condition-case nil
+                               (progn (process-send-eof process) nil)
+                             (error t))))
+         (kill-time (+ (float-time) (if unreachable 0 pilish--shared-close-seconds))))
+    (pilish--poll-shared-stop process kill-time
+                              (+ kill-time pilish--shared-kill-seconds)
+                              callback)))
+
+(defun pilish--terminate-process (process)
+  "Stop the live pi PROCESS without waiting for it.
+Only a shared process gets to finish (`pilish--stop-shared-process');
+others are killed at once."
+  (when (process-live-p process)
+    (if (pilish--process-shared-p process)
+        (pilish--stop-shared-process process #'ignore)
+      (delete-process process))))
 
 (defconst pilish--process-stderr-max-chars 4000
   "Maximum number of stderr characters to keep in process exit excerpts.")
@@ -816,6 +911,16 @@ Local commands may mark a session busy before the first event arrives,
 for example normal prompt submission and manual compaction during the
 RPC pre-event window.")
 
+(defvar-local pilish--exited-shared-process nil
+  "The shared process that last exited in this chat, or nil.
+Its Pi can outlive it, so reopening the session file waits for that.")
+
+(defvar-local pilish--settle-releases-streaming nil
+  "Non-nil when the next agent_settled also ends `streaming'.
+A shared process's snapshot replays an active run's agent_start but never
+its agent_end, so a run that ended before the snapshot settles from
+`streaming'.  Cleared by agent_end and agent_settled.")
+
 (defvar-local pilish--pre-compaction-status nil
   "Status that was active before a compaction event sequence.
 Restores the surrounding run or prompt preflight even when compaction fails
@@ -867,6 +972,7 @@ For agent_settled, return non-nil only when waiting work was released."
        (plist-put pilish--state :is-retrying nil)
        (plist-put pilish--state :last-error nil))
       ("agent_end"
+       (setq pilish--settle-releases-streaming nil)
        (setq pilish--status 'sending)
        (plist-put pilish--state :is-retrying nil)
        (plist-put pilish--state :messages (plist-get event :messages)))
@@ -876,8 +982,12 @@ For agent_settled, return non-nil only when waiting work was released."
        ;; If B has ALSO ended, A_settled and B_settled are indistinguishable:
        ;; the wire has no run identity, and get_state cannot resolve all such
        ;; cases because Pi clears its run flag before awaiting those hooks.
-       (when (eq pilish--status 'sending)
-         (setq pilish--status 'idle)))
+       (let ((release (or (eq pilish--status 'sending)
+                          (and pilish--settle-releases-streaming
+                               (eq pilish--status 'streaming)))))
+         (setq pilish--settle-releases-streaming nil)
+         (when release
+           (setq pilish--status 'idle))))
       ("message_start"
        (plist-put pilish--state :current-message (plist-get event :message)))
       ("message_end"
