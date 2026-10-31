@@ -8455,7 +8455,7 @@ since we don't display them locally. Let pi's message_start handle it."
       (goto-char (point-min))
       (insert "my ")
       (should (equal (buffer-string) "my draft"))
-      (let ((overlay pilish--extension-widget-overlay))
+      (let ((overlay pilish--input-preamble-overlay))
         (should (= (overlay-start overlay) 1))
         (should (= (overlay-end overlay) 1))
         (erase-buffer)
