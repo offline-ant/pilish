@@ -35,6 +35,12 @@
   (seq-find (lambda (ov) (overlay-get ov 'pilish-tool-block))
             (overlays-at (pilish-style-test--pos text))))
 
+(defun pilish-style-test--tail (kind block)
+  "Return the overlay of KIND on the last newline of overlay BLOCK."
+  (seq-find (lambda (ov) (and (eq (overlay-get ov 'pilish-style-kind) kind)
+                              (= (overlay-end ov) (overlay-end block))))
+            (overlays-at (1- (overlay-end block)))))
+
 (defun pilish-style-test--decorate ()
   "Run the style's jit-lock function over the whole buffer."
   (pilish--style-decorate (point-min) (point-max)))
@@ -113,10 +119,11 @@
     (should-not (pilish-style-test--overlay-at 'thinking "Plain"))
     ;; Tool blocks carry padding in their state colour and muted output.
     (let ((ok (pilish-style-test--overlay-at 'tool-pad "fine output"))
-          (bad (pilish-style-test--overlay-at 'tool-pad "broken output")))
+          (bad (pilish-style-test--tail
+                'tool-tail (pilish-style-test--tool-overlay "broken output"))))
       (should (eq (get-text-property 0 'face (overlay-get ok 'before-string))
                   'pilish-tool-block-success))
-      (should (eq (get-text-property 0 'face (overlay-get bad 'after-string))
+      (should (eq (get-text-property 0 'face (overlay-get bad 'before-string))
                   'pilish-tool-block-error)))
     (should (eq (overlay-get (pilish-style-test--overlay-at 'tool-output "fine output") 'face)
                 'pilish-pi-tool-output))
@@ -131,9 +138,9 @@
 
 (ert-deftest pilish-style-test-pi-hidden-tail-becomes-bottom-padding ()
   "A block ending in a hidden line shows that line as its bottom padding.
-An overlay string with a newline next to a wholly hidden line stops line
-motion and scrolling from moving up past it, so such blocks get no
-`after-string'; blocks with a visible last line keep one."
+An overlay string with a newline next to a hidden line stops line motion
+and scrolling from moving up past it (Emacs bug#PENDING), so such blocks
+have no padding string."
   (pilish-style-test--with-chat 'pi
     (pilish--display-history-messages pilish-style-test--history)
     (let ((inhibit-read-only t))
@@ -152,25 +159,71 @@ motion and scrolling from moving up past it, so such blocks get no
       (should (= (overlay-end tail) (overlay-end tool)))
       (should-not (invisible-p newline))
       (should (equal (overlay-get tail 'display) '(raise 0)))
+      (should-not (overlay-get tail 'before-string))
       (should-not (overlay-get (pilish-style-test--overlay-at 'tool-pad "fine output")
                                'after-string)))
-    (let ((custom (pilish-style-test--overlay-at 'custom "Custom tail")))
+    (let* ((custom (pilish-style-test--overlay-at 'custom "Custom tail"))
+           (tail (pilish-style-test--tail 'custom-tail custom)))
       (should-not (overlay-get custom 'after-string))
-      (should (= (length (pilish-style-test--overlays 'custom-tail)) 1))
+      (should (equal (overlay-get tail 'display) '(raise 0)))
       (should-not (invisible-p (1- (overlay-end custom)))))
-    (should (overlay-get (pilish-style-test--overlay-at 'custom "Custom note")
-                         'after-string))
-    ;; A visible last line keeps the padding string and loses the tail.
-    (let ((inhibit-read-only t)
-          (newline (1- (overlay-end (pilish-style-test--tool-overlay "fine output")))))
-      (remove-text-properties (- newline 3) (1+ newline) '(invisible nil)))
+    ;; A visible last line swaps the shown newline for a padding string,
+    ;; on the same overlay.
+    (let* ((inhibit-read-only t)
+           (tool (pilish-style-test--tool-overlay "fine output"))
+           (tail (pilish-style-test--tail 'tool-tail tool))
+           (newline (1- (overlay-end tool))))
+      (remove-text-properties (- newline 3) (1+ newline) '(invisible nil))
+      (pilish-style-test--decorate)
+      (should (eq tail (pilish-style-test--tail 'tool-tail tool)))
+      (should-not (overlay-get tail 'display))
+      (should-not (overlay-get tail 'invisible))
+      (should (equal (overlay-get tail 'before-string) "\n")))))
+
+(ert-deftest pilish-style-test-pi-visible-tail-pads-before-its-newline ()
+  "A block ending in a visible line has its padding before the last newline.
+A string after that newline would stop motion when the next line starts
+with hidden markup (Emacs bug#PENDING), which only arrives later while
+streaming.  A `display' string on the newline is no alternative: a
+narrowing ending there makes `vertical-motion' signal.  The padding row
+takes no line prefix, so a disclosure on the last line is not repeated."
+  (pilish-style-test--with-chat 'pi
+    (pilish--display-history-messages pilish-style-test--history)
     (pilish-style-test--decorate)
-    (should (overlay-get (pilish-style-test--overlay-at 'tool-pad "fine output")
-                         'after-string))
-    (should-not (seq-some (lambda (ov)
-                            (= (overlay-end ov)
-                               (overlay-end (pilish-style-test--tool-overlay "fine output"))))
-                          (pilish-style-test--overlays 'tool-tail)))))
+    (let* ((tool (pilish-style-test--tool-overlay "fine output"))
+           (tail (pilish-style-test--tail 'tool-tail tool)))
+      (should (equal (overlay-get tail 'before-string) "\n"))
+      (should (eq (get-text-property 0 'face (overlay-get tail 'before-string))
+                  'pilish-tool-block-success))
+      (should-not (overlay-get tail 'display))
+      (should (equal (overlay-get tail 'line-prefix) ""))
+      (should (equal (overlay-get tail 'wrap-prefix) ""))
+      (should-not (overlay-get (pilish-style-test--overlay-at 'tool-pad "fine output")
+                               'after-string)))
+    (let* ((custom (pilish-style-test--overlay-at 'custom "Custom note"))
+           (tail (pilish-style-test--tail 'custom-tail custom)))
+      (should (equal (overlay-get tail 'before-string) "\n"))
+      (should-not (overlay-get custom 'after-string)))))
+
+(ert-deftest pilish-style-test-pi-custom-hidden-start-paints-the-blank-line ()
+  "A custom message starting with hidden text has no padding string.
+The blank line above it becomes the padding row (Emacs bug#PENDING);
+one starting with visible text keeps its `before-string'."
+  (pilish-style-test--with-chat 'pi
+    (pilish--display-history-messages pilish-style-test--history)
+    (pilish--display-custom-message "**Bold** note")
+    (font-lock-ensure)
+    (pilish-style-test--decorate)
+    (let* ((custom (pilish-style-test--overlay-at 'custom "Bold"))
+           (start (overlay-start custom))
+           (head (seq-find (lambda (ov) (eq (overlay-get ov 'pilish-style-kind) 'custom-head))
+                           (overlays-at (1- start)))))
+      (should (invisible-p (get-text-property start 'invisible)))
+      (should-not (overlay-get custom 'before-string))
+      (should (= (overlay-end head) start))
+      (should (eq (overlay-get head 'face) 'pilish-pi-custom-message)))
+    (should (overlay-get (pilish-style-test--overlay-at 'custom "Custom note")
+                         'before-string))))
 
 (ert-deftest pilish-style-test-pi-decoration-is-idempotent-per-chunk ()
   "Decorating arbitrary chunks gives the same overlays as one full pass."
