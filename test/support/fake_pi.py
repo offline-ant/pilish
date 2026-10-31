@@ -602,8 +602,10 @@ class FakePiHarness:
             self._fail(command, "Current fake scenario does not support steer")
             return
         with self._session_lock:
-            self._pending_steer_message = str(command["message"])
+            message = str(command["message"])
+            self._pending_steer_message = message
             self.state.pending_message_count = 1
+        self._write_json({"type": "queue_update", "steering": [message], "followUp": []})
         self._respond(command, data={"disposition": "queued"})
 
     def _handle_new_session(self, command: JsonDict) -> None:
@@ -737,7 +739,7 @@ class FakePiHarness:
                 if assistant_message:
                     self._persist_assistant_message(assistant_message)
                     self._write_json({"type": "message_end", "message": assistant_message})
-                pending_steer = self._take_pending_steer()
+                pending_steer = self._deliver_pending_steer()
                 self._finish_run(
                     [assistant_message] if assistant_message else [],
                     settled=pending_steer is None,
@@ -752,7 +754,7 @@ class FakePiHarness:
                 self._write_json({"type": "agent_start"})
                 continue
             emitted_messages.append(assistant_message)
-            pending_steer = self._take_pending_steer()
+            pending_steer = self._deliver_pending_steer()
             if pending_steer is None:
                 break
             current_message = pending_steer
@@ -1178,6 +1180,13 @@ class FakePiHarness:
             self._pending_steer_message = None
             self.state.pending_message_count = 0
             return message
+
+    def _deliver_pending_steer(self) -> str | None:
+        """Take the queued steering message for delivery, reporting the queue."""
+        message = self._take_pending_steer()
+        if message is not None:
+            self._write_json({"type": "queue_update", "steering": [], "followUp": []})
+        return message
 
     def _finish_run(self, messages: list[JsonDict], *, settled: bool = True) -> None:
         """End a low-level run, settling only when no continuation remains."""

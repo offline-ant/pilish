@@ -45,6 +45,7 @@
 (require 'pilish-ui)
 (require 'pilish-dialog)
 (require 'pilish-conversations)
+(require 'pilish-queue)
 (require 'pilish-table)
 (require 'pilish-answer)
 (require 'pilish-style)
@@ -1194,7 +1195,9 @@ Messages are processed in FIFO order and dropped only after preflight accepts
 them."
   (when (pilish--ready-to-drain-followups-p)
     (when-let* ((text (pilish--peek-followup)))
-      (pilish--prepare-and-send text 'queued))))
+      (pilish--prepare-and-send text 'queued)
+      (when (pilish--prompt-start-wait-active-p)
+        (setf (pilish--prompt-wait-followup pilish--prompt-wait) t)))))
 
 (defun pilish--display-compaction-failure (error-message)
   "Display failed compaction ERROR-MESSAGE without changing the queue."
@@ -1798,7 +1801,7 @@ which asks upfront before any buffers are touched."
           (when (eq process pilish--process)
             (unwind-protect
                 (if (equal (plist-get event :type) "queue_update")
-                    (force-mode-line-update t)
+                    (pilish--queue-changed)
                   (pilish--handle-display-event event))
               (when (eq process pilish--process)
                 (pilish--reconcile-inactivity-timer)))))))))
@@ -1893,7 +1896,7 @@ Updates buffer-local state and renders display updates."
       ;; insert chat text or start a block, so ordering between text, thinking,
       ;; and tool blocks stays authoritative.  Delta events keep accumulating
       ;; until the flush cadence.  (`queue_update' bypasses this handler and only
-      ;; refreshes the mode line, so it needs no flush.)
+      ;; refreshes the queue display, so it needs no flush.)
       (unless delta-kind
         (pilish--flush-stream-deltas))
       (when (and settlement-released

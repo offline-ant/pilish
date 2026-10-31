@@ -34,6 +34,8 @@ Example:
 }
 ```
 
+`queue-lifecycle.json` is the same reply slowed down to leave time for queuing.
+
 Optional `handled_input` consumes that exact text for both `prompt` and `steer`
 with `data.disposition: "handled"`, without messages, a run, user persistence, or
 queue changes. The `input-dispositions.json` fixture covers this Pi 1.0 case.

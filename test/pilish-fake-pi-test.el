@@ -1402,11 +1402,9 @@ SPEC is (SESSION SCENARIO &rest EXTRA-ARGS)."
         (pilish-fake-pi-test--wait-or-fail
          proc (lambda () (member "Pi: Steering acknowledged as queued" notices))
          "queued steering acknowledgment")
-        ;; The bounded fake does not publish steering queue snapshots.  Its
-        ;; acknowledgment must not manufacture an input-header queue count.
-        (should-not (pilish--process-queue-snapshot proc))
+        ;; The count comes from the snapshot, written before the acknowledgment.
         (with-current-buffer input
-          (should-not (string-match-p " queued [0-9]+" (pilish--header-line-string))))
+          (should (string-match-p " queued 1" (pilish--header-line-string))))
         (pilish-fake-pi-test--wait-or-fail
          proc (lambda () (with-current-buffer chat
                            (and (eq pilish--status 'idle)
@@ -2610,7 +2608,8 @@ SPEC is (SESSION SCENARIO &rest EXTRA-ARGS)."
           (should (equal (plist-get clear-response :data)
                          '(:steering ["queued"] :followUp [])))
           (should (equal (pilish-fake-pi-test--events-of-type events "queue_update")
-                         '((:type "queue_update" :steering [] :followUp []))))))
+                         '((:type "queue_update" :steering ["queued"] :followUp [])
+                           (:type "queue_update" :steering [] :followUp []))))))
       (let ((state (pilish-fake-pi-test--rpc proc '(:type "get_state"))))
         (should (eq (plist-get (plist-get state :data) :isStreaming) :false))))))
 

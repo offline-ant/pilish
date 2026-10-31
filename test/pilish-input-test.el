@@ -761,7 +761,8 @@ not claim to distinguish those otherwise identical sending-state traces."
           (should (equal pilish--followup-queue '("next"))))))))
 
 (ert-deftest pilish-test-review-fixes-stop-while-awaiting-late-acceptance ()
-  "Stop drops the FIFO once; late acceptance cannot resend it or poison input."
+  "Stop takes the FIFO once; late acceptance cannot resend it or poison input.
+The submitted head stays with Pi and the rest return to the draft."
   (dolist (disposition '(nil "handled"))
     (pilish-test-with-rpc-session (chat input proc commands)
       (with-current-buffer chat
@@ -787,7 +788,7 @@ not claim to distinguish those otherwise identical sending-state traces."
                                   (reverse commands))
                            '("prompt" "clear_queue" "abort")))
             (with-current-buffer input
-              (should (equal (buffer-string) "newer draft")))))))))
+              (should (equal (buffer-string) "next\n\nnewer draft")))))))))
 
 (ert-deftest pilish-test-review-fixes-manual-reentry-retains-unacknowledged-fifo ()
   "Extension manual failure cannot restore a FIFO request still awaiting acceptance."
@@ -4625,7 +4626,8 @@ Pi handles command expansion on the server side."
               (with-current-buffer input (should (equal (buffer-string) "newer draft"))))))))))
 
 (ert-deftest pilish-test-disposition-queued-stop-keeps-empty-snapshot-and-local-queue ()
-  "Stop followed by queued prompt/steer acceptance cannot resurrect discarded work."
+  "Stop followed by queued prompt/steer acceptance cannot resurrect stopped work.
+Follow-ups Pi never received return to the draft."
   (dolist (command '(prompt steer))
     (pilish-test-with-rpc-session (chat input proc commands)
       (let ((schedule (symbol-function 'run-at-time)) fallbacks notices)
@@ -4669,7 +4671,8 @@ Pi handles command expansion on the server side."
               (should-not pilish--local-user-message)
               (should-not (string-match-p "first" (buffer-string)))
               (should pilish--aborted))
-            (with-current-buffer input (should (equal (buffer-string) "newer draft")))
+            (with-current-buffer input
+              (should (equal (buffer-string) "second\n\nnewer draft")))
             (should (equal (mapcar (lambda (c) (plist-get c :type)) (reverse commands))
                            (list (symbol-name command) "clear_queue" "abort")))
             (when (eq command 'prompt)
