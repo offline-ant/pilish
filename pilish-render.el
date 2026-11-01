@@ -1506,6 +1506,9 @@ completes normally."
 (defvar-local pilish--editor-request-id nil
   "ID of this buffer's unanswered editor request, or nil once answered.")
 
+(defvar-local pilish--editor-input-context nil
+  "Original detached input binding captured when this editor opened.")
+
 (defvar-local pilish--editor-releasing nil
   "Non-nil while editor lifecycle cleanup must retain the text buffer.")
 
@@ -1517,19 +1520,28 @@ request answered before sending, so a failed send is never retried."
     (setq pilish--editor-request-id nil)
     (let* ((process pilish--editor-process)
            (text (buffer-substring-no-properties (point-min) (point-max)))
-           (request (pilish--extension-dialog-request process id)))
+           (request (pilish--extension-dialog-request process id))
+           (context pilish--editor-input-context))
       (when (processp process)
         (process-put process 'pilish-editor-buffers
                      (delq (current-buffer)
                            (process-get process 'pilish-editor-buffers)))
         (unwind-protect
             (when (process-live-p process)
+              (when (process-get process 'pilish-detached)
+                (unless (and request
+                             (pilish--valid-input-context-p context)
+                             (equal context (plist-get request :pilish-input-context))
+                             (equal context (pilish--capture-input-context process)))
+                  (user-error "This editor belongs to a previous runtime context; no answer was sent")))
               (pilish--send-extension-ui-response
                process
-               (append (list :type "extension_ui_response" :id id)
-                       (if cancelled
-                           (list :cancelled t)
-                         (list :value text)))))
+               (pilish--bind-input-context
+                (append (list :type "extension_ui_response" :id id)
+                        (if cancelled
+                            (list :cancelled t)
+                          (list :value text)))
+                context)))
           (when request
             (pilish--extension-dialog-close process id)))
         (when (and request (not cancelled))
@@ -1605,7 +1617,9 @@ and a window displays it there.  Return the buffer."
       (insert (pilish--render-safe-string (plist-get event :prefill)))
       (set-buffer-modified-p nil)
       (setq pilish--editor-process proc
-            pilish--editor-request-id (plist-get event :id))
+            pilish--editor-request-id (plist-get event :id)
+            pilish--editor-input-context
+            (copy-tree (plist-get event :pilish-input-context)))
       (add-hook 'kill-buffer-hook #'pilish--editor-release nil t)
       (add-hook 'change-major-mode-hook #'pilish--editor-release nil t))
     (when (processp proc)

@@ -2044,7 +2044,7 @@ if non-nil, runs before the first RET.  Return (SENT INPUT-LEFT)."
     (should (eq (key-binding (kbd "C-c C-c")) 'pilish-send))))
 
 (ert-deftest pilish-test-queue-handles-rpc-error ()
-  "Queue handles RPC error response by showing message to user."
+  "Queue handles its owning process's RPC error by showing a message."
   (let ((chat-buf (get-buffer-create "*pilish-test-queue-error*"))
         (input-buf (get-buffer-create "*pilish-test-queue-error-input*"))
         (captured-callback nil)
@@ -2058,6 +2058,7 @@ if non-nil, runs before the first RET.  Return (SENT INPUT-LEFT)."
           (with-current-buffer input-buf
             (pilish-input-mode)
             (setq pilish--chat-buffer chat-buf)
+            (with-current-buffer chat-buf (setq pilish--process 'mock-proc))
             (insert "Test message")
             (cl-letf (((symbol-function 'pilish--get-process) (lambda () 'mock-proc))
                       ((symbol-function 'process-live-p) (lambda (_) t))

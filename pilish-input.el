@@ -905,18 +905,20 @@ Report acceptance or failure after the current process acknowledges it."
        (lambda (response)
          (when (buffer-live-p chat-buf)
            (if (eq (plist-get response :success) t)
-               (message "%s"
-                        (pcase (plist-get (plist-get response :data) :disposition)
-                          ("queued" "Pi: Steering acknowledged as queued")
-                          ("handled" "Pi: Steering handled by extension")
-                          (_ "Pi: Steering message sent")))
+               (when (eq proc (buffer-local-value 'pilish--process chat-buf))
+                 (message "%s"
+                          (pcase (plist-get (plist-get response :data) :disposition)
+                            ("queued" "Pi: Steering acknowledged as queued")
+                            ("handled" "Pi: Steering handled by extension")
+                            (_ "Pi: Steering message sent"))))
              (when origin
                (with-current-buffer chat-buf
                  (pilish--quarantine-input
                   "steering rejected or uncertain" origin :draft text
                   :uncertain (not (equal (plist-get response :delivery) "rejected")))))
-             (message "Pi: Steering failed: %s"
-                      (or (plist-get response :error) "unknown error"))))))
+             (when (eq proc (buffer-local-value 'pilish--process chat-buf))
+               (message "Pi: Steering failed: %s"
+                        (or (plist-get response :error) "unknown error")))))))
       t)
      (t
       (message "Pi: Cannot send steering - process unavailable")
