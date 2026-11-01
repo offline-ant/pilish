@@ -141,6 +141,75 @@
       (when (buffer-live-p editor) (kill-buffer editor))
       (delete-process process))))
 
+(ert-deftest pilish-test-editor-detached-answers-use-original-context ()
+  "Submit, cancel and mode changes retain the request's captured binding."
+  (dolist (action '(pilish-editor-submit pilish-editor-cancel text-mode))
+    (let ((process (make-pipe-process :name "pilish-editor-context" :noquery t))
+          (context '(:sessionFile "/synthetic/editor.jsonl"
+                     :leafId "leaf" :contextId "original"))
+          (pilish-extension-dialog-style 'inline)
+          responses editor)
+      (unwind-protect
+          (cl-letf (((symbol-function 'pilish--send-extension-ui-response)
+                     (lambda (_ response) (push response responses))))
+            (process-put process 'pilish-detached t)
+            (process-put process 'pilish-input-context context)
+            (setq editor (pilish-test--open-editor process "context" "answer"))
+            (with-current-buffer editor (funcall action))
+            (should (= (length responses) 1))
+            (should (equal (plist-get (car responses) :pimuxContext) context))
+            (if (eq action 'pilish-editor-submit)
+                (should (equal (plist-get (car responses) :value) "answer"))
+              (should (plist-get (car responses) :cancelled)))
+            (should-not (pilish--extension-dialog-pending process))
+            (when (eq action 'text-mode)
+              (should (buffer-live-p editor))
+              (should (equal (with-current-buffer editor (buffer-string)) "answer"))))
+        (when (buffer-live-p editor) (kill-buffer editor))
+        (delete-process process)))))
+
+(ert-deftest pilish-test-editor-detached-stale-context-sends-nothing ()
+  "An editor opened for the old conversation cannot answer a later one."
+  (let ((process (make-pipe-process :name "pilish-editor-stale" :noquery t))
+        (pilish-extension-dialog-style 'inline)
+        editor responses)
+    (unwind-protect
+        (cl-letf (((symbol-function 'pilish--send-extension-ui-response)
+                   (lambda (_ response) (push response responses))))
+          (process-put process 'pilish-detached t)
+          (process-put process 'pilish-input-context
+                       '(:sessionFile "/synthetic/a.jsonl" :leafId nil :contextId "a"))
+          (setq editor (pilish-test--open-editor process "stale" "old answer"))
+          (process-put process 'pilish-input-context
+                       '(:sessionFile "/synthetic/b.jsonl" :leafId nil :contextId "b"))
+          (with-current-buffer editor
+            (should-error (pilish-editor-submit) :type 'user-error))
+          (should-not responses)
+          (should-not (buffer-live-p editor))
+          (should-not (pilish--extension-dialog-pending process))
+          (should-not (process-get process 'pilish-editor-buffers)))
+      (when (buffer-live-p editor) (kill-buffer editor))
+      (delete-process process))))
+
+(ert-deftest pilish-test-editor-detached-authoritative-close-sends-nothing ()
+  "The shared owner can settle an editor without a duplicate cancellation."
+  (let ((process (make-pipe-process :name "pilish-editor-shared-close" :noquery t))
+        (pilish-extension-dialog-style 'inline)
+        editor responses)
+    (unwind-protect
+        (cl-letf (((symbol-function 'pilish--send-extension-ui-response)
+                   (lambda (_ response) (push response responses))))
+          (process-put process 'pilish-detached t)
+          (process-put process 'pilish-input-context
+                       '(:sessionFile "/synthetic/a.jsonl" :leafId nil :contextId "a"))
+          (setq editor (pilish-test--open-editor process "settled" "text"))
+          (pilish--extension-dialog-close process "settled")
+          (should-not responses)
+          (should-not (buffer-live-p editor))
+          (should-not (process-get process 'pilish-editor-buffers)))
+      (when (buffer-live-p editor) (kill-buffer editor))
+      (delete-process process))))
+
 ;;;; Pending dialog registry
 
 (defmacro pilish-test--with-dialog-session (bindings &rest body)
