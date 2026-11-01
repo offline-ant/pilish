@@ -125,6 +125,7 @@
 (require 'pilish-browse)
 (require 'pilish-snapshot)
 (require 'pilish-pair)
+(require 'pilish-runtime)
 
 (declare-function dired-get-filename "dired" (&optional localp no-error-if-not-filep))
 
@@ -187,8 +188,36 @@ Returns the chat buffer without displaying it."
     (with-current-buffer chat-buf
       (pilish--set-chat-session-identity dir session)
       (pilish--set-input-buffer input-buf)
-      ;; Start process if not already running
-      (unless (and pilish--process (process-live-p pilish--process))
+      (add-hook 'kill-buffer-hook #'pilish--runtime-kill-view nil t)
+      ;; Managed views own only a socket, not the detached Pi lifetime.  Existing
+      ;; stopped/disconnected views need an explicit Reconnect/Resume action.
+      (if (pilish-runtime-configured-p)
+          (unless pilish--runtime
+            (setq pilish--launch-args args
+                  pilish--launch-environment
+                  (append environment (pilish--session-environment chat-buf dir))
+                  new-session t)
+            (pilish--runtime-start-view
+             chat-buf dir pilish--launch-args pilish--launch-environment
+             (lambda (error)
+               (when (buffer-live-p chat-buf)
+                 (with-current-buffer chat-buf
+                   (unless error
+                     (pilish--fetch-commands
+                      pilish--process
+                      (lambda (commands)
+                        (when (buffer-live-p chat-buf)
+                          (with-current-buffer chat-buf
+                            (pilish--set-commands commands)
+                            (pilish--rebuild-commands-menu)))) dir))
+                   (when on-ready
+                     (funcall on-ready
+                              (if error (list :success :false :error error)
+                                (list :success t :data
+                                      (list :sessionFile (plist-get pilish--state :session-file)
+                                            :model (plist-get pilish--state :model)))))))))))
+        ;; Explicit unshared mode retains its native stdio process contract.
+        (unless (and pilish--process (process-live-p pilish--process))
         (unless background (pilish--check-dependencies dir))
         (setq pilish--launch-args args
               pilish--launch-environment
@@ -240,7 +269,7 @@ Returns the chat buffer without displaying it."
                   (with-current-buffer buf
                     (pilish--set-commands commands)
                     (pilish--rebuild-commands-menu))))
-              dir))))
+              dir)))))
       ;; Display startup header for new sessions
       (when new-session
         (pilish--display-startup-header)))
@@ -293,7 +322,9 @@ BUFFER defaults to the current buffer and may be a chat or input buffer."
     (pilish--get-chat-buffer)))
 
 (defun pilish-session-process (chat-buffer)
-  "Return the Pi process owned by CHAT-BUFFER, or nil."
+  "Return CHAT-BUFFER's transport process, or nil.
+For detached views it is a network connection, not the actual Pi process.
+Use `pilish-session-process-identity' for actual Pi PID/start/boot identity."
   (when (buffer-live-p chat-buffer)
     (buffer-local-value 'pilish--process chat-buffer)))
 
@@ -381,8 +412,10 @@ The view does not resume the session; `g' rereads the file."
     (pilish-open-subagent-snapshot target)))
 
 (defun pilish-close-session (chat-buffer)
-  "Stop and close CHAT-BUFFER and its owned input without confirmation.
-Callers must establish ownership before using this noninteractive operation."
+  "Close CHAT-BUFFER and its input without confirmation.
+A shared view only disconnects; its detached agent keeps running.  Explicit
+unshared Pi retains its native process lifetime.  Use `pilish-stop-runtime'
+for a separately confirmed everywhere-stop operation."
   (when (buffer-live-p chat-buffer)
     (with-current-buffer chat-buffer
       (let ((pilish-quit-without-confirmation t))
