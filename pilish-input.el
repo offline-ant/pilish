@@ -53,6 +53,29 @@
 (require 'pilish-render)
 (require 'ring)
 
+(declare-function pilish--shared-input-ready-p "pilish-shared" (proc))
+(declare-function pilish--abort-shared-turn "pilish-queue" ())
+(defvar pilish--runtime)
+
+(defun pilish--input-ready-p (&optional chat-buffer)
+  "Return non-nil when CHAT-BUFFER may accept local prompt input.
+Plain Pi keeps its explicit unshared behavior.  A detached view, including
+one still waiting for its hello, needs its current complete live boundary."
+  (let ((chat (or chat-buffer (pilish--get-chat-buffer))))
+    (or (not (buffer-live-p chat))
+        (with-current-buffer chat
+          (let ((proc (pilish--get-process)))
+            (or (not (or (and (processp proc) (pilish--process-shared-p proc))
+                         (and (bound-and-true-p pilish--runtime)
+                              (equal (plist-get pilish--runtime :protocol) 2))))
+                (and (processp proc) (process-live-p proc)
+                     (pilish--shared-input-ready-p proc))))))))
+
+(defun pilish--require-input-ready (&optional chat-buffer)
+  "Refuse local prompt acceptance before CHAT-BUFFER's shared live boundary."
+  (unless (pilish--input-ready-p chat-buffer)
+    (user-error "Shared Pi view is not live; draft and image kept.  Reconnect or Resume explicitly")))
+
 ;;;; Sending with a double RET
 
 (defcustom pilish-send-on-double-return nil
@@ -88,9 +111,11 @@ with ARG this always inserts newlines."
              (string-blank-p (buffer-substring-no-properties
                               (point) (point-max)))
              (not (input-pending-p)))
-        (progn
-          (delete-char -1)
-          (pilish-send))
+        (if (pilish--input-ready-p)
+            (progn
+              (delete-char -1)
+              (pilish-send))
+          (message "Pi: Shared view is not live; draft and image kept"))
       (newline arg t)
       (when pilish-send-on-double-return
         (setq pilish--last-return (cons (float-time) (point)))))))
@@ -549,6 +574,7 @@ replaces the previous draft image."
 Adds only TEXT to history, resets history navigation, and clears input.
 With `pilish-jump-to-end-on-submit', also return the chat's windows in
 the selected frame to its end."
+  (pilish--require-input-ready)
   (pilish--history-add text)
   (setq pilish--input-ring-index nil
         pilish--input-saved nil)
@@ -564,6 +590,7 @@ the selected frame to its end."
 
 (defun pilish--queue-followup-text (chat-buf text)
   "Accept TEXT and enqueue it as a follow-up in CHAT-BUF."
+  (pilish--require-input-ready chat-buf)
   (pilish--accept-input-text text)
   (with-current-buffer chat-buf
     (pilish--push-followup text)))
@@ -588,6 +615,8 @@ sent to pi."
      ((string-empty-p text)
       (when prompt-image
         (message "Pi: Add prompt text before sending the attached image")))
+     ((not (pilish--input-ready-p chat-buf))
+      (message "Pi: Shared view is not live; draft and image kept"))
      (transitioning
       (message "Pi: Cannot send while session is switching"))
      ((and prompt-image
@@ -623,28 +652,32 @@ sent to pi."
         (pilish--prepare-and-send text))))))
 
 (defun pilish-abort ()
-  "Stop the current pi operation and return queued messages to the draft.
-Works while sending, streaming or compacting.  A stop during preflight is
-retained if Pi subsequently starts the accepted prompt, whose text is
-therefore not restored."
+  "Abort the current Pi operation while sending, streaming or compacting.
+Unshared Pi returns queued messages to the draft.  Shared Pi asks before
+changing any local state or clearing every frontend's queue; acknowledged
+recovery remains requester-only suspended input.  A stop during preflight
+is retained if Pi later starts the accepted prompt, without clearing a
+new shared queue or automatically resubmitting recovered input."
   (interactive)
   (when-let* ((chat-buf (pilish--get-chat-buffer)))
     (with-current-buffer chat-buf
       (when (or (memq pilish--status '(sending streaming compacting))
                 (pilish--prompt-start-wait-active-p)
                 (pilish--command-pending-p (pilish--get-process) "compact"))
-        (pilish--set-aborted t)
-        ;; Settle every duration owner before any fallible footer painting,
-        ;; then deliver the queue clear and Abort RPC first.  Footer repaints
-        ;; run afterwards so a paint error can never block the abort itself.
-        (let ((retired (pilish--cancel-tool-times-state)))
-          (unwind-protect
-              (progn
-                (pilish--restore-messages (pilish--take-unsubmitted-followups))
-                (pilish--clear-followup-queue)
-                (pilish--send-abort))
-            (pilish--paint-retired-tool-times retired)))
-        (message "Pi: Aborting...")))))
+        (if (pilish--process-shared-p (pilish--get-process))
+            ;; The shared helper asks before stop intent, timers, drafts or
+            ;; queues change.  Its cancellation must leave all locals intact.
+            (pilish--abort-shared-turn)
+          (pilish--set-aborted t)
+          ;; Plain Pi keeps its ordinary queue recovery and wire order.
+          (let ((retired (pilish--cancel-tool-times-state)))
+            (unwind-protect
+                (progn
+                  (pilish--restore-messages (pilish--take-unsubmitted-followups))
+                  (pilish--clear-followup-queue)
+                  (pilish--send-abort))
+              (pilish--paint-retired-tool-times retired)))
+          (message "Pi: Aborting..."))))))
 
 (defun pilish-quit ()
   "Close the current pi session.
@@ -840,28 +873,32 @@ Skips / at buffer start to allow slash command completion."
 
 (defun pilish--send-steer-message (text)
   "Send TEXT as a steering message via RPC.
-Return t if scheduled, nil if the process is unavailable.
+Return t if scheduled, nil if the process is unavailable or not yet live.
 Report acceptance or failure after the current process acknowledges it."
   (let ((proc (pilish--get-process))
         (chat-buf (pilish--get-chat-buffer)))
-    (if (and proc (process-live-p proc))
-        (progn
-          (pilish--rpc-async
-           proc (list :type "steer" :message text)
-           (lambda (response)
-             (when (and (buffer-live-p chat-buf)
-                        (eq proc (with-current-buffer chat-buf (pilish--get-process))))
-               (if (eq (plist-get response :success) t)
-                   (message "%s"
-                            (pcase (plist-get (plist-get response :data) :disposition)
-                              ("queued" "Pi: Steering acknowledged as queued")
-                              ("handled" "Pi: Steering handled by extension")
-                              (_ "Pi: Steering message sent")))
-                 (message "Pi: Steering failed: %s"
-                          (or (plist-get response :error) "unknown error"))))))
-          t)
+    (cond
+     ((not (pilish--input-ready-p chat-buf))
+      (message "Pi: Shared view is not live; steering was not submitted")
+      nil)
+     ((and proc (process-live-p proc))
+      (pilish--rpc-async
+       proc (list :type "steer" :message text)
+       (lambda (response)
+         (when (and (buffer-live-p chat-buf)
+                    (eq proc (with-current-buffer chat-buf (pilish--get-process))))
+           (if (eq (plist-get response :success) t)
+               (message "%s"
+                        (pcase (plist-get (plist-get response :data) :disposition)
+                          ("queued" "Pi: Steering acknowledged as queued")
+                          ("handled" "Pi: Steering handled by extension")
+                          (_ "Pi: Steering message sent")))
+             (message "Pi: Steering failed: %s"
+                      (or (plist-get response :error) "unknown error"))))))
+      t)
+     (t
       (message "Pi: Cannot send steering - process unavailable")
-      nil)))
+      nil))))
 
 (defun pilish-queue-steering ()
   "Send current input as a steering message.
@@ -876,8 +913,12 @@ as a local follow-up.  It is sent after the surrounding run and any local
 command reservation finish.  Steering refuses a draft image."
   (interactive)
   (let ((text (string-trim (buffer-string))))
-    (if (pilish--get-prompt-image)
-        (message "Pi: Cannot steer with an attached image")
+    (cond
+     ((not (pilish--input-ready-p))
+      (message "Pi: Shared view is not live; draft and image kept"))
+     ((pilish--get-prompt-image)
+      (message "Pi: Cannot steer with an attached image"))
+     (t
       (unless (string-empty-p text)
         (let ((chat-buf (pilish--get-chat-buffer)))
           (when chat-buf
@@ -898,7 +939,7 @@ command reservation finish.  Steering refuses a draft image."
                   (pilish--accept-input-text text)))
                (t
                 (message "Pi: Cannot steer while session status is %s"
-                         status))))))))))
+                         status)))))))))))
 
 (defun pilish-queue-followup ()
   "Send the current input, queuing it as a follow-up while Pi is working.
