@@ -35,15 +35,55 @@ anything else your setup gives you.  You can keep writing while the
 answer streams in above, and scroll, search, and copy from previous
 output with the keys you already use everywhere else.
 
-Pi's terminal UI and Pilish use the same =pi= CLI.  Your model
-providers, sessions, skills, and prompt templates carry over unchanged.
+Ordinary unshared Pilish and Pi's terminal UI use the same =pi= CLI.
+Phimacs instead pins its own exact release CLI without changing a global
+installation.  Configured model providers, sessions, skills and prompt
+templates belong to the selected private agent directory.
 Pi extensions work with basic UI support.  See [[file:#extensions-and-dialogs][Extensions and dialogs]]
 for the supported features and limits.
 
 #+html: <a id="quick-start"></a>
 * Quick start
 
-** Requirements
+Choose the matching installation path.  The ordinary unshared path below
+supports Emacs 29.1 or later; Phimacs detached sharing has a stricter,
+release-pinned contract.
+
+** Phimacs detached setup: pinned fork required
+
+This checkout contains the Phimacs integration candidate, not a published
+Phimacs release.  Use the complete tested immutable release and its pinned
+Pilish source/archive when it becomes approved.  Stock MELPA Pilish or a
+moving default branch does not supply the versioned integration API; do not
+install it over the selected fork.  Linux, Node 24, Emacs 31.1 or newer,
+the exact release-owned Pi and compiled pimux, and explicitly provisioned
+Markdown grammars are required.  Normal reference startup does not download
+or compile missing assets.
+
+After adding that release's documented Lisp load paths:
+
+#+begin_src emacs-lisp
+(require 'pilish)
+(pilish-configure-runtime
+ :pi-executable "/absolute/release/node_modules/.bin/pi"
+ :pimux-executable "/absolute/release/node_modules/.bin/pimux"
+ :protocol 2)
+#+end_src
+
+The paths are placeholders for one installed release, not commands from
+=PATH=.  Check =pilish-integration-capabilities=: =:api-version= must be 1
+and =:pimux-protocol= must be 2.  Configure and authenticate that release's
+Pi with the intended private agent directory before intentional model use;
+do not independently update the release's Pi or depend on a global CLI.
+See [[file:RUNTIME.md][RUNTIME.md]] for exact host version/hash options, public desktop APIs,
+isolated native tests and the remaining release-acceptance boundary.
+
+Closing a shared view or Emacs does *not* stop its agent.  Accepted work and
+provider waits can continue and incur usage without a visible frontend.
+Use explicit confirmed Stop agent everywhere when that is intended.
+Reconnect and desktop restore never start missing agents or replay input.
+
+** Requirements for ordinary unshared use
 
 - Emacs 29.1 or later, built with tree-sitter support
 - Node.js 22.19 or later for the Pi CLI
@@ -57,7 +97,7 @@ for the supported features and limits.
 Upgrade older Pi installations before using Pilish, for example with
 =npm install -g @earendil-works/pi-coding-agent@latest=.
 
-** Install pi and authenticate
+** Install pi and authenticate: ordinary unshared use
 
 #+begin_src bash
 # Install the pi CLI
@@ -89,7 +129,12 @@ Pi authenticates in one of two ways:
 Either way, your provider bills usage per token, or your
 subscription covers it.
 
-** Install the Emacs package
+** Install the Emacs package: ordinary unshared use
+
+The stock-package path below is for ordinary unshared Pilish, not Phimacs.
+Leave =pilish-runtime-mode= at =unshared=, its default, or explicitly select
+=(pilish-configure-runtime :mode 'unshared)= before creating native sessions.
+The original =pilish-executable= stdio command remains available in that mode.
 
 Install from [[https://melpa.org/#/pilish][MELPA]].  MELPA alone does not
 resolve every dependency.  Its =transient= build needs
@@ -143,8 +188,8 @@ Read [[file:#project-trust][Project trust and security]] before starting Pi in
 an unfamiliar project.
 
 1. Run =M-x pilish= in the directory of a project you want to work on.
-2. On first start, accept the offer to install the tree-sitter grammars
-   needed for Markdown rendering.  This one-time step needs Git and a C
+2. In ordinary unshared use, on first start, accept the offer to install
+   the tree-sitter grammars needed for Markdown rendering.  This one-time step needs Git and a C
    compiler (=gcc= or =cc=).
 3. Type =explain what this project does= in the bottom window and press
    =C-c C-c=.
@@ -205,8 +250,10 @@ finishes.  Press =C-c C-s= (=M-x pilish-queue-steering=) while Pi is
 busy to steer it after the current tool call.  =M-RET=
 (=M-x pilish-queue-followup=) always queues a follow-up while Pi is busy
 and sends at once when Pi is idle.  Press =C-c C-k=
-(=M-x pilish-abort=) to abort the current response or compaction; queued
-messages return to the draft.
+(=M-x pilish-abort=) to abort the current response or compaction, not to
+stop a detached agent.  Unshared queued messages return to the draft;
+shared Abort confirms its every-frontend queue consequences and retains
+acknowledged input as recoverable suspended records.
 
 Queued messages show above the draft, like in Pi's terminal UI, with
 their controls below them:
@@ -223,7 +270,13 @@ you were typing.  Click =Clear= or press =C-c C-u=
 (=M-x pilish-clear-queued-messages=) to discard them; the text stays in
 the kill ring.  Neither stops Pi.  Both act on all queued messages,
 including those another frontend queued on a shared session, because Pi
-has no command to remove a single one.
+has no command to remove a single one.  Shared Restore/Clear asks explicit
+confirmation and recovers all acknowledged removed input *only to the
+requester*, labelled as shared suspended input, never automatically inserted
+or resent.  Other clients see the authoritative queue update, not their own
+recovery copy.  Uncertain acknowledgements do not authorize retries.
+Use =M-x pilish-restore-quarantined-input= to select recovery and confirm
+reuse in the current conversation; see [[file:DRAFTS.md][DRAFTS.md]].
 
 To send with a quick double =RET= instead of =C-c C-c=, set
 =pilish-send-on-double-return= to a number of seconds, such as =0.4=.
@@ -383,9 +436,12 @@ inactive branches.  Search tokens are whitespace-separated regexps
 that must all match.  Submit an empty query to clear the search.
 Press =f= to toggle between all sessions and named sessions only.
 
-A ● marks sessions with a live Pilish process in this Emacs.  Neither
-the marker nor the deletion guard sees sessions running in another
-Emacs or a terminal.  Check those yourself before deleting a session.
+A ● marks sessions with a live Pilish transport in this Emacs; it is not
+a global owner indicator.  In configured managed mode, writes acquire a
+common stopped-file lease and refuse live or uncertain RPC, terminal or
+lease owners across cooperating frontends, including canonical aliases.
+Explicit unshared mode retains its local-only guard; check other Emacs and
+terminal instances yourself before deleting a session.
 =d= deletes a closed session after confirming its title, project,
 and whether Emacs moves it to trash or deletes it permanently.
 Child forks are not deleted.
@@ -398,8 +454,8 @@ complete deletion rules.
 
 Open the tree browser with =C-c C-p w=, or Context =w= in the menu.
 It shows the session's saved conversation tree.  =@= marks the
-current entry and =*= marks its active ancestors.  Press =RET= to
-continue from the selected turn in the same session file.  =RET= on
+current entry and =*= marks its active ancestors.  In explicit unshared
+mode, press =RET= to continue from the selected turn in the same session file.  =RET= on
 =@= changes nothing.
 
 If continuation would replace an unsent text or image draft, Pilish
@@ -409,8 +465,15 @@ continuation before any file rewrite or resume.
 Press =f= to cycle filters, or =?= to choose any filter directly.
 The default hides tool results.  Use =/= to search and =l= to set or
 clear a node label.  Press =g= to read the last saved state from disk.
-Display and refresh work offline, but continuation from a historical
-turn needs the linked live, idle Pilish process.
+Display and refresh work offline, but ordinary unshared continuation from
+a historical turn needs the linked live, idle Pilish process.
+
+Managed live tree navigation and labels currently refuse their disk mutation:
+Pi 1.4 RPC has no owning navigation/label command, and an idle runtime still
+holds its writer claim.  Pilish does not bypass that claim with a parallel
+rewrite.  Stopped managed append/rewrite primitives use leases; the missing
+live owning command remains an explicit integration limitation, not a claim
+that all storage paths are protected.  See [[file:STORAGE.md][STORAGE.md]].
 
 See [[file:#tree-continuation][Tree navigation and draft protection]] for the
 node-specific continuation table and all race safeguards.
@@ -640,7 +703,7 @@ Chat buffer (motion state):
 | =C-c ]= / =C-c [= | next or previous Pi session link        |
 | =i= / =a= | focus input (=a= goes to end of input)  |
 | =?=       | transient menu                          |
-| =q=       | quit session                            |
+| =q=       | close view; detached agent keeps running |
 
 Input buffer (normal state):
 
@@ -749,8 +812,10 @@ an error if the model option is missing.
 #+html: <a id="remote-projects-with-tramp"></a>
 ** Remote projects with TRAMP
 
-When the current project is a TRAMP directory, Pilish
-starts the Pi CLI on the remote host.  Install =pi= there.
+In explicit unshared mode, when the current project is a TRAMP directory,
+Pilish starts the Pi CLI on the remote host.  Install =pi= there.  The
+Phimacs detached candidate uses same-user local Unix sockets; remote managed
+launches and mutations are not an implicit fallback to plain Pi.
 
 Authentication and configuration are remote too.  Run =pi= and =/login=
 on that host, or set provider environment variables for the remote
@@ -777,7 +842,9 @@ Pilish has basic support for Pi
 extensions.  Extension commands show up in slash completion and the
 transient menu, extension tools run normally, and extensions can use
 notifications, confirm/select/input prompts, multiline editor prompts,
-prefill the input buffer, show status text, and show text widgets.
+show status text and show text widgets.  Unshared editor-text requests can
+prefill input; detached requests with ambiguous origin become labelled
+recoverable notices, never a broadcast draft overwrite.
 
 Notifications show in the echo area, where the next message replaces
 them.  To keep extension warnings and errors in the chat as well, set
@@ -859,14 +926,19 @@ problems.  See
 Authenticate the [[https://pi.dev/docs/latest/providers][Pi CLI]] before expecting models to
 appear.  Set a provider API key, or run =pi= in a terminal once and use
 =/login=.  Then make the running session pick up the new credentials:
-press =C-c C-p R= (or =M-x pilish-reload=) to restart the Pi process
-without losing the conversation.
+in ordinary unshared mode, press =C-c C-p R= (or =M-x pilish-reload=)
+to restart Pi without losing the conversation.  Detached =pilish-reload=
+only reconnects the same runtime; it does not reload runtime code or
+restart a provider.  Any necessary agent restart is a separate explicit
+Stop/Resume operation after checking accepted and queued work.
 
 #+html: <a id="troubleshooting-executable"></a>
 ** Emacs cannot find pi or node
 
-Pilish runs the command in =pilish-executable=, which defaults to
-=("pi")=.  If Emacs cannot find =pi=, install the CLI with the npm
+Ordinary unshared Pilish runs =pilish-executable=,
+which defaults to =("pi")=.  Detached Phimacs instead uses the absolute
+release executables supplied to =pilish-configure-runtime=; diagnose a wrong
+release before opening sessions.  If Emacs cannot find =pi=, install the CLI with the npm
 command from [[file:#quick-start][Quick start]] on the host where Pi runs,
 adjust the relevant search path, or customize =pilish-executable=.
 To run Pi through =npx= without a global installation, use:
@@ -992,7 +1064,7 @@ The main buffers:
 | =n= / =p=                 | chat         | Navigate user messages                      |
 | =i=                       | chat         | Open or focus the input window              |
 | =f=                       | chat         | Fork from the turn at point                 |
-| =q=                       | chat         | Quit session                                |
+| =q=                       | chat         | Close view; detached agent keeps running    |
 | =C-c C-n=                 | chat         | New session                                 |
 | =C-c C-e=                 | chat         | Export session to HTML                      |
 | =C-c C-c=                 | chat         | Compact conversation context                |
@@ -1353,14 +1425,20 @@ are not deleted.  They appear as roots if the parent is absent
 elsewhere in the archive, and their descendants stay attached.
 Deletion does not cascade.
 
-Pilish checks for a live session before and after confirmation, but
-only sees Pilish processes in this Emacs.  After confirmation it also
+In explicit unshared mode, Pilish checks for a live session before and
+after confirmation, but only sees Pilish processes in this Emacs.  After confirmation it also
 rejects an observed canonical retarget, such as a symlink that now
 resolves to another target.  These checks do not lock files.  An
 independent writer can replace a path without changing its canonical
 spelling, or change it between the final check and =delete-file=.
 Cancellation or a deletion error keeps the current browser snapshot.
 Successful deletion refreshes it.
+
+Configured managed mode instead holds the common fixed per-user stopped-file
+lease throughout fresh validation and deletion.  Retargeted aliases or uncertain
+owners refuse; no raw-writer fallback or automatic retry is used.  Optional
+managed trash uses =gio trash= and its XDG policy, not a custom Emacs trash
+program.  Read [[file:STORAGE.md][STORAGE.md]] for the mutation/export contract and raw Pi boundary.
 
 #+html: <a id="tree-continuation"></a>
 ** Tree navigation and draft protection
@@ -1389,7 +1467,8 @@ Blank text with no image proceeds without a prompt.  The =@= no-op
 never prompts.  This check applies only when continuation would
 replace a draft, not to every =RET=.
 
-For a path-changing continuation, Pilish rewrites the active path in the
+For a path-changing continuation in explicit unshared mode, Pilish
+rewrites the active path in the
 same session file and resumes it.  This does not lock out other
 processes.  An independent Pi instance or external writer can race the
 final read and replacement.  A TRAMP handler may yield or implement the
@@ -1549,26 +1628,32 @@ window focus:
                       :on-ready (lambda (response) (message "%S" response)))
 #+end_src
 
-Creation returns the chat buffer immediately.  =on-ready= receives Pi's first
-state response asynchronously.  Named background creation never opens grammar
+Creation returns the chat buffer immediately.  In unshared mode, =on-ready=
+receives Pi's first state response asynchronously; in detached mode it receives
+success only after the validated authoritative snapshot/live boundary.  Named background creation never opens grammar
 installation prompts; dependencies must already be installed.  Per-process
 arguments and environment survive reload.  =pilish-session-chat-buffer=
 resolves the session from a chat or input buffer.  =pilish-session-process= and
-=pilish-session-input-buffer= expose native handles; =pilish-session-directory=,
+=pilish-session-input-buffer= expose transport/input handles; the detached
+transport is a network process, not Pi's PID.  =pilish-session-runtime= and
+=pilish-session-process-identity= expose actual Pi PID/start/boot identity.
+=pilish-session-directory=,
 =-name=, =-title=, =-file=, =-model=, =-context-usage=, =-queued-prompts= and
 =-busy-p= read its state, and =pilish-session-exists-p= checks a name.
 =pilish-view-session-file= opens a saved session read-only.
 =pilish-submit-prompt= submits without modifying a draft and acknowledges
 actual RPC acceptance; while Pi is busy, Pi queues the prompt itself.
 =pilish-reload= takes an optional callback, called exactly once with nil or
-a failure reason.  A process shared through pimux stops first, and its
-replacement opens the session file once its Pi has exited.
+a failure reason.  A detached view reconnects the retained runtime identity
+only; it never stops/replaces Pi or starts a missing runtime.
 =pilish-restart-refusal-functions= receive the chat buffer and can refuse
 replacing its process by returning the reason, for a host that tracks the
 process; =pilish-reload= then reloads in place if Pi has an extension command
 =reload=, and otherwise reports the reason.
-=pilish-close-session= stops only the explicitly supplied session without a
-confirmation prompt; callers must establish ownership.
+=pilish-close-session= closes the explicitly supplied view without a
+confirmation prompt.  Detached Pi keeps running; unshared Pi retains its native
+process lifetime.  =pilish-stop-runtime= is the separate acknowledged global
+stop API, whose caller owns every-frontend confirmation, including while idle.
 
 Integrations can register =pilish-session-environment-functions= before the
 first session starts.  Each function receives the chat buffer and directory,
@@ -1584,16 +1669,36 @@ another frontend sharing the process.
 
 *** Sharing a session with other frontends
 
-With =pilish-executable= set to =("pimux" "--" "pi")=, Pi runs under
-pi-ant's =pimux=, and other frontends (such as Tau in a phone browser)
-can attach to the same Pi process.  Every frontend then sees the same
-conversation live: prompts, steering, replies, tools and questions from any
-of them.  A question answered elsewhere disappears here; a model, thinking
-level or session name change shows up at once.  When another frontend
-starts a new session, resumes or forks, the chat follows in place: same
-buffers, draft and queued follow-ups, its history rebuilt from the new
-session.  =pilish-session-mux= returns the shared process's identity.
-Closing a shared session ends its Pi for every frontend.
+Configure the absolute compiled release Pi/pimux executables through
+=pilish-configure-runtime=, as shown in Quick start.  The launcher commits
+ownership and returns a receipt; Pilish then connects *directly* to the Unix
+socket as an ordinary peer.  Protocol 2 has no privileged creator, primary
+stdio transport or protocol-1 lifetime shim.  Input is gated until a valid
+hello, runtime/Pi identity and authoritative snapshot/replay/live boundary.
+
+Every frontend sees the same conversation: prompts, steering, replies, tools
+and questions.  First answer wins; model, thinking and session changes are
+authoritative.  File or branch changes suspend old-context text, images,
+automatic follow-ups and uncertain submissions as labelled recoverable data,
+never silently carry them into another conversation.  Shared queue removal
+confirms its global scope; only the requester recovers all acknowledged text.
+See [[file:DRAFTS.md][DRAFTS.md]] for exact recovery and dialog limits.
+
+=pilish-session-mux= exposes the validated hello;
+=pilish-session-runtime= exposes retained mux/socket/actual Pi identity and
+view state.  =pilish-list-runtimes= and =pilish-attach-runtime= discover and
+attach without starting Pi.  =pilish-reconnect-runtime= reconnects only;
+=pilish-resume-stopped-session= is a separate intentional managed launch and
+sends no prompt.  =pilish-stop-runtime= performs acknowledged identity-bound
+stop, never signals a raw Pi PID, and refuses parent-task worker promotion.
+
+Closing buffers, the last client or Emacs disconnects without stopping the
+agent.  Already accepted work and waits may continue and incur usage invisibly.
+A runtime crash is reported, not automatically restarted.  Desktop owners use
+=pilish-session-desktop-state= and =pilish-restore-session-state=: restore
+attaches the saved live identity and adopts its current file/branch, or retains
+an unavailable view with explicit recovery.  Saved work is never auto-resubmitted.
+See [[file:RUNTIME.md][RUNTIME.md]] for the complete public API and isolated verification.
 
 ** Custom input-window layouts
 
@@ -1867,6 +1972,11 @@ parsing the transcript:
 
 ** Dependencies and local Markdown scope
 
+These stock-package examples are for ordinary unshared use.  Phimacs users
+must use the selected release's pinned fork and locked dependencies as described
+in Quick start and [[file:RUNTIME.md][RUNTIME.md]], not =:ensure t= on a stock package or a moving
+upstream clone.  The integration capability check deliberately rejects that copy.
+
 MELPA, with [[https://elpa.gnu.org/][GNU ELPA]] added for =compat=,
 installs =transient=, =magit-section=, =md-ts-mode=, and
 =markdown-table-wrap= automatically.  Pilish uses =md-ts-mode= only for
@@ -1924,8 +2034,9 @@ grammars are =markdown= and =markdown-inline=.  Optional grammars such
 as =python=, =javascript=, =rust=, and =go= improve syntax highlighting
 inside code blocks.
 
-On first session start, Pilish prompts to install the essential
-grammars.  If you decline, the prompt appears again next time until the
+In ordinary unshared interactive use, on first session start Pilish prompts
+to install the essential grammars.  The Phimacs reference installation provisions
+them explicitly in advance; normal reference startup never installs assets.  If you decline, the prompt appears again next time until the
 grammars are installed or you change
 =pilish-essential-grammar-action=.  A separate optional prompt offers
 additional grammars.  Declining that prompt is remembered and it appears
@@ -1991,8 +2102,10 @@ or system grammar cannot satisfy this check.
 The returned plist has =:api-version 1=, =:emacs-version=, an absolute
 =:directory= and a =:grammars= vector.  Each entry reports =:language=, =:url=,
 =:version=, immutable =:revision=, =:source-directory=, absolute =:library=,
-=:sha256= and =:abi=.  Save this report with the release's build evidence and
-retain the corresponding source and licenses.  Either missing or unloadable
+=:sha256= and =:abi=.  The Emacs 31.1 recipes pin both grammars to v0.5.4,
+immutable revision =41ff24a6c775492c543b09228aeb98d1cd2b3a0f=, ABI 15.
+Save this report with the release's build evidence and retain the
+corresponding source and licenses.  Either missing or unloadable
 library is an error, never a partial success.  Failed builds can leave partial
 output for inspection; use a new empty destination rather than overwriting it.
 
