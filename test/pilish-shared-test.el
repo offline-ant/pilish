@@ -29,7 +29,8 @@ The owning runtime/core suite tests actual socket/hello validation."
         :session (list :file file :id (format "id-%s" file) :name name :cwd cwd)
         :model (list :provider "faux" :id "two" :name "two")
         :thinkingLevel "high" :idle (if (eq active t) :false t) :leafId "l1"
-        :messages (vconcat messages)
+        :inputContext (list :sessionFile file :leafId "l1" :contextId "branch-1")
+        :entries [] :messages (vconcat messages)
         :run (list :active active :compacting :false :tailTruncated truncated)
         :replay replay))
 
