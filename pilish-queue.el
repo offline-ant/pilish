@@ -30,10 +30,10 @@
 ;;   Follow-up: commit once the tests pass
 ;;   ↳ [Restore M-<up>] [Clear C-c C-u]
 ;;
-;; `pilish-restore-queued-messages' moves every queued message into the
-;; draft and `pilish-clear-queued-messages' discards them, keeping the text
-;; in the kill ring.  Neither stops the run.  `pilish-abort' restores them
-;; too.
+;; In explicit unshared mode, restore moves queued messages into the draft
+;; and clear keeps discarded text in the kill ring.  A shared queue belongs
+;; to every frontend: its removal needs confirmation and acknowledged ALL
+;; text becomes requester-only suspended recovery, never automatic input.
 ;;
 ;; A session has two queues: Pi's own, known through `queue_update'
 ;; snapshots, and Pilish's local follow-ups.  Pi's `clear_queue' takes its
@@ -46,6 +46,11 @@
 ;;; Code:
 
 (require 'pilish-ui)
+(require 'pilish-drafts)
+
+(declare-function pilish--cancel-tool-times-state "pilish-render" ())
+(declare-function pilish--paint-retired-tool-times "pilish-render" (retired))
+(declare-function pilish--cancel-process-dialogs "pilish-dialog" (process))
 
 (defconst pilish--queue-panel-rows 4
   "Most queued messages shown above the draft.")
@@ -70,7 +75,7 @@ HELP describes it.  Pressing does nothing, so point stays in the draft."
                 'mouse-face 'highlight
                 'help-echo (concat "mouse-1: " help))))
 
-(defun pilish--queue-panel-lines ()
+(defun pilish--queue-panel-queue-lines ()
   "Return the lines showing the current chat buffer's queued messages."
   (let* ((rows (append (mapcar (lambda (text) (cons "Steering" text))
                                (pilish--queued-steering))
@@ -90,12 +95,29 @@ HELP describes it.  Pressing does nothing, so point stays in the draft."
        (list (concat
               (propertize "↳ " 'face 'pilish-queued-message)
               (pilish--queue-control
-               "Restore" 'pilish-restore-queued-messages
-               "move the queued messages into the draft")
+               (if (pilish--process-shared-p pilish--process) "Recover ALL" "Restore")
+               'pilish-restore-queued-messages
+               "recover queued messages; a shared queue belongs to every frontend")
               " "
               (pilish--queue-control
                "Clear" 'pilish-clear-queued-messages
-               "discard the queued messages, keeping them in the kill ring")))))))
+               "clear queued messages; a shared queue belongs to every frontend")))))))
+
+(defun pilish--queue-panel-lines ()
+  "Return queued work and explicit local recovery controls above the draft."
+  (append
+   (pilish--queue-panel-queue-lines)
+   (when (and (pilish--process-shared-p pilish--process)
+              (or (pilish--queued-steering) (pilish--queued-followups)))
+     (list (propertize "Shared queue: clear affects EVERY frontend; recovery belongs to the requester."
+                       'face 'pilish-queued-message)))
+   (when pilish--input-quarantine
+     (list (concat (propertize (format "Suspended/recovered input (%d): "
+                                      (length pilish--input-quarantine))
+                               'face 'pilish-queued-message)
+                   (pilish--queue-control "Select and reuse"
+                                          'pilish-restore-quarantined-input
+                                          "select old-context input and confirm reuse; never automatically send"))))))
 
 ;;;; Taking messages back
 
@@ -117,8 +139,11 @@ HELP describes it.  Pressing does nothing, so point stays in the draft."
 
 (defun pilish--cleared-messages (response)
   "Return the texts Pi removed according to `clear_queue' RESPONSE."
-  (let ((data (plist-get response :data)))
-    (append (plist-get data :steering) (plist-get data :followUp) nil)))
+  (when (eq (plist-get response :success) t)
+    (let ((data (plist-get response :data)))
+      (seq-filter #'stringp
+                  (append (plist-get data :steering)
+                          (plist-get data :followUp) nil)))))
 
 (defun pilish--restore-messages (messages)
   "Put the texts MESSAGES before the draft, like Pi's terminal interface."
@@ -160,8 +185,10 @@ follow-ups leave at once, so they cannot start while Pi answers."
     (with-current-buffer chat
       (if (pilish--session-transition-active-p)
           (message "Pi: Cannot change queued messages while session is switching")
-        (let ((local (pilish--take-unsubmitted-followups))
-              (proc (pilish--get-process)))
+        (if (pilish--process-shared-p (pilish--get-process))
+            (pilish--remove-shared-queued-messages)
+          (let ((local (pilish--take-unsubmitted-followups))
+                (proc (pilish--get-process)))
           (when restore
             (pilish--restore-messages local))
           (if (and proc (process-live-p proc))
@@ -176,21 +203,99 @@ follow-ups leave at once, so they cannot start while Pi answers."
                  (pilish--finish-queue-removal
                   (list :success nil :error (error-message-string err))
                   local restore)))
-            (pilish--finish-queue-removal '(:success t) local restore)))))))
+            (pilish--finish-queue-removal '(:success t) local restore))))))))
+
+;;;; Destructive shared queue control
+
+(defun pilish--confirm-shared-queue-clear ()
+  "Ask permission to remove the runtime's global shared input queue.
+Confirmation applies to one intentional action, never a later automatic retry."
+  (yes-or-no-p
+   (concat "Clear queued input for EVERY attached frontend? ALL acknowledged recovered text "
+           "goes only to this requester; some input may already have been delivered. ")))
+
+(defun pilish--retain-shared-queue-response (response context)
+  "Retain only acknowledged shared queue text from RESPONSE, bound to CONTEXT."
+  (if (eq (plist-get response :success) t)
+      (let ((messages (pilish--cleared-messages response)))
+        (when messages
+          (pilish--quarantine-input "shared-queue-requester-recovery" context
+                                   :followups messages :shared t))
+        (message (concat "Pi: Shared queue clear acknowledged; %d messages retained for this requester only. "
+                         "Select suspended input to reuse; nothing was resubmitted.")
+                 (length messages)))
+    (pilish--quarantine-input
+     "shared-queue-clear-uncertain" context :uncertain t
+     :diagnostic (or (plist-get response :error) "Clear was not acknowledged"))
+    (message "Pi: Shared queue clear not acknowledged; removal/delivery is uncertain. No recovered input was inferred.")))
+
+(defun pilish--clear-shared-queue-confirmed (proc context &optional callback)
+  "Clear PROC's queue after one explicit confirmation and retain its result.
+CONTEXT is the file/branch at authorization, not at callback time.  CALLBACK,
+when present, receives the actual response after requester-only recovery."
+  (let ((chat (pilish--get-chat-buffer)))
+    (condition-case err
+        (pilish--rpc-async
+         proc '(:type "clear_queue")
+         (lambda (response)
+           (when (buffer-live-p chat)
+             (with-current-buffer chat
+               (pilish--retain-shared-queue-response response context)))
+           (when callback (funcall callback response))))
+      (error
+       (let ((response (list :success nil :error (error-message-string err))))
+         (when (buffer-live-p chat)
+           (with-current-buffer chat
+             (pilish--retain-shared-queue-response response context)))
+         (when callback (funcall callback response)))))))
+
+(defun pilish--remove-shared-queued-messages ()
+  "Confirm one global clear and suspend its acknowledged recovery locally."
+  (when (pilish--confirm-shared-queue-clear)
+    (let ((context (pilish--draft-context))
+          (local (pilish--take-unsubmitted-followups))
+          (proc (pilish--get-process)))
+      (when local
+        (pilish--quarantine-input "local-queue-recovery" context :followups local))
+      (pilish--clear-shared-queue-confirmed proc context))))
+
+(defun pilish--abort-shared-turn ()
+  "Confirm global queue removal, suspend local work and abort this shared run.
+Called by the owning Abort control, before it changes queues or stop intent.
+Later delayed-start aborts must send only Abort, not clear new shared input."
+  (when (pilish--confirm-shared-queue-clear)
+    (let* ((context (pilish--draft-context))
+           (local (pilish--take-unsubmitted-followups))
+           (proc (pilish--get-process))
+           (retired (pilish--cancel-tool-times-state)))
+      (unwind-protect
+          (progn
+            (when local
+              (pilish--quarantine-input "local-abort-recovery" context :followups local))
+            (pilish--set-aborted t)
+            (pilish--clear-shared-queue-confirmed proc context)
+            (pilish--cancel-process-dialogs proc)
+            (pilish--rpc-async proc '(:type "abort") #'ignore))
+        (pilish--paint-retired-tool-times retired))
+      (message "Pi: Aborting the shared turn; acknowledged cleared input is recoverable here only")
+      t)))
 
 ;;;###autoload
 (defun pilish-restore-queued-messages (&optional event)
-  "Move every queued message into the draft, without stopping Pi.
-They go before the current draft, steering first.  EVENT is the click
-on the control above the draft, whose session this acts on."
+  "Recover queued messages without stopping Pi.
+An unshared queue goes before the draft, steering first.  Shared clearing
+requires confirmation and retains all acknowledged input as requester-only
+suspended recovery, never automatically in the draft.  EVENT identifies
+the clicked session's control."
   (interactive (list last-nonmenu-event))
   (pilish--remove-queued-messages event t))
 
 ;;;###autoload
 (defun pilish-clear-queued-messages (&optional event)
-  "Discard every queued message, without stopping Pi.
-The text stays in the kill ring.  EVENT is the click on the control
-above the draft, whose session this acts on."
+  "Clear queued messages without stopping Pi.
+Unshared text stays in the kill ring.  Shared clearing requires explicit
+every-frontend confirmation and keeps acknowledged recovery here only.
+EVENT identifies the clicked session's control."
   (interactive (list last-nonmenu-event))
   (pilish--remove-queued-messages event nil))
 
