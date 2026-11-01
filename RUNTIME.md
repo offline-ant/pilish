@@ -255,10 +255,15 @@ owned by that test namespace, including a committed runtime whose UI failed befo
 its ready callback. Do not signal foreign PIDs or treat missing acknowledgement as
 proof of exit. Retain uncertain test-operation evidence for inspection.
 
-The candidate's two real Pi/faux tests passed: creation from Pilish and an
-independent creator, equal direct-socket attachment, zero-client survival,
-reconnect/desktop restore to the same actual Pi, another frontend's moved-session
-adoption/quarantine and acknowledged explicit stop. Deck's three native tests plus
+The candidate's four real Pi/faux tests passed: creation from Pilish and an
+independent creator, equal contextual direct-socket attachment, zero-client
+survival, reconnect/desktop restore to the same actual Pi, another frontend's
+moved-session adoption/quarantine and acknowledged explicit stop. The public
+saved-file entry point opens its exact existing conversation during asynchronous
+startup and submits once there. An injected renderer failure during a real
+snapshot/live sequence retains identity and recoverable input, refuses prompts,
+and recovers only through explicit reconnect without replay. The independent
+synthetic peer captures the snapshot's exact `inputContext` before its one action. Deck's three native tests plus
 its disposable-daemon TTY smoke passed desktop restore, stopped-view recovery,
 no shell replay and frontend restart/ordinary-exit survival with unchanged mux/Pi
 identity. These are candidate-native results, **not** packed clean-install,

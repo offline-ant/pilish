@@ -41,6 +41,7 @@
             (default-directory (file-name-as-directory (expand-file-name "sessions" root)))
             (process-environment (copy-sequence process-environment))
             (pilish-runtime-mode 'detached)
+            (pilish-executable (list (getenv "PHIMACS_PI_EXECUTABLE")))
             (pilish-runtime-pi-executable (getenv "PHIMACS_PI_EXECUTABLE"))
             (pilish-runtime-pimux-executable (getenv "PHIMACS_PIMUX_EXECUTABLE"))
             (pilish-extra-args
@@ -50,7 +51,7 @@
             chat runtime)
        (setq process-environment
              (seq-remove (lambda (entry)
-                           (string-match-p "\\`\\(?:PI_ORCHESTRATION_\\|PI_WORKER_\\|PHIMACS_PARENT_TASK=\\)" entry))
+                           (string-match-p "\\`\\(?:PI_ORCHESTRATION_\\|PI_WORKER_\\|PHIMACS_PARENT_\\|PHIMACS_MANAGED_CLAIM=\\|PI_REMOTE=\\)" entry))
                          process-environment))
        (setenv "PI_CODING_AGENT_DIR" (expand-file-name "agent" root))
        (setenv "PI_CODING_AGENT_SESSION_DIR" default-directory)
@@ -146,6 +147,95 @@
         (pilish-runtime-native-test--wait (lambda () ready))
         (should (eq ready 'success)))
       (should (equal identity (pilish-session-process-identity chat))))))
+
+(ert-deftest pilish-runtime-native-test-public-open-selects-existing-file-before-start ()
+  "The asynchronous public entry point opens exactly the user's saved file."
+  (pilish-runtime-native-test--with-host
+    (let ((file (expand-file-name "public-selected.jsonl" default-directory))
+          (timestamp (format-time-string "%Y-%m-%dT%H:%M:%SZ" nil t))
+          response)
+      (with-temp-file file
+        (insert (json-encode
+                 (list :type "session" :version 3 :id "selected-native"
+                       :timestamp timestamp :cwd default-directory)) "\n"
+                (json-encode
+                 (list :type "message" :id "selected-entry" :parentId nil
+                       :timestamp timestamp
+                       :message '(:role "user" :content "persisted selected conversation" :timestamp 1)))
+                "\n"))
+      (set-file-modes file #o600)
+      ;; No synthetic callback or process is installed: this exercises the real
+      ;; compiled launcher, asynchronous socket setup and public function.
+      (setq chat (pilish-open-session-file file))
+      (should (buffer-live-p chat))
+      (pilish-runtime-native-test--wait
+       (lambda () (equal (plist-get (pilish-session-runtime chat) :state) "live")))
+      (setq runtime (pilish-session-runtime chat))
+      (should (equal (pilish-session-file chat) file))
+      (should (equal (plist-get runtime :session-file) file))
+      (let* ((reply (pilish-runtime-native-test--peer runtime '(:type "get_messages")))
+             (messages (plist-get (plist-get (plist-get reply :response) :data) :messages)))
+        (should (= (length messages) 1))
+        (should (string-match-p "persisted selected conversation" (prin1-to-string messages))))
+      (pilish-submit-prompt chat "selected file once" (lambda (result) (setq response result)))
+      (pilish-runtime-native-test--wait
+       (lambda () (and response (not (pilish-session-busy-p chat)))))
+      (should (eq (plist-get response :success) t))
+      (should (equal (pilish-session-file chat) file))
+      (let* ((reply (pilish-runtime-native-test--peer runtime '(:type "get_messages")))
+             (messages (plist-get (plist-get (plist-get reply :response) :data) :messages)))
+        (should (= (seq-count (lambda (message) (equal (plist-get message :role) "user"))
+                              (append messages nil)) 2))))))
+
+(ert-deftest pilish-runtime-native-test-failed-render-live-stays-gated-until-reconnect ()
+  "A real full boundary and live marker cannot repair a failed renderer."
+  (pilish-runtime-native-test--with-host
+    (let (ready)
+      (setq chat (pilish-start-session default-directory "native-render-failure"
+                                       :on-ready (lambda (result) (setq ready result))))
+      (pilish-runtime-native-test--wait (lambda () ready))
+      (should (eq (plist-get ready :success) t))
+      (setq runtime (pilish-session-runtime chat))
+      (let ((identity (pilish-session-process-identity chat))
+            (context (pilish-session-input-context chat))
+            (proc (pilish-session-process chat))
+            (finish-snapshot (symbol-function 'pilish--shared-finish-snapshot))
+            live-seen acknowledged)
+        (with-current-buffer (pilish-session-input-buffer chat)
+          (insert "retain after native render failure"))
+        (cl-letf (((symbol-function 'pilish--display-session-history)
+                   (lambda (&rest _) (error "Native snapshot renderer failure")))
+                  ((symbol-function 'pilish--shared-finish-snapshot)
+                   (lambda (process record)
+                     (funcall finish-snapshot process record)
+                     (setq live-seen (plist-get record :generation)))))
+          (pilish--rpc-async proc '(:type "pimux_bootstrap" :include ["entries" "messages"])
+                             (lambda (response) (setq acknowledged response)))
+          (pilish-runtime-native-test--wait (lambda () (and live-seen acknowledged)))
+          (should (eq (plist-get acknowledged :success) t))
+          (should (string-match-p "Native snapshot renderer failure"
+                                  (process-get proc 'pilish-mux-application-error)))
+          (should-not (pilish--shared-input-ready-p proc))
+          (should-not (pilish-session-input-context chat))
+          (should-error (pilish-submit-prompt chat "must never be submitted" #'ignore)
+                        :type 'user-error))
+        (should (equal identity (pilish-session-process-identity chat)))
+        (should (equal identity (pilish--runtime-process-identity (plist-get runtime :pi-pid))))
+        (should (seq-find
+                 (lambda (record)
+                   (equal (plist-get record :draft) "retain after native render failure"))
+                 (pilish-session-quarantine chat)))
+        (let (reconnected)
+          (pilish-reconnect-runtime chat (lambda (error) (setq reconnected (or error 'success))))
+          (pilish-runtime-native-test--wait (lambda () reconnected))
+          (should (eq reconnected 'success)))
+        (should (pilish-session-input-context chat))
+        (should (equal context (pilish-session-input-context chat)))
+        (should (equal identity (pilish-session-process-identity chat)))
+        (let* ((reply (pilish-runtime-native-test--peer runtime '(:type "get_messages")))
+               (messages (plist-get (plist-get (plist-get reply :response) :data) :messages)))
+          ;; Neither failed input nor explicit synchronization authorizes work.
+          (should (= (length messages) 0)))))))
 
 (provide 'pilish-runtime-native-test)
 ;;; pilish-runtime-native-test.el ends here
