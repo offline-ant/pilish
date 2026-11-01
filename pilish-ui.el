@@ -49,6 +49,8 @@
 (require 'diff-mode)
 (require 'button)
 
+(declare-function pilish--capture-input-context "pilish-core" (process))
+(declare-function pilish--bind-input-context "pilish-core" (command context))
 
 ;; Forward declarations: keymaps bind functions defined in other modules.
 ;; Grouped by target module for easy cross-referencing.
@@ -1510,7 +1512,7 @@ so built-in other-window scrolling commands target the linked chat."
 
 (defvar-local pilish--thinking-display nil
   "Completed-thinking display mode for this chat buffer.
-One of the symbols `visible' or `hidden'. Live streaming thinking is always
+One of the symbols `visible' or `hidden'.  Live streaming thinking is always
 shown while the assistant is still working; this mode is applied when a
 thinking block completes and whenever completed thinking is redisplayed later.
 Temporary per-block TAB toggles do not change this buffer-local preference.")
@@ -1773,9 +1775,22 @@ Updated after each agent turn completes.")
 Retained across compaction and delayed agent_start until settlement, prompt
 rejection, no-turn completion, or process exit.")
 
-(defun pilish--set-aborted (value)
-  "Set the aborted flag to VALUE."
-  (setq pilish--aborted value))
+(defvar pilish--prompt-wait)
+
+(defvar-local pilish--abort-input-context nil
+  "Opaque runtime context captured by the current explicit Abort action.")
+
+(defun pilish--set-aborted (value &optional input-context)
+  "Set the aborted flag to VALUE, retaining the action's INPUT-CONTEXT.
+A delayed start may need another Abort, but never against a newer branch."
+  (let ((proc (pilish--get-process)))
+    (setq pilish--abort-input-context
+          (when (and value (processp proc) (process-get proc 'pilish-detached))
+            (or input-context
+                (and pilish--prompt-wait
+                     (pilish--prompt-wait-input-context pilish--prompt-wait))
+                (pilish--capture-input-context proc)))
+          pilish--aborted value)))
 
 (defvar-local pilish--message-start-marker nil
   "Marker for start of current message content.
@@ -2004,7 +2019,7 @@ example, after prompt or image transformation).")
 
 (cl-defstruct (pilish--prompt-wait (:constructor pilish--make-prompt-wait))
   "Ownership of one prompt request, separate from observed run activity."
-  process accepted started echoed restore-followups disposition followup)
+  process input-context accepted started echoed restore-followups disposition followup)
 
 (defvar-local pilish--prompt-wait nil
   "Current prompt request record, or nil after its ownership is released.
@@ -3797,27 +3812,33 @@ Safely handles dead buffers by checking liveness first."
 
 ;;;; Sending Infrastructure
 
-(defun pilish--send-abort ()
-  "Abort the current operation without re-clearing a shared queue.
+(defun pilish--send-abort (&optional input-context)
+  "Abort the original INPUT-CONTEXT without re-clearing a shared queue.
 The initial shared Abort control already confirmed its one global clear.
 A delayed start may require Abort again, but never removal of newly queued
 input without new human authorization.  Explicit unshared Pi keeps its
 ordinary clear-then-abort recovery."
   (when-let* ((proc (pilish--get-process)))
-    (unless (pilish--process-shared-p proc)
-      (let ((chat-buf (pilish--get-chat-buffer)))
-        (pilish--rpc-async
-         proc '(:type "clear_queue")
-         (lambda (response)
-           (when (buffer-live-p chat-buf)
-             (with-current-buffer chat-buf
-               (pilish--restore-messages (pilish--cleared-messages response))))))))
-    ;; A repeated shared Abort closes waiting dialogs but sends no clear_queue.
-    (pilish--cancel-process-dialogs proc)
-    (pilish--close-process-editors proc)
-    (pilish--rpc-async proc '(:type "abort") #'ignore)))
+    (let ((context (or input-context pilish--abort-input-context)))
+      (when (pilish--process-shared-p proc)
+        (unless (and context
+                     (equal context (pilish--capture-input-context proc)))
+          (user-error "Abort belongs to an unavailable or previous context; no command was sent")))
+      (unless (pilish--process-shared-p proc)
+        (let ((chat-buf (pilish--get-chat-buffer)))
+          (pilish--rpc-async
+           proc '(:type "clear_queue")
+           (lambda (response)
+             (when (buffer-live-p chat-buf)
+               (with-current-buffer chat-buf
+                 (pilish--restore-messages (pilish--cleared-messages response))))))))
+      ;; A repeated shared Abort closes waiting dialogs but sends no clear_queue.
+      (pilish--cancel-process-dialogs proc)
+      (pilish--close-process-editors proc)
+      (pilish--rpc-async
+       proc (pilish--bind-input-context '(:type "abort") context) #'ignore))))
 
-(defun pilish-submit-prompt (chat-buffer text callback &optional behavior)
+(defun pilish-submit-prompt (chat-buffer text callback &optional behavior input-context)
   "Submit TEXT to CHAT-BUFFER without changing its input draft.
 CALLBACK receives Pi's acceptance or rejection response asynchronously.
 BEHAVIOR is \"steer\" or \"followUp\" (the default) while busy.  Use RPC
@@ -3826,14 +3847,18 @@ at submission, before queued text is delivered to the model.
 While the session is busy Pi queues TEXT itself and reports it with
 `queue_update', which the header and `pilish-session-queued-prompts'
 include.  Pilish's own follow-up queue and `sending' status belong to
-prompts typed in the input buffer, whose draft they restore on failure."
+prompts typed in the input buffer, whose draft they restore on failure.
+INPUT-CONTEXT optionally retains the original action's opaque runtime binding;
+callers that defer submission must capture it before yielding to a callback."
   (let ((proc (and (buffer-live-p chat-buffer)
                    (buffer-local-value 'pilish--process chat-buffer))))
     (unless (and (processp proc) (process-live-p proc))
       (error "Pi process is unavailable"))
     (pilish--rpc-async
-     proc (list :type "prompt" :message text
-                :streamingBehavior (or behavior "followUp"))
+     proc (pilish--bind-input-context
+           (list :type "prompt" :message text
+                 :streamingBehavior (or behavior "followUp"))
+           (or input-context (pilish--capture-input-context proc)))
      callback)))
 
 (defconst pilish--prompt-start-timeout 0.5
@@ -3856,16 +3881,22 @@ Elapsed time alone does not return the frontend to idle.")
     (pilish--draft-submission-ended pilish--prompt-wait))
   (setq pilish--prompt-wait nil))
 
-(defun pilish--begin-prompt-start-wait ()
-  "Reserve local submission for a prompt and return its opaque request record."
-  (pilish--invalidate-prompt-start-wait)
-  (setq pilish--prompt-wait
-        (pilish--make-prompt-wait :process (pilish--get-process))))
+(defun pilish--begin-prompt-start-wait (&optional input-context)
+  "Reserve submission bound to INPUT-CONTEXT and return its request record."
+  (let* ((proc (pilish--get-process))
+         (context (or input-context (pilish--capture-input-context proc))))
+    (pilish--invalidate-prompt-start-wait)
+    (setq pilish--prompt-wait
+          (pilish--make-prompt-wait :process proc :input-context context))))
 
 (defun pilish--prompt-start-current-p (wait)
   "Return non-nil when WAIT still owns the current process's prompt request."
   (and wait (eq wait pilish--prompt-wait)
-       (pilish--prompt-start-wait-active-p)))
+       (pilish--prompt-start-wait-active-p)
+       (let ((proc (pilish--prompt-wait-process wait)))
+         (or (not (and (processp proc) (process-get proc 'pilish-detached)))
+             (equal (pilish--prompt-wait-input-context wait)
+                    (process-get proc 'pilish-input-context))))))
 
 (defun pilish--prompt-start-needed-p (wait)
   "Return non-nil when accepted WAIT has not produced an observed start."
@@ -3958,13 +3989,14 @@ ON-NO-AGENT-START is called only if the probe confirms no turn."
 
 (defun pilish--handle-prompt-send-failure
     (chat-buf wait on-failure &optional error-text)
-  "Finish the current failed prompt request owned by WAIT.
+  "Finish a failed prompt request owned by WAIT, or a failed reservation.
 Restore input through ON-FAILURE in CHAT-BUF and report ERROR-TEXT without
-idling independently observed work.  Return non-nil only for the current WAIT."
+idling independently observed work.  Nil WAIT may recover only with no owner."
   (let ((current-failure
          (and (buffer-live-p chat-buf)
               (with-current-buffer chat-buf
-                (pilish--prompt-start-current-p wait)))))
+                (if wait (pilish--prompt-start-current-p wait)
+                  (null pilish--prompt-wait))))))
     (when current-failure
       (pilish--abort-send chat-buf on-failure)
       (message "Pi: Send failed%s"
@@ -3972,12 +4004,13 @@ idling independently observed work.  Return non-nil only for the current WAIT."
     current-failure))
 
 (defun pilish--send-prompt
-    (text &optional on-success on-failure on-no-agent-start prompt-image)
+    (text &optional on-success on-failure on-no-agent-start prompt-image input-context)
   "Send TEXT and optional PROMPT-IMAGE to the pi process.
 Slash commands are sent literally - pi handles expansion.
 ON-SUCCESS runs in the chat buffer upon acceptance, which may follow a run.
 ON-FAILURE restores a rejected request or synchronous scheduling failure.
-ON-NO-AGENT-START runs only for accepted requests confirmed to have no turn."
+ON-NO-AGENT-START runs only for accepted requests confirmed to have no turn.
+INPUT-CONTEXT optionally preserves an earlier action's opaque branch binding."
   (let ((proc (pilish--get-process))
         (chat-buf (pilish--get-chat-buffer))
         wait)
@@ -3989,61 +4022,64 @@ ON-NO-AGENT-START runs only for accepted requests confirmed to have no turn."
       (pilish--abort-send chat-buf on-failure)
       (message "Pi: Process died - try M-x pilish-reload or C-c C-p R"))
      (t
-      (when (buffer-live-p chat-buf)
-        (with-current-buffer chat-buf
-          (setq wait (pilish--begin-prompt-start-wait))
-          (when (fboundp 'pilish--draft-submission-noted)
-            (pilish--draft-submission-noted text prompt-image wait))
-          (setq pilish--status 'sending)
-          (pilish--set-activity-phase "thinking")))
       (condition-case err
-          (pilish--rpc-async
-           proc
-           (append (list :type "prompt" :message text)
-                   (when prompt-image
-                     (list :images
-                           (vector (pilish--prompt-image-content-block prompt-image)))))
-           (lambda (response)
-             (if (eq (plist-get response :success) t)
-                 (when (buffer-live-p chat-buf)
-                   (with-current-buffer chat-buf
-                     (when (pilish--prompt-start-current-p wait)
-                       (setf (pilish--prompt-wait-accepted wait) t
-                             (pilish--prompt-wait-disposition wait)
-                             (plist-get (plist-get response :data) :disposition))
-                       (force-mode-line-update t)
-                       (unwind-protect
-                           (when on-success (funcall on-success))
-                         (when (pilish--prompt-start-current-p wait)
-                           ;; Acceptance has now removed any FIFO owner.  A
-                           ;; retry failure restores only its unsent successors.
-                           (when (pilish--prompt-wait-restore-followups wait)
-                             (if pilish--aborted
-                                 (pilish--clear-followup-queue)
-                               (pilish--restore-followup-queue-to-input)))
-                           (when (equal (pilish--prompt-wait-disposition wait) "queued")
-                             (message "Pi: Prompt acknowledged as queued"))
-                           (if (pilish--prompt-wait-started wait)
-                               (progn
-                                 (pilish--invalidate-prompt-start-wait)
-                                 (unless (pilish--session-busy-p)
-                                   (when pilish--aborted (pilish--clear-followup-queue))
-                                   (setq pilish--aborted nil))
-                                 (pilish--process-followup-queue))
-                             ;; Dispositions describe this input, not newer
-                             ;; work.  Queued is an acknowledgment, not a snapshot.
-                             (pcase (pilish--prompt-wait-disposition wait)
-                               ("handled"
-                                (pilish--finish-prompt-without-agent-start
-                                 chat-buf wait on-no-agent-start))
-                               ("queued"
-                                (when (and (eq pilish--status 'sending)
-                                           (not (pilish--prompt-wait-echoed wait)))
-                                  (pilish--set-activity-phase "queued"))))
-                             (pilish--schedule-prompt-start-fallback
-                              chat-buf wait on-no-agent-start)))))))
-               (pilish--handle-prompt-send-failure
-                chat-buf wait on-failure (plist-get response :error)))))
+          (progn
+            (when (buffer-live-p chat-buf)
+              (with-current-buffer chat-buf
+                (setq wait (pilish--begin-prompt-start-wait input-context))
+                (when (fboundp 'pilish--draft-submission-noted)
+                  (pilish--draft-submission-noted text prompt-image wait))
+                (setq pilish--status 'sending)
+                (pilish--set-activity-phase "thinking")))
+            (pilish--rpc-async
+             proc
+             (pilish--bind-input-context
+              (append (list :type "prompt" :message text)
+                      (when prompt-image
+                        (list :images
+                              (vector (pilish--prompt-image-content-block prompt-image)))))
+              (and wait (pilish--prompt-wait-input-context wait)))
+             (lambda (response)
+               (if (eq (plist-get response :success) t)
+                   (when (buffer-live-p chat-buf)
+                     (with-current-buffer chat-buf
+                       (when (pilish--prompt-start-current-p wait)
+                         (setf (pilish--prompt-wait-accepted wait) t
+                               (pilish--prompt-wait-disposition wait)
+                               (plist-get (plist-get response :data) :disposition))
+                         (force-mode-line-update t)
+                         (unwind-protect
+                             (when on-success (funcall on-success))
+                           (when (pilish--prompt-start-current-p wait)
+                             ;; Acceptance has now removed any FIFO owner.  A
+                             ;; retry failure restores only its unsent successors.
+                             (when (pilish--prompt-wait-restore-followups wait)
+                               (if pilish--aborted
+                                   (pilish--clear-followup-queue)
+                                 (pilish--restore-followup-queue-to-input)))
+                             (when (equal (pilish--prompt-wait-disposition wait) "queued")
+                               (message "Pi: Prompt acknowledged as queued"))
+                             (if (pilish--prompt-wait-started wait)
+                                 (progn
+                                   (pilish--invalidate-prompt-start-wait)
+                                   (unless (pilish--session-busy-p)
+                                     (when pilish--aborted (pilish--clear-followup-queue))
+                                     (setq pilish--aborted nil))
+                                   (pilish--process-followup-queue))
+                               ;; Dispositions describe this input, not newer
+                               ;; work.  Queued is an acknowledgment, not a snapshot.
+                               (pcase (pilish--prompt-wait-disposition wait)
+                                 ("handled"
+                                  (pilish--finish-prompt-without-agent-start
+                                   chat-buf wait on-no-agent-start))
+                                 ("queued"
+                                  (when (and (eq pilish--status 'sending)
+                                             (not (pilish--prompt-wait-echoed wait)))
+                                    (pilish--set-activity-phase "queued"))))
+                               (pilish--schedule-prompt-start-fallback
+                                chat-buf wait on-no-agent-start)))))))
+                 (pilish--handle-prompt-send-failure
+                  chat-buf wait on-failure (plist-get response :error))))))
         ((error quit)
          (if (eq (car err) 'quit)
              (unwind-protect
