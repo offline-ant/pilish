@@ -4,10 +4,13 @@
 (require 'pilish-test-common)
 
 (defun pilish-shared-test--hello (proc)
-  "Deliver PROC's `pimux_hello' as primary."
-  (pilish-test--stdout proc (list :type "pimux_hello" :protocol 1 :muxId "m1"
-                                  :clientId "c0" :role "primary" :piPid 42
-                                  :socket "/tmp/m1.sock")))
+  "Establish PROC as an already validated protocol-2 module-test peer.
+The owning runtime/core suite tests actual socket/hello validation."
+  (process-put proc 'pilish-mux '(:type "pimux_hello" :protocol 2 :muxId "m1"
+                                  :clientId 1 :piPid 42 :socket "/tmp/m1.sock"
+                                  :capabilities ["snapshot" "stop" "detached"]))
+  (process-put proc 'pilish-mux-generation 0)
+  (process-put proc 'pilish-mux-live-generation 0))
 
 (defun pilish-shared-test--user (text)
   "Return a saved user message with TEXT."
@@ -189,7 +192,7 @@ The replayed tool still gets Pi's recorded duration at completion."
       (should (eq pilish--status 'idle)))))
 
 (ert-deftest pilish-shared-test-session-change-adopted-in-place ()
-  "A session change from another frontend keeps process, draft and queue."
+  "A session change keeps the transport but suspends old-context input."
   (let* ((dir (file-name-as-directory (pilish-test--make-temp-directory "pi-shared-")))
          identities)
     (unwind-protect
@@ -221,9 +224,12 @@ The replayed tool still gets Pi's recorded duration at completion."
             (with-current-buffer chat
               (should-not (string-match-p "old transcript" (buffer-string)))
               (should (string-match-p "new start" (buffer-string)))
-              (should (equal pilish--followup-queue '("queued later"))))
+              (should-not pilish--followup-queue)
+              (should (seq-find (lambda (record)
+                                 (equal (plist-get record :followups) '("queued later")))
+                               (pilish-session-quarantine chat))))
             (with-current-buffer input
-              (should (equal (buffer-string) "my draft")))
+              (should (equal (buffer-string) "")))
             ;; Commands are refetched for the new session.
             (should (seq-find (lambda (c) (equal (plist-get c :type) "get_commands"))
                               commands))))
@@ -340,7 +346,7 @@ The replayed tool still gets Pi's recorded duration at completion."
     (let ((request (seq-find (lambda (c) (equal (plist-get c :type) "pimux_bootstrap"))
                              commands)))
       (should request)
-      (should (equal (plist-get request :include) ["messages"]))
+      (should (equal (plist-get request :include) ["entries" "messages"]))
       (pilish-test--stdout
        proc
        (list :type "response" :id (plist-get request :id) :command "pimux_bootstrap"
@@ -382,150 +388,6 @@ The dialog has to work while that response is outstanding."
         (should-not (pilish-session-pending-dialogs chat))
         (with-current-buffer chat
           (should (eq pilish--status 'idle)))))))
-
-(defun pilish-shared-test--pi (seconds)
-  "Start a stand-in for a shared Pi that lives SECONDS, returning the process."
-  (make-process :name "pilish-shared-pi" :command (list "sleep" (number-to-string seconds))
-                :connection-type 'pipe :noquery t))
-
-(defun pilish-shared-test--wrapper ()
-  "Start a stand-in for pimux: it exits on end of input."
-  (make-process :name "pilish-shared-wrapper" :command '("cat")
-                :connection-type 'pipe :noquery t))
-
-(defun pilish-shared-test--share (wrapper agent)
-  "Mark WRAPPER as the shared process of the stand-in AGENT."
-  (process-put wrapper 'pilish-mux (list :muxId "m" :piPid (process-id agent)))
-  (process-put wrapper 'pilish-mux-pi-start
-               (alist-get 'start (process-attributes (process-id agent)))))
-
-(defmacro pilish-shared-test--reloading (bindings outcome &rest body)
-  "Run BODY reloading a shared chat; OUTCOME gets the reload's callback calls.
-BINDINGS is (CHAT WRAPPER AGENT LIFE STARTS), LIFE the seconds the stand-in Pi
-lives and STARTS a list with an entry for each new process."
-  (declare (indent 2))
-  (pcase-let ((`(,chat ,wrapper ,agent ,life ,starts) bindings))
-    `(pilish-test-with-rpc-session (,chat _input ,wrapper commands)
-       (ignore commands)
-       (let* ((,agent (pilish-shared-test--pi ,life))
-              (,starts nil)
-              (,outcome nil)
-              (new (start-process "pilish-shared-new" nil "cat")))
-         (unwind-protect
-             (progn
-               (set-process-query-on-exit-flag new nil)
-               (pilish-shared-test--share ,wrapper ,agent)
-               (with-current-buffer ,chat
-                 (setq pilish--state (list :session-file "/tmp/s1.jsonl")))
-               (cl-letf (((symbol-function 'pilish--start-process)
-                          (lambda (&rest _) (push (list :pi-running (process-live-p ,agent))
-                                                  ,starts)
-                            new))
-                         ((symbol-function 'pilish--send-string)
-                          (lambda (_process line)
-                            (let ((command (pilish--parse-json-line line)))
-                              (push command commands)
-                              (when (equal (plist-get command :type) "switch_session")
-                                (pilish--process-filter
-                                 new (concat
-                                      (json-serialize
-                                       (list :type "response" :id (plist-get command :id)
-                                             :command "switch_session" :success :false
-                                             :error "stop here")
-                                       :false-object :false :null-object :null)
-                                      "\n")))))))
-                 (with-current-buffer ,chat
-                   (pilish-reload (lambda (reason) (push (list reason) ,outcome))))
-                 ,@body))
-           (dolist (process (list ,agent new))
-             (when (process-live-p process) (delete-process process))))))))
-
-(defun pilish-shared-test--wait (predicate)
-  "Run timers until PREDICATE holds, for at most ten seconds."
-  (let ((deadline (+ (float-time) 10)))
-    (while (and (not (funcall predicate)) (< (float-time) deadline))
-      (accept-process-output nil 0.02))
-    (should (funcall predicate))))
-
-(ert-deftest pilish-shared-test-reload-waits-for-the-old-pi-to-exit ()
-  "The new process starts only when the shared Pi can no longer write."
-  (pilish-shared-test--reloading (chat wrapper agent 0.4 starts) outcome
-    ;; pimux has gone, but Pi still finishes.
-    (pilish-shared-test--wait (lambda () (not (process-live-p wrapper))))
-    (should-not starts)
-    (should (process-live-p agent))
-    (pilish-shared-test--wait (lambda () starts))
-    (should (equal starts '((:pi-running nil))))
-    (pilish-shared-test--wait (lambda () outcome))
-    (should (equal outcome '(("Failed to reload - stop here"))))
-    ;; The failure is reported in the chat: no process is left.
-    (with-current-buffer chat
-      (should-not pilish--process)
-      (should (string-match-p "Reload failed" (buffer-string))))))
-
-(ert-deftest pilish-shared-test-reload-kills-a-pi-that-stays-and-keeps-the-draft ()
-  (let ((pilish--shared-close-seconds 0.1))
-    (pilish-shared-test--reloading (chat _wrapper agent 30 starts) outcome
-      (with-current-buffer (buffer-local-value 'pilish--input-buffer chat)
-        (insert "unsent draft"))
-      (pilish-shared-test--wait (lambda () starts))
-      (should-not (process-live-p agent))
-      (should (equal starts '((:pi-running nil))))
-      (with-current-buffer (buffer-local-value 'pilish--input-buffer chat)
-        (should (equal (buffer-string) "unsent draft"))))))
-
-(ert-deftest pilish-shared-test-reload-after-the-wrapper-died-waits-for-pi ()
-  "A killed wrapper leaves Pi running: the chat must not reopen its file yet."
-  (pilish-test-with-rpc-session (chat _input wrapper _commands)
-    (let ((agent (pilish-shared-test--pi 0.4))
-          (new (start-process "pilish-shared-new" nil "cat"))
-          starts)
-      (unwind-protect
-          (progn
-            (set-process-query-on-exit-flag new nil)
-            (pilish-shared-test--share wrapper agent)
-            (with-current-buffer chat
-              (setq pilish--state (list :session-file "/tmp/s1.jsonl")))
-            (delete-process wrapper)
-            (with-current-buffer chat
-              (pilish--mark-process-exited wrapper '(:error "killed"))
-              (should-not pilish--process))
-            (cl-letf (((symbol-function 'pilish--start-process)
-                       (lambda (&rest _) (push (process-live-p agent) starts) new)))
-              (with-current-buffer chat (pilish-reload #'ignore))
-              (should-not starts)
-              (pilish-shared-test--wait (lambda () starts))
-              (should (equal starts '(nil)))))
-        (dolist (process (list agent new))
-          (when (process-live-p process) (delete-process process)))))))
-
-(ert-deftest pilish-shared-test-replacement-records-its-own-pi ()
-  "A reload's new process says hello before it is the chat's process."
-  (pilish-test-with-rpc-session (chat _input proc _commands)
-    (let ((replacement (start-process "pilish-shared-new" nil "cat")))
-      (unwind-protect
-          (progn
-            (set-process-query-on-exit-flag replacement nil)
-            (pilish-shared-test--hello proc)
-            (process-put replacement 'pilish-chat-buffer chat)
-            (pilish-test--stdout
-             replacement (list :type "pimux_hello" :protocol 1 :muxId "m2" :clientId "c0"
-                               :role "primary" :piPid (emacs-pid) :socket "/tmp/m2.sock"))
-            (should (process-get replacement 'pilish-mux-pi-start))
-            (should (pilish--shared-pi-running-p replacement)))
-        (delete-process replacement)))))
-
-(ert-deftest pilish-shared-test-recycled-pid-is-not-pi ()
-  (let ((wrapper (pilish-shared-test--wrapper))
-        (agent (pilish-shared-test--pi 30)))
-    (unwind-protect
-        (progn
-          (pilish-shared-test--share wrapper agent)
-          (should (pilish--shared-pi-running-p wrapper))
-          (process-put wrapper 'pilish-mux-pi-start (time-subtract nil 3600))
-          (should-not (pilish--shared-pi-running-p wrapper)))
-      (delete-process wrapper)
-      (delete-process agent))))
 
 (ert-deftest pilish-shared-test-unshared-reload-keeps-the-old-process-until-replaced ()
   "A process nothing else talks to stays while its replacement starts."
@@ -569,7 +431,7 @@ lives and STARTS a list with an entry for each new process."
         (should (equal (plist-get (car commands) :type) "get_commands"))))))
 
 (ert-deftest pilish-shared-test-own-session-transition-is-not-rebuilt-twice ()
-  "Pilish's own switch rebuilds itself; its snapshot only replays."
+  "An initiating client adopts the same authoritative snapshot as every peer."
   (pilish-test-with-rpc-session (chat _input proc _commands)
     (pilish-shared-test--hello proc)
     (with-current-buffer chat
@@ -581,7 +443,8 @@ lives and STARTS a list with an entry for each new process."
                                    (list (pilish-shared-test--user "elsewhere")))
      '(:type "pimux_live" :generation 2))
     (with-current-buffer chat
-      (should (string-match-p "own transcript" (buffer-string))))))
+      (should-not (string-match-p "own transcript" (buffer-string)))
+      (should (string-match-p "elsewhere" (buffer-string))))))
 
 (ert-deftest pilish-shared-test-model-thinking-and-name-changes ()
   (pilish-test-with-rpc-session (chat _input proc _commands)
@@ -596,25 +459,6 @@ lives and STARTS a list with an entry for each new process."
     (should (equal (pilish-session-title chat) "Renamed"))
     (with-current-buffer chat
       (should (equal (plist-get pilish--state :thinking-level) "low")))))
-
-(ert-deftest pilish-shared-test-terminate-closes-input-of-shared-process ()
-  "A shared process gets end of input instead of being killed."
-  (let ((shared (make-process :name "pilish-shared-cat" :command '("cat")
-                              :connection-type 'pipe :noquery t))
-        (plain (make-process :name "pilish-plain-cat" :command '("cat")
-                             :connection-type 'pipe :noquery t)))
-    (unwind-protect
-        (progn
-          (process-put shared 'pilish-mux '(:muxId "m"))
-          (pilish--terminate-process shared)
-          (pilish--terminate-process plain)
-          (should-not (process-live-p plain))
-          (pilish-test-wait-for-process-exit shared 5)
-          ;; cat ended on its own: end of input, not a signal.
-          (should (eq (process-status shared) 'exit))
-          (should (= (process-exit-status shared) 0)))
-      (dolist (p (list shared plain))
-        (when (process-live-p p) (delete-process p))))))
 
 (provide 'pilish-shared-test)
 ;;; pilish-shared-test.el ends here
