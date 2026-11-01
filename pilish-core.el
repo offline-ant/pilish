@@ -37,6 +37,8 @@
 (declare-function pilish--runtime-accept-hello "pilish-runtime-process" (process hello))
 (declare-function pilish--runtime-note-exit "pilish-runtime-process" (process event))
 (declare-function pilish--shared-input-ready-p "pilish-shared" (proc))
+(declare-function pilish--shared-snapshot-application-failed "pilish-shared" (proc reason context))
+(declare-function pilish--draft-context "pilish-drafts" ())
 
 ;;;; JSON Parsing
 
@@ -150,6 +152,15 @@ are not repeatedly copied."
   "Encode COMMAND plist as a JSON line for sending to pi.
 COMMAND must be a valid plist with string/number/list values.
 Returns a JSON string terminated with a newline."
+  (when-let* ((context (plist-get command :pimuxContext))
+              ((listp context)))
+    ;; json-parse-string's :null is not json-encode's default null sentinel.
+    ;; Normalize only the reserved envelope, leaving native Pi payloads intact.
+    (setq context (copy-tree context))
+    (dolist (key '(:sessionFile :leafId))
+      (when (eq (plist-get context key) :null)
+        (setq context (plist-put context key nil))))
+    (setq command (plist-put (copy-sequence command) :pimuxContext context)))
   (concat (json-encode command) "\n"))
 
 ;;;; Path Boundary Helpers
@@ -519,18 +530,67 @@ Maps request IDs to command type strings."
       (pilish--enqueue-outbound-string process string)
     (process-send-string process string)))
 
+(defconst pilish--readonly-rpc-commands
+  '("get_state" "get_messages" "get_entries" "get_tree" "get_commands"
+    "get_fork_messages" "get_session_stats" "get_last_assistant_text"
+    "get_available_models" "get_available_thinking_levels"
+    "get_steering_messages" "get_follow_up_messages" "get_session_name")
+  "Pi commands that cannot mutate the selected conversation.")
+
+(defvar pilish--dialog-response-context nil
+  "Captured runtime context of a synchronous extension dialog answer.")
+
+(defun pilish--valid-input-context-p (context)
+  "Whether CONTEXT is a complete opaque owning runtime input binding."
+  (and (listp context)
+       (plist-member context :sessionFile)
+       (plist-member context :leafId)
+       (cl-every (lambda (value)
+                   (or (null value) (eq value :null)
+                       (and (stringp value) (not (string-empty-p value)))))
+                 (list (plist-get context :sessionFile)
+                       (plist-get context :leafId)))
+       (stringp (plist-get context :contextId))
+       (not (string-empty-p (plist-get context :contextId)))))
+
+(defun pilish--capture-input-context (process)
+  "Copy PROCESS's authoritative runtime input context, or nil when unshared.
+An unavailable detached context is an error, never permission to bind later."
+  (when (and (processp process) (process-get process 'pilish-detached))
+    (let ((context (process-get process 'pilish-input-context)))
+      (unless (pilish--valid-input-context-p context)
+        (user-error "Detached input context unavailable; reconnect explicitly"))
+      (copy-tree context))))
+
+(defun pilish--bind-input-context (command context)
+  "Bind COMMAND to captured CONTEXT, leaving explicit unshared calls unchanged."
+  (if context
+      (plist-put (copy-sequence command) :pimuxContext (copy-tree context))
+    command))
+
+(defun pilish--prepare-contextual-command (process command)
+  "Validate and bind PROCESS's mutating COMMAND before it crosses the socket.
+Callers with delayed actions must supply the original :pimuxContext.  This
+boundary never replaces a supplied expectation with a newer context."
+  (if (or (not (process-get process 'pilish-detached))
+          (member (plist-get command :type) pilish--readonly-rpc-commands)
+          (string-prefix-p "pimux_" (or (plist-get command :type) "")))
+      command
+    (unless (pilish--shared-input-ready-p process)
+      (user-error "Detached view is not snapshot-ready; input retained, reconnect explicitly"))
+    (let ((context (if (plist-member command :pimuxContext)
+                       (plist-get command :pimuxContext)
+                     (pilish--capture-input-context process))))
+      (unless (pilish--valid-input-context-p context)
+        (user-error "Missing captured runtime input context; no command was sent"))
+      (pilish--bind-input-context command context))))
+
 (defun pilish--rpc-async (process command callback)
   "Send COMMAND to pi PROCESS asynchronously.
 COMMAND is a plist that will be augmented with a unique ID.
 CALLBACK is called with the response plist when received.
 Encoding or scheduling failures leave no pending request behind."
-  (when (and (process-get process 'pilish-detached)
-             (not (and (process-get process 'pilish-mux)
-                       (pilish--shared-input-ready-p process)))
-             (not (member (plist-get command :type)
-                          '("pimux_bootstrap" "abort" "get_state" "get_commands"
-                            "get_available_models" "get_session_stats"))))
-    (user-error "Detached view is not snapshot-ready; input retained, reconnect explicitly"))
+  (setq command (pilish--prepare-contextual-command process command))
   (when (>= (hash-table-count (pilish--get-pending-requests process)) 256)
     (user-error "Too many pending runtime requests; no command was sent"))
   (let* ((id (pilish--next-request-id))
@@ -555,9 +615,12 @@ Encoding or scheduling failures leave no pending request behind."
 RESPONSE must include the original :id from the request, as pi uses
 this to match responses to pending promises."
   (when (and (process-get process 'pilish-detached)
-             (not (pilish--shared-input-ready-p process)))
-    (user-error "Wait for the authoritative live boundary before answering"))
-  (pilish--send-string process (pilish--encode-command response)))
+             (not (plist-member response :pimuxContext))
+             pilish--dialog-response-context)
+    (setq response (pilish--bind-input-context response pilish--dialog-response-context)))
+  (pilish--send-string
+   process (pilish--encode-command
+            (pilish--prepare-contextual-command process response))))
 
 (defun pilish--rpc-sync (process command &optional timeout)
   "Send COMMAND to pi PROCESS synchronously, returning the response.
@@ -648,6 +711,22 @@ may also reset this wall-clock observation baseline."
               (error
                (message "pilish: error dispatching process response: %s"
                         (error-message-string err))
+               (when (and (process-get proc 'pilish-detached)
+                          (process-get proc 'pilish-mux-snapshot))
+                 (let ((chat (process-get proc 'pilish-chat-buffer)))
+                   ;; A replay renderer can throw outside apply-snapshot.  Its
+                   ;; following live marker cannot commit an incomplete view.
+                   (process-put proc 'pilish-mux-applied-generation nil)
+                   (process-put proc 'pilish-input-context nil)
+                   (process-put proc 'pilish-mux-awaiting-snapshot t)
+                   (when (and (buffer-live-p chat)
+                              (fboundp 'pilish--shared-snapshot-application-failed))
+                     (with-current-buffer chat
+                       (condition-case failure
+                           (pilish--shared-snapshot-application-failed
+                            proc (error-message-string err) (pilish--draft-context))
+                         (error (message "pilish: recovery display failed: %s"
+                                         (error-message-string failure))))))))
                (when (and (process-get proc 'pilish-detached) (process-live-p proc)
                           (or (not (process-get proc 'pilish-mux)) (not (listp json))))
                  (delete-process proc))))))))))
@@ -660,7 +739,7 @@ may also reset this wall-clock observation baseline."
 (defun pilish--dispatch-response (proc json)
   "Dispatch JSON response from PROC to callback or event handler.
 Response routing order: explicit ID, id-less `:command' match, then
-id-less sole pending request. Non-response JSON is treated as an event."
+id-less sole pending request.  Non-response JSON is treated as an event."
   (let ((type (plist-get json :type))
         (id (plist-get json :id)))
     (if (equal type "response")

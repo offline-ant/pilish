@@ -56,7 +56,9 @@ directly to the socket as an ordinary peer; the creator has no privileged lifeti
 
 Before user input is accepted, Pilish validates the private same-user socket and
 parent directory, protocol/capabilities, mux and exact actual Pi PID/start/boot
-identity, then applies the authoritative snapshot/replay/live boundary. The
+identity and the `contextual-input` capability, then applies the authoritative
+snapshot/replay/live boundary. A protocol-2 owner without that capability refuses
+rather than silently accepting unguarded instructions. The
 `on-ready` callback reports success only after that boundary. A listening socket,
 launcher exit or metadata response alone is not ready. Unsupported/mismatched
 owners refuse; no second writer is spawned as recovery. Opening a saved file in a
@@ -97,6 +99,10 @@ runtime available for explicit reconnect/stop.
   available placement/parent/orchestration metadata.
 - `pilish-session-process-identity(buffer)` returns actual Pi `:pid`, `:start-time`
   and `:boot-id`, separately from the transport.
+- `pilish-session-input-context(buffer)` copies the owning `inputContext` only
+  after successful snapshot/live application. Capture it before delayed actions
+  and pass it to `pilish-submit-prompt`; unavailable/unshared views return nil.
+  This opaque file/branch anchor is distinct from the moving history leaf.
 - `pilish-list-runtimes()` returns normalized discovery plists without starting Pi.
   Unsupported entries remain visible, never a reason to start a replacement.
 - `pilish-attach-runtime(runtime &optional name)` attaches an existing identity,

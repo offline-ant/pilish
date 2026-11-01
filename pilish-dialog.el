@@ -103,6 +103,9 @@ object nobody can answer, so EVENT is returned unrecorded."
       event
     (let* ((timeout (plist-get event :timeout))
            (request (append event
+                            (when (process-get process 'pilish-detached)
+                              (list :pilish-input-context
+                                    (pilish--capture-input-context process)))
                             (when (and (numberp timeout) (> timeout 0))
                               (list :pilish-timer
                                     (run-at-time (/ timeout 1000.0) nil
@@ -151,11 +154,19 @@ Sends nothing; responding is the caller's business."
 
 (defun pilish--extension-dialog-respond (process request tail)
   "Close REQUEST of PROCESS and send response plist TAIL when PROCESS lives."
-  (pilish--extension-dialog-close process (plist-get request :id))
-  (when (process-live-p process)
-    (pilish--send-extension-ui-response
-     process (append (list :type "extension_ui_response" :id (plist-get request :id))
-                     tail))))
+  (let ((pending (pilish--extension-dialog-request process (plist-get request :id))))
+    (when (and (process-get process 'pilish-detached)
+               (or (not pending)
+                   (not (equal (plist-get pending :pilish-input-context)
+                               (plist-get request :pilish-input-context)))))
+      (user-error "This dialog belongs to a previous runtime context; no answer was sent"))
+    (pilish--extension-dialog-close process (plist-get request :id))
+    (when (process-live-p process)
+      (pilish--send-extension-ui-response
+       process (pilish--bind-input-context
+                (append (list :type "extension_ui_response" :id (plist-get request :id))
+                        tail)
+                (plist-get request :pilish-input-context))))))
 
 (defun pilish--cancel-dialog-request (process request)
   "Cancel REQUEST of PROCESS."
@@ -182,7 +193,8 @@ loses its `:pilish-stale' mark and is not asked twice."
 
 (defun pilish--ask-extension-dialog (event proc)
   "Register the new dialog EVENT owned by PROC and ask the user."
-  (let ((request (pilish--extension-dialog-open proc event)))
+  (let* ((request (pilish--extension-dialog-open proc event))
+         (pilish--dialog-response-context (plist-get request :pilish-input-context)))
     (cond
      ((equal (plist-get event :method) "editor")
       (pilish--extension-ui-editor

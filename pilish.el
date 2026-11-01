@@ -353,6 +353,16 @@ Use `pilish-session-process-identity' for actual Pi PID/start/boot identity."
   (when (buffer-live-p chat-buffer)
     (buffer-local-value 'pilish--process chat-buffer)))
 
+(defun pilish-session-input-context (chat-buffer)
+  "Copy CHAT-BUFFER's owning input context after its successful live boundary.
+Return nil for unshared or unavailable views.  Capture this before asynchronous
+work and pass it to `pilish-submit-prompt'; never infer it from the moving leaf."
+  (when (buffer-live-p chat-buffer)
+    (let ((proc (buffer-local-value 'pilish--process chat-buffer)))
+      (when (and (processp proc) (process-get proc 'pilish-detached)
+                 (pilish--shared-input-ready-p proc))
+        (pilish--capture-input-context proc)))))
+
 (defun pilish-session-input-buffer (chat-buffer)
   "Return the input buffer owned by CHAT-BUFFER, or nil."
   (when (buffer-live-p chat-buffer)
