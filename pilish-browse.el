@@ -74,9 +74,10 @@
 (require 'transient)
 
 ;; Forward declarations for functions in other modules (avoid circular deps)
-(declare-function pilish-set-session-name "pilish-menu" (name))
+(declare-function pilish-set-session-name "pilish-menu" (name &optional input-context))
 (declare-function pilish--resume-selected-session "pilish-menu"
-                  (proc chat-buf selected-path))
+                  (proc chat-buf selected-path &optional input-context))
+(declare-function pilish--capture-input-context "pilish-core" (proc))
 (declare-function pilish--session-transition-ready-p "pilish-menu"
                   (chat-buf action))
 (declare-function pilish--session-file-cwd-or-error "pilish-menu"
@@ -3019,25 +3020,35 @@ current-vs-other session (see
              (managed (pilish-storage-managed-p))
              (identity (or (and item (pilish--session-item-key item))
                            (pilish--canonical-session-path path)))
+             (chat-buf (pilish--get-chat-buffer))
+             (proc (and (buffer-live-p chat-buf)
+                        (buffer-local-value 'pilish--process chat-buf)))
+             (live-target (and (pilish--browse-session-file-matches-p chat-buf path)
+                               (or (not managed)
+                                   (pilish--session-live-process-p proc))))
+             (input-context (when live-target
+                              (pilish--capture-input-context proc)))
              (input (read-string "Rename session: " (or existing "")))
              (clean (pilish--browse-clean-session-name input)))
         (if (string-empty-p clean)
             (message "Pi: Rename cancelled")
-          (let ((chat-buf (pilish--get-chat-buffer)))
-            (if (and (pilish--browse-session-file-matches-p chat-buf path)
-                     (or (not (pilish-storage-managed-p))
-                         (pilish--session-live-process-p
-                          (buffer-local-value 'pilish--process chat-buf))))
-                (progn
-                  (pilish-set-session-name clean)
-                  (pilish--session-browser-fetch-and-render))
-              (when (if (or managed (pilish-storage-managed-p))
-                        (progn
-                          (pilish-storage-append-entry
-                           path "session_info" (list :name clean) identity)
-                          t)
-                      (pilish--browse-append-session-info path clean))
-                (pilish--session-browser-fetch-and-render))))))
+          (if live-target
+              (progn
+                (unless (and (buffer-live-p chat-buf)
+                             (eq proc (buffer-local-value 'pilish--process chat-buf)))
+                  (user-error "Conversation connection changed during rename; nothing was sent"))
+                (with-current-buffer chat-buf
+                  (if (pilish--process-shared-p proc)
+                      (pilish-set-session-name clean input-context)
+                    (pilish-set-session-name clean)))
+                (pilish--session-browser-fetch-and-render))
+            (when (if (or managed (pilish-storage-managed-p))
+                      (progn
+                        (pilish-storage-append-entry
+                         path "session_info" (list :name clean) identity)
+                        t)
+                    (pilish--browse-append-session-info path clean))
+              (pilish--session-browser-fetch-and-render)))))
     (message "Pi: No session at point")))
 
 ;;;; Point-Preserving Rerender
@@ -4069,7 +4080,9 @@ continuation target."
   (when-let* ((section (magit-current-section))
               (node-id (oref section value))
               ((stringp node-id)))
-    (let* ((current-label (when pilish--tree-browser-tree
+    (let* ((owner (list pilish--tree-browser-loaded-file
+                        pilish--tree-browser-fetch-token))
+           (current-label (when pilish--tree-browser-tree
                             (pilish--tree-find-label
                              pilish--tree-browser-tree node-id)))
            (new-label (read-string
@@ -4079,6 +4092,9 @@ continuation target."
                          "Label: ")
                        current-label))
            (label (if (string-empty-p (string-trim new-label)) nil new-label)))
+      (unless (equal owner (list pilish--tree-browser-loaded-file
+                                  pilish--tree-browser-fetch-token))
+        (user-error "Tree changed during label entry; nothing was changed"))
       (pilish--browse-set-label node-id label))))
 
 (defun pilish--tree-find-label (tree node-id)
@@ -4729,11 +4745,14 @@ browser per project directory."
   (let ((chat-buf pilish--chat-buffer))
     (unless (and chat-buf (buffer-live-p chat-buf))
       (user-error "No pi session to switch to"))
-    (let ((proc (buffer-local-value 'pilish--process chat-buf)))
+    (let* ((proc (buffer-local-value 'pilish--process chat-buf))
+           (input-context (pilish--capture-input-context proc)))
       (unless (pilish--session-live-process-p proc)
         (user-error "Pi process is not running"))
       (unless (pilish--browse-transition-refused-p chat-buf "switch")
-        (pilish--resume-selected-session proc chat-buf path)
+        (if (pilish--process-shared-p proc)
+            (pilish--resume-selected-session proc chat-buf path input-context)
+          (pilish--resume-selected-session proc chat-buf path))
         (pilish--browse-quit-when-settled
          chat-buf (selected-window) path)))))
 
