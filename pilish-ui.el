@@ -3798,21 +3798,21 @@ Safely handles dead buffers by checking liveness first."
 ;;;; Sending Infrastructure
 
 (defun pilish--send-abort ()
-  "Clear backend queues before aborting the current operation.
-Send both commands in wire order.  Their acknowledgments must not release
-local ownership or mutate a later operation on the same process; the
-messages Pi removed only return to the draft."
+  "Abort the current operation without re-clearing a shared queue.
+The initial shared Abort control already confirmed its one global clear.
+A delayed start may require Abort again, but never removal of newly queued
+input without new human authorization.  Explicit unshared Pi keeps its
+ordinary clear-then-abort recovery."
   (when-let* ((proc (pilish--get-process)))
-    (let ((chat-buf (pilish--get-chat-buffer)))
-      (pilish--rpc-async
-       proc '(:type "clear_queue")
-       (lambda (response)
-         (when (buffer-live-p chat-buf)
-           (with-current-buffer chat-buf
-             (pilish--restore-messages (pilish--cleared-messages response)))))))
-    ;; RPC editors have no agent-side AbortSignal option, and Pi never reports
-    ;; dialogs it settles itself.  Cancel pending dialogs after clearing the
-    ;; queue, then abort so their waiting tools settle.
+    (unless (pilish--process-shared-p proc)
+      (let ((chat-buf (pilish--get-chat-buffer)))
+        (pilish--rpc-async
+         proc '(:type "clear_queue")
+         (lambda (response)
+           (when (buffer-live-p chat-buf)
+             (with-current-buffer chat-buf
+               (pilish--restore-messages (pilish--cleared-messages response))))))))
+    ;; A repeated shared Abort closes waiting dialogs but sends no clear_queue.
     (pilish--cancel-process-dialogs proc)
     (pilish--close-process-editors proc)
     (pilish--rpc-async proc '(:type "abort") #'ignore)))
