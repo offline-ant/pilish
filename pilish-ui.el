@@ -88,6 +88,8 @@
 (declare-function pilish-queue-steering "pilish-input")
 (declare-function pilish-restore-queued-messages "pilish-queue")
 (declare-function pilish-clear-queued-messages "pilish-queue")
+(declare-function pilish--draft-submission-noted "pilish-drafts" (text image wait))
+(declare-function pilish--draft-submission-ended "pilish-drafts" (wait))
 (declare-function pilish--queue-panel-lines "pilish-queue")
 (declare-function pilish--cleared-messages "pilish-queue")
 (declare-function pilish--restore-messages "pilish-queue")
@@ -1869,7 +1871,8 @@ Used to avoid duplicate headers during retry sequences.")
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (setq pilish--draft-prompt-image image)
-        (force-mode-line-update t)))
+        (force-mode-line-update t)
+        (pilish--note-desktop-local-state)))
     image))
 
 (defun pilish--clear-prompt-image (&optional input-buffer)
@@ -1917,10 +1920,28 @@ oldest message is sent after the session settles, and dropped only after
 prompt preflight accepts it.  This is simpler than using pi's RPC follow_up
 command.")
 
+(defvar pilish-session-desktop-state-functions nil
+  "Functions called with CHAT-BUFFER when nontext local input state changed.
+Images, suspended input and local follow-ups notify desktop integrations even
+when the input buffer's text did not change.  These are view changes, not
+permission to submit recovered work or stop a shared runtime.")
+
+(defun pilish--note-desktop-local-state ()
+  "Notify observers of the current session's local desktop state."
+  (when-let* ((chat (pilish--get-chat-buffer)) ((buffer-live-p chat)))
+    (dolist (function pilish-session-desktop-state-functions)
+      (condition-case-unless-debug err
+          (funcall function chat)
+        (error (display-warning
+                'pilish (format "Desktop state function %S failed: %s"
+                                function (error-message-string err))
+                :error))))))
+
 (defun pilish--queue-changed ()
-  "Show the current chat buffer's changed queues."
+  "Show the current chat buffer's changed queues and notify its observers."
   (force-mode-line-update t)
-  (pilish--refresh-input-preamble))
+  (pilish--refresh-input-preamble)
+  (pilish--note-desktop-local-state))
 
 (defun pilish--push-followup (message)
   "Push MESSAGE onto the follow-up queue."
@@ -3875,6 +3896,8 @@ Elapsed time alone does not return the frontend to idle.")
 (defun pilish--invalidate-prompt-start-wait ()
   "Cancel the prompt probe and invalidate the current request record."
   (pilish--cancel-prompt-start-timer)
+  (when (fboundp 'pilish--draft-submission-ended)
+    (pilish--draft-submission-ended pilish--prompt-wait))
   (setq pilish--prompt-wait nil))
 
 (defun pilish--begin-prompt-start-wait ()
@@ -4013,6 +4036,8 @@ ON-NO-AGENT-START runs only for accepted requests confirmed to have no turn."
       (when (buffer-live-p chat-buf)
         (with-current-buffer chat-buf
           (setq wait (pilish--begin-prompt-start-wait))
+          (when (fboundp 'pilish--draft-submission-noted)
+            (pilish--draft-submission-noted text prompt-image wait))
           (setq pilish--status 'sending)
           (pilish--set-activity-phase "thinking")))
       (condition-case err
