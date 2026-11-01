@@ -9,14 +9,19 @@ EMACS_MAJOR_VERSION := $(shell $(EMACS) --batch -Q --eval '(princ emacs-major-ve
 PACKAGE_USER_DIR ?= $(abspath .cache/elpa/$(EMACS_MAJOR_VERSION))
 export PACKAGE_USER_DIR
 PACKAGE_USER_DIR_INIT = --eval "(let ((dir (getenv \"PACKAGE_USER_DIR\"))) (when dir (setq package-user-dir (directory-file-name (expand-file-name dir)))))"
+# Native fixtures are explicit, project-local inputs, never home grammars.
+# Override GRAMMAR_DIR with a fresh provisioned essential-grammar directory.
+GRAMMAR_DIR ?= $(abspath .cache/tree-sitter/$(EMACS_MAJOR_VERSION))
+export GRAMMAR_DIR
 BATCH = $(EMACS) --batch -Q -L . \
 	$(PACKAGE_USER_DIR_INIT) \
-	--eval "(add-to-list 'treesit-extra-load-path (expand-file-name \"~/.emacs.d/tree-sitter\"))"
+	--eval "(setq treesit-extra-load-path (list (getenv \"GRAMMAR_DIR\")))"
 # Keep this checkout first in load-path even after package-initialize.
 LOCAL_LOAD_PATH = --eval "(setq load-path (cons (expand-file-name \".\") load-path))"
 
-# Pi CLI version — single source of truth (workflows extract this automatically)
-PI_VERSION ?= 1.1.0
+# Exact host for opt-in real compatibility lanes; unit/fake tests never need Pi.
+# The fake models a bounded RPC subset, not a replacement for real-host checks.
+PI_VERSION ?= 1.4.0
 PI_PACKAGE ?= @earendil-works/pi-coding-agent
 PI_BIN ?= .cache/pi/node_modules/.bin/pi
 PI_BIN_DIR = $(abspath $(dir $(PI_BIN)))
@@ -30,7 +35,8 @@ SELECTOR ?=
 # Example: make test VERBOSE=1
 VERBOSE ?=
 
-.PHONY: test test-unit test-core test-ui test-render test-arguments test-table test-input test-menu test-browse test-jsonl test-snapshot test-build test-answer test-grammars test-session-api test-dialog test-queue test-shared test-style test-pair test-terminal-image
+.PHONY: test test-unit test-core test-ui test-render test-arguments test-table test-input test-menu test-browse test-jsonl test-snapshot test-build test-grammars test-session-api test-dialog test-queue test-shared test-style test-pair test-answer test-terminal-image
+.PHONY: test-drafts test-shared-input test-menu-detached test-storage test-runtime
 .PHONY: test-integration test-integration-fake test-integration-real test-integration-ci test-integration-ci-real test-gui test-gui-ci test-all
 .PHONY: bench bench-batch bench-reload-resume bench-reload-resume-batch bench-reload-resume-smoke
 .PHONY: bench-tool-update bench-tool-update-batch bench-tool-update-smoke
@@ -49,7 +55,12 @@ help:
 	@echo "  make test-table       Table decoration tests only"
 	@echo "  make test-input       Input buffer tests only"
 	@echo "  make test-queue       Queued message tests only"
+	@echo "  make test-drafts      Context-bound draft/recovery tests only"
+	@echo "  make test-shared-input Shared input readiness/recovery tests only"
 	@echo "  make test-menu        Menu/session tests only"
+	@echo "  make test-menu-detached Detached reconnect/stop menu tests only"
+	@echo "  make test-storage     Managed session mutation tests only"
+	@echo "  make test-runtime     Detached socket/runtime tests only"
 	@echo "  make test-browse      Session/tree browser tests only"
 	@echo "  make test-jsonl        JSONL reader/tree/projection tests only"
 	@echo "  make test-snapshot     Static saved subagent snapshot tests only"
@@ -132,6 +143,11 @@ test: .deps-stamp
 		-l pilish-dialog-test \
 		-l pilish-queue-test \
 		-l pilish-shared-test \
+		-l pilish-drafts-test \
+		-l pilish-shared-input-test \
+		-l pilish-menu-detached-test \
+		-l pilish-storage-test \
+		-l pilish-runtime-test \
 		-l pilish-style-test \
 		-l pilish-pair-test \
 		-l pilish-terminal-image-test \
@@ -181,6 +197,16 @@ test-queue: .deps-stamp
 	@$(BATCH_TEST) -l pilish-queue-test $(ERT_RUN)
 test-shared: .deps-stamp
 	@$(BATCH_TEST) -l pilish-shared-test $(ERT_RUN)
+test-drafts: .deps-stamp
+	@$(BATCH_TEST) -l pilish-drafts-test $(ERT_RUN)
+test-shared-input: .deps-stamp
+	@$(BATCH_TEST) -l pilish-shared-input-test $(ERT_RUN)
+test-menu-detached: .deps-stamp
+	@$(BATCH_TEST) -l pilish-menu-detached-test $(ERT_RUN)
+test-storage: .deps-stamp
+	@$(BATCH_TEST) -l pilish-storage-test $(ERT_RUN)
+test-runtime: .deps-stamp
+	@$(BATCH_TEST) -l pilish-runtime-test $(ERT_RUN)
 test-style: .deps-stamp
 	@$(BATCH_TEST) -l pilish-style-test $(ERT_RUN)
 
@@ -402,9 +428,19 @@ ollama-status:
 # Code quality
 # ============================================================
 
+# One explicit source graph keeps every owning module in every default check.
+PILISH_SOURCES = pilish-core.el pilish-jsonl.el pilish-grammars.el pilish-ui.el \
+	pilish-drafts.el pilish-dialog.el pilish-queue.el pilish-style.el \
+	pilish-answer.el pilish-terminal-image.el pilish-pair.el pilish-table.el \
+	pilish-render.el pilish-snapshot.el pilish-input.el pilish-menu.el \
+	pilish-shared.el pilish-storage.el pilish-runtime-process.el \
+	pilish-runtime.el pilish-browse.el pilish-evil.el pilish.el
+CHECK_SOURCES = scripts/pilish-build.el scripts/install-deps.el \
+	scripts/install-ts-grammars.el $(PILISH_SOURCES)
+
 check-parens:
 	@echo "=== Check Parens ==="
-	@OUTPUT=$$($(BATCH) --eval '(condition-case err (dolist (f (list "scripts/pilish-build.el" "scripts/install-deps.el" "scripts/install-ts-grammars.el" "pilish-core.el" "pilish-jsonl.el" "pilish-grammars.el" "pilish-ui.el" "pilish-dialog.el" "pilish-queue.el" "pilish-style.el" "pilish-answer.el" "pilish-terminal-image.el" "pilish-pair.el" "pilish-table.el" "pilish-render.el" "pilish-snapshot.el" "pilish-input.el" "pilish-menu.el" "pilish-browse.el" "pilish-evil.el" "pilish.el")) (with-current-buffer (find-file-noselect f) (check-parens) (message "%s OK" f))) (user-error "FAIL: %s" (error-message-string err)) (kill-emacs 1)))' 2>&1); \
+	@OUTPUT=$$($(BATCH) --eval '(condition-case err (dolist (f (list $(foreach source,$(CHECK_SOURCES),"$(source)"))) (with-current-buffer (find-file-noselect f) (check-parens) (message "%s OK" f))) (user-error (message "FAIL: %s" (error-message-string err)) (kill-emacs 1)))' 2>&1); \
 	echo "$$OUTPUT" | grep -E "OK$$|FAIL:"; \
 	echo "$$OUTPUT" | grep -q "FAIL:" && exit 1 || true
 
@@ -416,7 +452,7 @@ compile: .deps-stamp
 		--eval "(package-initialize)" \
 		$(LOCAL_LOAD_PATH) \
 		--eval "(setq byte-compile-error-on-warn t)" \
-		-f batch-byte-compile scripts/pilish-build.el scripts/install-deps.el scripts/install-ts-grammars.el pilish-core.el pilish-jsonl.el pilish-grammars.el pilish-ui.el pilish-dialog.el pilish-queue.el pilish-style.el pilish-answer.el pilish-terminal-image.el pilish-pair.el pilish-table.el pilish-render.el pilish-snapshot.el pilish-input.el pilish-menu.el pilish-shared.el pilish-browse.el pilish-evil.el pilish.el
+		-f batch-byte-compile $(CHECK_SOURCES)
 
 lint: lint-checkdoc lint-package
 
@@ -425,28 +461,7 @@ lint-checkdoc:
 	@OUTPUT=$$($(BATCH) \
 		--eval "(require 'checkdoc)" \
 		--eval "(setq sentence-end-double-space nil)" \
-		--eval "(checkdoc-file \"scripts/pilish-build.el\")" \
-		--eval "(checkdoc-file \"scripts/install-deps.el\")" \
-		--eval "(checkdoc-file \"scripts/install-ts-grammars.el\")" \
-		--eval "(checkdoc-file \"pilish-core.el\")" \
-		--eval "(checkdoc-file \"pilish-jsonl.el\")" \
-		--eval "(checkdoc-file \"pilish-grammars.el\")" \
-		--eval "(checkdoc-file \"pilish-ui.el\")" \
-		--eval "(checkdoc-file \"pilish-answer.el\")" \
-		--eval "(checkdoc-file \"pilish-dialog.el\")" \
-		--eval "(checkdoc-file \"pilish-queue.el\")" \
-		--eval "(checkdoc-file \"pilish-style.el\")" \
-		--eval "(checkdoc-file \"pilish-terminal-image.el\")" \
-		--eval "(checkdoc-file \"pilish-pair.el\")" \
-		--eval "(checkdoc-file \"pilish-table.el\")" \
-		--eval "(checkdoc-file \"pilish-render.el\")" \
-		--eval "(checkdoc-file \"pilish-snapshot.el\")" \
-		--eval "(checkdoc-file \"pilish-input.el\")" \
-		--eval "(checkdoc-file \"pilish-menu.el\")" \
-		--eval "(checkdoc-file \"pilish-shared.el\")" \
-		--eval "(checkdoc-file \"pilish-browse.el\")" \
-		--eval "(checkdoc-file \"pilish-evil.el\")" \
-		--eval "(checkdoc-file \"pilish.el\")" 2>&1); \
+		--eval '(dolist (file (list $(foreach source,$(CHECK_SOURCES),"$(source)"))) (checkdoc-file file))' 2>&1); \
 	WARNINGS=$$(echo "$$OUTPUT" | grep -A1 "^Warning" | grep -v "^Warning\|^--$$"); \
 	if [ -n "$$WARNINGS" ]; then echo "$$WARNINGS"; exit 1; else echo "OK"; fi
 
@@ -462,7 +477,7 @@ lint-package:
 		            (package-install 'package-lint)))" \
 		--eval "(require 'package-lint)" \
 		--eval "(setq package-lint-main-file \"pilish.el\")" \
-		-f package-lint-batch-and-exit pilish.el pilish-ui.el pilish-dialog.el pilish-queue.el pilish-style.el pilish-answer.el pilish-terminal-image.el pilish-pair.el pilish-table.el pilish-render.el pilish-snapshot.el pilish-input.el pilish-menu.el pilish-shared.el pilish-browse.el pilish-core.el pilish-jsonl.el pilish-grammars.el
+		-f package-lint-batch-and-exit $(PILISH_SOURCES)
 
 check: compile lint test
 
