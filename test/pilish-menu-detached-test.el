@@ -31,8 +31,13 @@
              (insert "source draft"))
            (process-put proc 'pilish-chat-buffer chat)
            (process-put proc 'pilish-mux '(:protocol 2 :muxId "menu-owner"))
+           (process-put proc 'pilish-detached t)
            (process-put proc 'pilish-mux-generation 4)
+           (process-put proc 'pilish-mux-applied-generation 4)
            (process-put proc 'pilish-mux-live-generation 4)
+           (process-put proc 'pilish-input-context
+                        '(:sessionFile "/tmp/menu-source.jsonl" :leafId "old"
+                          :contextId "menu-source-anchor"))
            ,@body)
        (process-put proc 'pilish-mux nil)
        (when (process-live-p proc) (delete-process proc))
@@ -142,7 +147,9 @@
         (pilish--shared-apply-snapshot
          proc (list :type "pimux_snapshot" :generation 5 :session
                     (list :file "/tmp/menu-new.jsonl" :id "new" :cwd directory)
-                    :leafId "new" :entries [] :messages [] :idle t :run '(:active :false)))
+                    :leafId "new" :entries [] :messages [] :idle t :run '(:active :false)
+                    :inputContext '(:sessionFile "/tmp/menu-new.jsonl" :leafId "new"
+                                    :contextId "menu-new-anchor")))
         (pilish--shared-finish-snapshot proc '(:generation 5))
         (should (pilish--shared-input-ready-p proc))
         (should (equal (plist-get pilish--state :session-file) "/tmp/menu-new.jsonl"))
@@ -160,7 +167,10 @@
                 ((symbol-function 'pilish--rpc-async)
                  (lambda (_ command callback) (push command requests) (push callback callbacks))))
         (pilish--resume-selected-session proc chat "/tmp/menu-destination.jsonl")
-        (should (equal (car requests) '(:type "switch_session" :sessionPath "/tmp/menu-destination.jsonl")))
+        (should (equal (car requests)
+                       '(:type "switch_session" :sessionPath "/tmp/menu-destination.jsonl"
+                         :pimuxContext (:sessionFile "/tmp/menu-source.jsonl" :leafId "old"
+                                        :contextId "menu-source-anchor"))))
         (funcall (car callbacks) '(:success t :data (:cancelled :false)))
         (should (equal (plist-get (car requests) :type) "pimux_bootstrap"))
         (should (equal (plist-get pilish--state :session-file) "/tmp/menu-source.jsonl"))))))
@@ -314,7 +324,10 @@
                 ((symbol-function 'pilish--rpc-async)
                  (lambda (_process command _callback) (setq sent command))))
         (pilish-export-html "/tmp/export.html"))
-      (should (equal sent '(:type "export_html" :outputPath "/tmp/export.html"))))))
+      (should (equal sent
+                     '(:type "export_html" :outputPath "/tmp/export.html"
+                       :pimuxContext (:sessionFile "/tmp/menu-source.jsonl" :leafId "old"
+                                      :contextId "menu-source-anchor")))))))
 
 (provide 'pilish-menu-detached-test)
 ;;; pilish-menu-detached-test.el ends here

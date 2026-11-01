@@ -51,11 +51,16 @@
                      (list
                       (list :type "pimux_hello" :protocol (or (plist-get options :protocol) 2)
                             :muxId "test-runtime" :clientId 1 :piPid (emacs-pid)
-                            :socket socket :capabilities ["snapshot" "stop" "detached"])
+                            :socket socket :capabilities
+                            (if (plist-get options :no-context-capability)
+                                ["snapshot" "stop" "detached"]
+                              ["snapshot" "stop" "detached" "contextual-input"]))
                       (list :type "pimux_snapshot" :generation 1 :reason "attach" :replay 0
                             :session (list :file file :id "s1" :name :null :cwd directory)
                             :model (list :provider "faux" :id "faux")
                             :thinkingLevel "off" :idle t :leafId :null
+                            :inputContext (list :sessionFile file :leafId :null
+                                                :contextId "fake-branch-one")
                             :entries [] :messages [] :run (list :active :false))))
                   (process-send-string client (pilish--encode-command record)))
                 (unless (plist-get options :no-live)
@@ -111,6 +116,17 @@
       (should (= (length called) 1))
       (should (stringp (car called)))
       (should-not (process-live-p (pilish-session-process pilish-runtime-test--chat))))))
+
+(ert-deftest pilish-runtime-test-uncontextual-protocol-two-refuses-not-downgrades ()
+  (pilish-runtime-test--with-peer '(:no-context-capability t)
+    (let (called)
+      (setq pilish-runtime-test--chat (pilish--runtime-new-view directory "unguarded-owner"))
+      (pilish--runtime-connect pilish-runtime-test--chat runtime
+                               (lambda (error) (push error called)))
+      (pilish-runtime-test--wait (lambda () called))
+      (should (stringp (car called)))
+      (should-not (process-live-p (pilish-session-process pilish-runtime-test--chat)))
+      (should-not pilish-runtime-test--received))))
 
 (ert-deftest pilish-runtime-test-exact-pi-start-identity-required ()
   (pilish-runtime-test--with-peer nil

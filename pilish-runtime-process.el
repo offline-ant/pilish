@@ -214,7 +214,7 @@ protocol owns cleanup; a committed runtime is left available for attachment."
                  (equal (plist-get hello :socket) (plist-get runtime :socket))
                  (cl-every (lambda (capability)
                              (member capability (append (plist-get hello :capabilities) nil)))
-                           '("snapshot" "stop" "detached")))
+                           '("snapshot" "stop" "detached" "contextual-input")))
       (error "Unsupported or mismatched pimux owner; no duplicate launch attempted"))
     (let ((identity (pilish--runtime-process-identity (plist-get runtime :pi-pid))))
       (unless (and identity
