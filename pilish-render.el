@@ -58,6 +58,7 @@
 
 ;; Forward references for functions in other modules
 (declare-function pilish-compact "pilish-menu" (&optional custom-instructions))
+(declare-function pilish-session-runtime "pilish-runtime" (buffer))
 (declare-function pilish-open-subagent-snapshot "pilish-snapshot" (&optional target))
 (declare-function pilish--seed-input-history "pilish-input" (input-buf messages))
 (declare-function pilish--cancel-process-dialogs "pilish-dialog" (process))
@@ -1322,13 +1323,23 @@ Include optional STDERR in a text fence and optional DETAIL before it."
              (concat "\n" pilish--startup-env-node-hint "\n")))))
 
 (defun pilish--display-process-exit-error
-    (error-msg &optional stderr exit-code)
-  "Display a pi process exit ERROR-MSG, optional STDERR, and EXIT-CODE."
+    (error-msg &optional stderr exit-code connection-state)
+  "Display ERROR-MSG, optional STDERR, and native Pi EXIT-CODE.
+CONNECTION-STATE is `disconnected' for lost detached transports, `stopped'
+for confirmed runtime termination, or nil for an ordinary subprocess exit."
   (pilish--append-to-chat
    (pilish--format-process-error
-    "✗ pi process exited" error-msg stderr
-    (when exit-code
-      (format "Exit code: %s" exit-code)))))
+    (pcase connection-state
+      ('disconnected "✗ Pi connection lost")
+      ('stopped "✗ Pi runtime stopped")
+      (_ "✗ pi process exited"))
+    error-msg stderr
+    (pcase connection-state
+      ('disconnected
+       "The agent may still be running. Reconnect explicitly; no input will be replayed.")
+      ('stopped
+       "Use explicit Resume stopped conversation; no input will be replayed.")
+      (_ (when exit-code (format "Exit code: %s" exit-code)))))))
 
 (defun pilish--display-extension-error (event)
   "Display extension error from extension_error EVENT."
@@ -1810,11 +1821,10 @@ which asks upfront before any buffers are touched."
         (pilish--mark-process-exited process response)))))
 
 (defun pilish--mark-process-exited (process response)
-  "Mark current chat buffer idle after PROCESS exits with RESPONSE."
+  "Mark the current view idle after PROCESS disconnects with RESPONSE.
+A detached transport disappearing is not proof that its Pi runtime stopped."
   (when (eq pilish--process process)
     (let ((error-msg (or (plist-get response :error) "Process exited")))
-      (when (pilish--process-shared-p process)
-        (setq pilish--exited-shared-process process))
       (setq pilish--status 'idle)
       (setq pilish--state
             (plist-put pilish--state :last-error error-msg))
@@ -1827,7 +1837,13 @@ which asks upfront before any buffers are touched."
               (pilish--display-process-exit-error
                error-msg
                (plist-get response :stderr)
-               (plist-get response :exitCode))
+               (plist-get response :exitCode)
+               (when (process-get process 'pilish-detached)
+                 (if (equal (plist-get (pilish-session-runtime (current-buffer))
+                                      :state)
+                            "stopped")
+                     'stopped
+                   'disconnected)))
               (process-put process 'pilish-exit-error-rendered t))
             (pilish--flush-chat-notices))
         (pilish--cancel-tool-update-flush)
