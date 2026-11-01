@@ -1709,6 +1709,37 @@ essential grammar prompt:
 (setopt pilish-essential-grammar-action 'warn)
 #+end_src
 
+*** Explicit essential-only provisioning
+
+For a release installer on Emacs 31.1 or newer, load only the owning recipe
+module and explicitly build the two Markdown grammars into an empty local
+directory:
+
+#+begin_src emacs-lisp
+(require 'pilish-grammars)
+(pilish-install-essential-grammars "/path/to/new-release/tree-sitter/")
+#+end_src
+
+This noninteractive API always builds both grammars from Pilish's own recipes,
+with full immutable source commits in addition to their version tags.  It does
+not install optional languages, look for existing home grammars, modify user
+settings, or run during normal startup.  Git, a C compiler and the linker's
+shared-library support are required.  Emacs verifies both newly built libraries
+in a fresh =-Q --batch= subprocess using their absolute paths; a previously loaded
+or system grammar cannot satisfy this check.
+
+The returned plist has =:api-version 1=, =:emacs-version=, an absolute
+=:directory= and a =:grammars= vector.  Each entry reports =:language=, =:url=,
+=:version=, immutable =:revision=, =:source-directory=, absolute =:library=,
+=:sha256= and =:abi=.  Save this report with the release's build evidence and
+retain the corresponding source and licenses.  Either missing or unloadable
+library is an error, never a partial success.  Failed builds can leave partial
+output for inspection; use a new empty destination rather than overwriting it.
+
+On Emacs 29/30 the existing interactive =pilish-install-grammars= continues to
+use its ABI-compatible recipes; the release provisioning API explicitly requires
+Emacs 31.1 rather than silently ignoring its immutable commit constraint.
+
 ** Activity phase hooks
 
 For custom UI changes tied to activity, add functions to

@@ -39,6 +39,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'treesit)
 (require 'seq)
 
@@ -56,6 +57,15 @@
 (defconst pilish--markdown-backport-source
   '("https://github.com/dnouri/tree-sitter-markdown" "v0.4.1-pilish.2")
   "Backport of scanner fixes for tree-sitter ABI 14, based on v0.4.1.")
+
+(defconst pilish--essential-grammar-source-commits
+  (list (cons pilish--markdown-upstream-source
+              "41ff24a6c775492c543b09228aeb98d1cd2b3a0f")
+        (cons pilish--markdown-backport-source
+              "04f1ba4cf3b0ce714feaa5099c313414d67d7d8d"))
+  "Immutable commits for the versioned essential grammar sources.
+The explicit essential-only installer uses these in addition to the
+owning recipes' tags, so a moved tag cannot select different source.")
 
 (defun pilish--treesit-abi-version ()
   "Return the newest language ABI this Emacs can load, or nil."
@@ -275,6 +285,118 @@ gets installed."
                (cons recipe treesit-language-source-alist)))
           (treesit-install-language-grammar lang))
       (treesit-install-language-grammar lang))))
+
+;;;###autoload
+(defun pilish-install-essential-grammars (directory)
+  "Build both essential grammars into an empty local DIRECTORY.
+This explicit provisioning API requires Emacs 31.1 with tree-sitter,
+Git and a C compiler.  It runs noninteractively, never consults existing
+home libraries, installs no optional grammars and changes no settings.
+Loading Pilish never calls it.
+
+Use the recipes in `pilish-essential-grammar-recipes' and their audited
+immutable commits.  Verify the resulting libraries in a fresh Emacs,
+not against possibly cached grammars in this process.  Signal an error
+if either build or verification fails; partial output stays in DIRECTORY
+for inspection, and is never mistaken for a complete installation.
+
+Return a plist with :api-version (1), :emacs-version, absolute :directory
+and a :grammars vector.  Each grammar report gives :language, :url,
+:version, :revision, :source-directory, absolute :library, :sha256 and :abi.
+The caller owns retention of corresponding source and build evidence."
+  (unless (and (not (version< emacs-version "31.1")) (treesit-available-p))
+    (error "Essential-only provisioning requires Emacs 31.1 with tree-sitter"))
+  (unless (and (stringp directory) (not (string-empty-p directory))
+               (not (file-remote-p directory)))
+    (error "Essential grammar destination must be a nonempty local directory"))
+  (let* ((directory (file-name-as-directory (expand-file-name directory)))
+         (target (directory-file-name directory))
+         (noninteractive t)
+         reports)
+    (when (or (file-symlink-p target)
+              (and (file-exists-p target) (not (file-directory-p target))))
+      (error "Essential grammar destination is not an ordinary directory: %s" target))
+    (make-directory directory t)
+    (unless (null (directory-files directory nil directory-files-no-dot-files-regexp))
+      (error "Essential grammar destination must be empty: %s" target))
+    ;; Built-in installer failures may only warn.  Require new nonempty
+    ;; artifacts at this exact destination, never a cached/home grammar.
+    (dolist (recipe pilish-essential-grammar-recipes)
+      (let* ((language (car recipe))
+             (commit (cdr (assoc (list (nth 1 recipe) (nth 2 recipe))
+                                 pilish--essential-grammar-source-commits)))
+             (library (expand-file-name (pilish--grammar-library-file-name language)
+                                        directory))
+             (treesit-language-source-alist
+              (list (append (cl-subseq recipe 0 4) (list nil nil commit))))
+             (treesit-extra-load-path (list directory))
+             (treesit-load-name-override-list
+              (list (list language (file-name-sans-extension library)
+                          (concat "tree_sitter_"
+                                  (subst-char-in-string ?- ?_ (symbol-name language)))))))
+        (unless (and commit (string-match-p "\\`[a-f0-9]\\{40\\}\\'" commit))
+          (error "No immutable source commit for essential recipe %s" language))
+        (treesit-install-language-grammar language directory)
+        (unless (and (not (file-symlink-p library)) (file-regular-p library)
+                     (> (file-attribute-size (file-attributes library)) 0))
+          (error "Essential grammar %s was not built in %s" language directory))
+        (push (list :language (symbol-name language) :url (nth 1 recipe)
+                    :version (nth 2 recipe) :revision commit
+                    :source-directory (nth 3 recipe) :library library
+                    :sha256 (with-temp-buffer
+                              (insert-file-contents-literally library)
+                              (secure-hash 'sha256 (current-buffer))))
+              reports)))
+    (setq reports (nreverse reports))
+    ;; Absolute override basenames select these artifacts even if another
+    ;; library exists in a system search path.  A subprocess cannot reuse
+    ;; a grammar previously loaded by the invoking interactive Emacs.
+    (let* ((scratch (make-temp-file "pilish-grammar-check-" t))
+           (languages (mapcar #'car pilish-essential-grammar-recipes))
+           (overrides (mapcar (lambda (report)
+                                (list (intern (plist-get report :language))
+                                      (file-name-sans-extension
+                                       (plist-get report :library))
+                                      (concat "tree_sitter_"
+                                              (subst-char-in-string
+                                               ?- ?_ (plist-get report :language)))))
+                              reports))
+           (form `(let ((user-emacs-directory ,(file-name-as-directory scratch))
+                        (treesit-extra-load-path nil)
+                        (treesit-load-name-override-list ',overrides))
+                    (require 'treesit)
+                    (prin1
+                     (mapcar
+                      (lambda (language)
+                        (unless (treesit-language-available-p language)
+                          (error "Essential grammar failed to load: %s" language))
+                        (with-temp-buffer
+                          (insert "| a | b |\n| - | - |\n| **one** | two |\n")
+                          (let ((parser (treesit-parser-create language)))
+                            (treesit-parser-root-node parser)))
+                        (treesit-language-abi-version language))
+                      ',languages))))
+           (default-directory scratch))
+      (unwind-protect
+          (with-temp-buffer
+            (let ((status (call-process (expand-file-name invocation-name
+                                                         invocation-directory)
+                                        nil t nil "-Q" "--batch" "--eval"
+                                        (prin1-to-string form))))
+              (unless (eql status 0)
+                (error "Essential grammar validation failed: %s" (buffer-string)))
+              (goto-char (point-min))
+              (let ((abis (read (current-buffer))))
+                (unless (and (listp abis) (= (length abis) (length reports))
+                             (cl-every (lambda (abi)
+                                         (eql abi pilish--markdown-grammar-abi-version))
+                                       abis))
+                  (error "Essential grammar ABI does not match the owning recipes"))
+                (cl-mapc (lambda (report abi) (plist-put report :abi abi))
+                         reports abis))))
+        (delete-directory scratch t)))
+    (list :api-version 1 :emacs-version emacs-version :directory directory
+          :grammars (vconcat reports))))
 
 (defun pilish--install-grammars (grammars)
   "Install tree-sitter GRAMMARS, showing progress.
