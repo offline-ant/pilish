@@ -55,6 +55,10 @@
 
 (declare-function pilish--shared-input-ready-p "pilish-shared" (proc))
 (declare-function pilish--abort-shared-turn "pilish-queue" ())
+(declare-function pilish--capture-input-context "pilish-core" (proc))
+(declare-function pilish--bind-input-context "pilish-core" (command context))
+(declare-function pilish--draft-context "pilish-drafts" ())
+(declare-function pilish--quarantine-input "pilish-drafts" (origin context &rest payload))
 (defvar pilish--runtime)
 
 (defun pilish--input-ready-p (&optional chat-buffer)
@@ -568,8 +572,16 @@ replaces the previous draft image."
             (progn
               (pilish--clear-prompt-image)
               (message "Pi: Prompt image cleared"))
-          (let* ((path (read-file-name "Attach prompt image: " nil nil t))
+          (let* ((proc (and (buffer-live-p chat-buf)
+                            (buffer-local-value 'pilish--process chat-buf)))
+                 (context (pilish--capture-input-context proc))
+                 (path (read-file-name "Attach prompt image: " nil nil t))
                  (image (pilish--read-prompt-image path)))
+            (when (and (pilish--process-shared-p proc)
+                       (not (and (buffer-live-p chat-buf)
+                                 (eq proc (buffer-local-value 'pilish--process chat-buf))
+                                 (equal context (process-get proc 'pilish-input-context)))))
+              (user-error "Conversation changed while selecting image; image was not attached"))
             (pilish--set-prompt-image image)
             (message "Pi: Attached image %s"
                      (pilish--prompt-image-name image))))))))
@@ -897,24 +909,34 @@ Skips / at buffer start to allow slash command completion."
   "Send TEXT as a steering message via RPC.
 Return t if scheduled, nil if the process is unavailable or not yet live.
 Report acceptance or failure after the current process acknowledges it."
-  (let ((proc (pilish--get-process))
-        (chat-buf (pilish--get-chat-buffer)))
+  (let* ((proc (pilish--get-process))
+         (chat-buf (pilish--get-chat-buffer))
+         (input-context (when (pilish--input-ready-p chat-buf)
+                          (pilish--capture-input-context proc)))
+         (origin (when (and (pilish--process-shared-p proc)
+                            (buffer-live-p chat-buf))
+                   (with-current-buffer chat-buf (pilish--draft-context)))))
     (cond
      ((not (pilish--input-ready-p chat-buf))
       (message "Pi: Shared view is not live; steering was not submitted")
       nil)
      ((and proc (process-live-p proc))
       (pilish--rpc-async
-       proc (list :type "steer" :message text)
+       proc (pilish--bind-input-context
+             (list :type "steer" :message text) input-context)
        (lambda (response)
-         (when (and (buffer-live-p chat-buf)
-                    (eq proc (with-current-buffer chat-buf (pilish--get-process))))
+         (when (buffer-live-p chat-buf)
            (if (eq (plist-get response :success) t)
                (message "%s"
                         (pcase (plist-get (plist-get response :data) :disposition)
                           ("queued" "Pi: Steering acknowledged as queued")
                           ("handled" "Pi: Steering handled by extension")
                           (_ "Pi: Steering message sent")))
+             (when origin
+               (with-current-buffer chat-buf
+                 (pilish--quarantine-input
+                  "steering rejected or uncertain" origin :draft text
+                  :uncertain (not (equal (plist-get response :delivery) "rejected")))))
              (message "Pi: Steering failed: %s"
                       (or (plist-get response :error) "unknown error"))))))
       t)

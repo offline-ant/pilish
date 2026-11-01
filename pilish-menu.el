@@ -59,6 +59,8 @@
 (declare-function pilish--shared-wait-for-snapshot "pilish-shared" (proc generation))
 (declare-function pilish--quarantine-input "pilish-drafts" (origin context &rest payload))
 (declare-function pilish--draft-context "pilish-drafts" ())
+(declare-function pilish--capture-input-context "pilish-core" (proc))
+(declare-function pilish--bind-input-context "pilish-core" (command context))
 (defvar pilish-runtime-pi-executable)
 
 (defconst pilish--minimum-transient-version "0.9.0"
@@ -125,16 +127,19 @@ than stored as navigable state.  Returns CMD (modified in place)."
   "Fetch available commands via RPC, call CALLBACK with result.
 PROC is the pi process.  CALLBACK receives the command list on success.
 ANCHOR is the session directory used to normalize command source paths."
-  (pilish--rpc-async proc '(:type "get_commands")
-    (lambda (response)
-      (when (eq (plist-get response :success) t)
-        (let* ((data (plist-get response :data))
+  (let ((input-context (pilish--capture-input-context proc)))
+    (pilish--rpc-async proc '(:type "get_commands")
+      (lambda (response)
+        (when (and (eq (plist-get response :success) t)
+                   (or (not (pilish--process-shared-p proc))
+                       (equal input-context (process-get proc 'pilish-input-context))))
+          (let* ((data (plist-get response :data))
                (commands-vec (plist-get data :commands))
                (commands (mapcar (lambda (cmd)
                                    (pilish--normalize-command
                                     cmd anchor))
                                  (append commands-vec nil))))
-          (funcall callback commands))))))
+            (funcall callback commands)))))))
 
 (defun pilish--refresh-commands (proc)
   "Refresh the current chat's commands from PROC outside a session transition."
@@ -294,12 +299,15 @@ Only snapshot/replay/live rebuilds the view.  Returned fork text is recoverable
 input, never an overwrite of another context's draft."
   (unless (pilish--shared-input-ready-p proc)
     (user-error "Shared input is not ready; reconnect and wait for the snapshot"))
-  (when (y-or-n-p (format "%s changes this agent for every attached frontend.  Continue? "
-                          action))
-    (with-current-buffer chat-buf
-      (let ((generation (pilish--begin-session-transition proc))
-            (next-generation (1+ (or (process-get proc 'pilish-mux-generation) 0)))
-            (origin (pilish--draft-context))
+  (let ((command (if (plist-member command :pimuxContext) command
+                   (pilish--bind-input-context
+                    command (pilish--capture-input-context proc))))
+        (origin (with-current-buffer chat-buf (pilish--draft-context))))
+    (when (y-or-n-p (format "%s changes this agent for every attached frontend.  Continue? "
+                            action))
+      (with-current-buffer chat-buf
+        (let ((generation (pilish--begin-session-transition proc))
+              (next-generation (1+ (or (process-get proc 'pilish-mux-generation) 0)))
             (response-seen nil))
         (condition-case err
             (progn
@@ -338,7 +346,7 @@ input, never an overwrite of another context's draft."
            (pilish--finish-session-transition generation)
            ;; A send error is not proof that the request was never accepted.
            (message "Pi: %s delivery uncertain; reconnect without replaying it" action)
-           (signal (car err) (cdr err))))))))
+           (signal (car err) (cdr err)))))))))
 
 ;;;###autoload
 (defun pilish-new-session ()
@@ -860,15 +868,20 @@ is the path to refresh.  Call SETTLE with the outcome."
                    (pilish--finish-session-transition
                     generation)))))))))))
 
-(defun pilish--resume-selected-session (proc chat-buf selected-path)
-  "Resume SELECTED-PATH using PROC and rebuild CHAT-BUF from its history."
+(cl-defun pilish--resume-selected-session
+    (proc chat-buf selected-path &optional
+          (input-context (pilish--capture-input-context proc)))
+  "Resume SELECTED-PATH using PROC and rebuild CHAT-BUF from its history.
+INPUT-CONTEXT, when supplied, was captured before the selection yielded."
   (if (pilish--process-shared-p proc)
       (pilish--shared-menu-transition
        proc chat-buf
-       (list :type "switch_session" :sessionPath
-             (with-current-buffer chat-buf
-               (pilish--process-local-path selected-path
-                                            (pilish--chat-session-directory))))
+       (pilish--bind-input-context
+        (list :type "switch_session" :sessionPath
+              (with-current-buffer chat-buf
+                (pilish--process-local-path selected-path
+                                             (pilish--chat-session-directory))))
+        input-context)
        "Replace the shared conversation")
     (let* ((target-dir (pilish--session-file-cwd-or-error selected-path))
          (session (and (buffer-live-p chat-buf)
@@ -928,11 +941,23 @@ is the path to refresh.  Call SETTLE with the outcome."
 (defun pilish--menu-runtime-action (function action &optional confirmation)
   "Apply public runtime FUNCTION to this view and report ACTION's outcome.
 When CONFIRMATION is non-nil it must be accepted before any state changes."
-  (let ((chat-buf (pilish--get-chat-buffer)))
+  (let* ((chat-buf (pilish--get-chat-buffer))
+         (identity (when (buffer-live-p chat-buf)
+                     (list (and (fboundp 'pilish-session-runtime)
+                                (plist-get (pilish-session-runtime chat-buf) :mux-id))
+                           (plist-get (buffer-local-value 'pilish--state chat-buf)
+                                      :session-file)))))
     (unless (buffer-live-p chat-buf) (user-error "No Pi conversation view"))
     (unless (fboundp function)
       (user-error "Loaded Pilish lacks the supported detached runtime API"))
     (when (or (not confirmation) (yes-or-no-p confirmation))
+      (unless (and (buffer-live-p chat-buf)
+                   (equal identity
+                          (list (and (fboundp 'pilish-session-runtime)
+                                     (plist-get (pilish-session-runtime chat-buf) :mux-id))
+                                (plist-get (buffer-local-value 'pilish--state chat-buf)
+                                           :session-file))))
+        (user-error "Conversation changed during confirmation; action was not sent"))
       (funcall function chat-buf
                (lambda (failure)
                  (if failure
@@ -984,15 +1009,20 @@ This differs from closing or disconnecting this view, even for an idle agent."
 
 ;;;; Model and Thinking
 
-(defun pilish-set-session-name (name)
+(cl-defun pilish-set-session-name
+    (name &optional (input-context (pilish--capture-input-context
+                                   (pilish--get-process))))
   "Set the session NAME for the current session.
-The name is displayed in the session browser and header-line."
+The name is displayed in the session browser and header-line.
+INPUT-CONTEXT binds a delayed caller's name to its original conversation."
   (interactive
-   (let ((chat-buf (pilish--get-chat-buffer)))
+   (let* ((chat-buf (pilish--get-chat-buffer))
+          (context (pilish--capture-input-context (pilish--get-process))))
      (list (read-string "Session name: "
                         (or (and chat-buf
                                  (buffer-local-value 'pilish--session-name chat-buf))
-                            "")))))
+                            ""))
+           context)))
   (let* ((trimmed-name (string-trim name))
          (chat-buf (pilish--get-chat-buffer)))
     (if (string-empty-p trimmed-name)
@@ -1006,11 +1036,15 @@ The name is displayed in the session browser and header-line."
         (unless proc
           (user-error "No pi process running"))
         (pilish--rpc-async proc
-            (list :type "set_session_name" :name trimmed-name)
+            (pilish--bind-input-context
+             (list :type "set_session_name" :name trimmed-name) input-context)
             (lambda (response)
               (if (eq (plist-get response :success) t)
                   (progn
-                    (when (buffer-live-p chat-buf)
+                    (when (and (buffer-live-p chat-buf)
+                               (or (not (pilish--process-shared-p proc))
+                                   (equal input-context
+                                          (process-get proc 'pilish-input-context))))
                       (with-current-buffer chat-buf
                         (setq pilish--session-name trimmed-name)
                         (force-mode-line-update t)))
@@ -1030,7 +1064,8 @@ Optional INITIAL-INPUT pre-fills the completion prompt for filtering."
       (user-error "A model change is already pending"))
     (when (pilish--session-transition-ready-p
            chat-buf "change models")
-      (let* ((state (pilish--menu-state))
+      (let* ((input-context (pilish--capture-input-context proc))
+           (state (pilish--menu-state))
            (response (pilish--rpc-sync proc '(:type "get_available_models") 5))
            (data (plist-get response :data))
            (models (plist-get data :models))
@@ -1084,9 +1119,11 @@ Optional INITIAL-INPUT pre-fills the completion prompt for filtering."
               (message "Pi: Process changed while selecting a model; try again")
             (condition-case err
                 (pilish--rpc-async
-                 proc (list :type "set_model"
-                            :provider provider
-                            :modelId model-id)
+                 proc (pilish--bind-input-context
+                       (list :type "set_model"
+                             :provider provider
+                             :modelId model-id)
+                       input-context)
                  (lambda (resp)
                    (when (pilish--model-change-current-p token chat-buf)
                      (let ((success (eq (plist-get resp :success) t))
@@ -1201,7 +1238,8 @@ including any model-specific clamping."
       (user-error "No pi process running"))
     (unless chat-buf
       (user-error "No pi session buffer"))
-    (let* ((state (pilish--menu-state))
+    (let* ((input-context (pilish--capture-input-context proc))
+           (state (pilish--menu-state))
            (current (or (plist-get state :thinking-level) "off"))
            (available (pilish--get-available-thinking-levels
                        proc (plist-get state :model)))
@@ -1211,7 +1249,8 @@ including any model-specific clamping."
                     nil t)))
       (unless (equal choice current)
         (pilish--rpc-async
-         proc (list :type "set_thinking_level" :level choice)
+         proc (pilish--bind-input-context
+               (list :type "set_thinking_level" :level choice) input-context)
          (lambda (response)
            (if (eq (plist-get response :success) t)
                (pilish--refresh-thinking-level-state proc chat-buf)
@@ -1365,19 +1404,35 @@ including the gap after compaction_end while extension failure hooks run."
                       (not (plist-get response :processExit)))
              (pilish--handle-manual-compaction-response chat-buf response)))))))))
 
-(defun pilish-export-html (&optional output-path)
+(cl-defun pilish-export-html
+    (&optional output-path (input-context (pilish--capture-input-context
+                                          (pilish--get-process)))
+               (source-file nil source-supplied-p))
   "Export the conversation to HTML at optional OUTPUT-PATH.
 Live sessions use their owner's RPC.  A stopped managed view uses the exact
-release launcher and stopped-file protection; it never opens raw parallel Pi."
+release launcher and stopped-file protection; it never opens raw parallel Pi.
+INPUT-CONTEXT and SOURCE-FILE retain an interactive request's original owner."
   (interactive
-   (list (let ((path (read-string
-                      "Export path on session host (RET for default): ")))
-           (and (not (string-empty-p path)) path))))
+   (let* ((context (pilish--capture-input-context (pilish--get-process)))
+          (chat (pilish--get-chat-buffer))
+          (source-file (and (buffer-live-p chat)
+                            (plist-get (buffer-local-value 'pilish--state chat)
+                                       :session-file))))
+     (list (let ((path (read-string
+                       "Export path on session host (RET for default): ")))
+             (and (not (string-empty-p path)) path))
+           context source-file)))
   (let* ((proc (pilish--get-process))
          (chat-buf (pilish--get-chat-buffer))
          (anchor (when (buffer-live-p chat-buf)
                    (with-current-buffer chat-buf
                      (pilish--chat-session-directory chat-buf)))))
+    (when (and source-supplied-p
+               (not (and (buffer-live-p chat-buf)
+                         (equal source-file
+                                (plist-get (buffer-local-value 'pilish--state chat-buf)
+                                           :session-file)))))
+      (user-error "Conversation changed while choosing export path; nothing was exported"))
     (if (and (pilish-storage-managed-p)
              (not (and (processp proc) (process-live-p proc))))
         (let* ((file (and chat-buf
@@ -1398,9 +1453,11 @@ release launcher and stopped-file protection; it never opens raw parallel Pi."
         (let ((process-output-path (pilish--process-local-path output-path anchor)))
           (pilish--rpc-async
            proc
-           (if process-output-path
-               (list :type "export_html" :outputPath process-output-path)
-             '(:type "export_html"))
+           (pilish--bind-input-context
+            (if process-output-path
+                (list :type "export_html" :outputPath process-output-path)
+              '(:type "export_html"))
+            input-context)
            (lambda (response)
              (if (eq (plist-get response :success) t)
                  (let* ((data (plist-get response :data))
@@ -1488,7 +1545,8 @@ Shows a selector of user messages and creates a fork from the selected one."
   (when-let* ((proc (pilish--get-process))
               (chat-buf (pilish--get-chat-buffer)))
     (when (pilish--session-transition-ready-p chat-buf "fork")
-      (pilish--rpc-async proc '(:type "get_fork_messages")
+      (let ((input-context (pilish--capture-input-context proc)))
+        (pilish--rpc-async proc '(:type "get_fork_messages")
                      (lambda (response)
                        (if (eq (plist-get response :success) t)
                            (let* ((data (plist-get response :data))
@@ -1496,8 +1554,11 @@ Shows a selector of user messages and creates a fork from the selected one."
                              ;; Note: messages is a vector from JSON, use seq-empty-p not null
                              (if (seq-empty-p messages)
                                  (message "Pi: No messages to fork from")
-                               (pilish--show-fork-selector proc messages)))
-                         (message "Pi: Failed to get fork messages")))))))
+                               (when (buffer-live-p chat-buf)
+                                 (with-current-buffer chat-buf
+                                   (pilish--show-fork-selector
+                                    proc messages input-context)))))
+                         (message "Pi: Failed to get fork messages"))))))))
 
 (defun pilish--resolve-fork-entry (response ordinal heading-count)
   "Resolve a fork entry ID from get_fork_messages RESPONSE.
@@ -1531,8 +1592,9 @@ a preview, then forks.  Only works when the session is idle."
          ((not ordinal)
           (message "Pi: No user message at point"))
          (t
-          (let ((heading-count (length headings))
-                (proc (pilish--get-process)))
+          (let* ((heading-count (length headings))
+                 (proc (pilish--get-process))
+                 (input-context (pilish--capture-input-context proc)))
             (unless proc
               (user-error "Pi: No active process"))
             (pilish--rpc-async proc '(:type "get_fork_messages")
@@ -1549,14 +1611,18 @@ a preview, then forks.  Only works when the session is idle."
                      ((with-current-buffer chat-buf
                         (y-or-n-p (format "Fork from: %s? " (or (cdr result) "?"))))
                       (with-current-buffer chat-buf
-                        (pilish--execute-fork proc (car result))))))))))))))))
+                        (pilish--execute-fork
+                         proc (car result) input-context)))))))))))))))
 
-(defun pilish--execute-fork (proc entry-id)
+(cl-defun pilish--execute-fork
+    (proc entry-id &optional (input-context (pilish--capture-input-context proc)))
   "Fork at ENTRY-ID via PROC, applying only authoritative shared snapshots.
+INPUT-CONTEXT binds a delayed selector to its original conversation.
 In explicit unshared mode, refresh state/history and prefill the fork text."
   (if (pilish--process-shared-p proc)
       (pilish--shared-menu-transition
-       proc (pilish--get-chat-buffer) (list :type "fork" :entryId entry-id)
+       proc (pilish--get-chat-buffer)
+       (pilish--bind-input-context (list :type "fork" :entryId entry-id) input-context)
        "Fork the shared conversation")
     (let* ((chat-buf (pilish--get-chat-buffer))
          (input-buf (pilish--get-input-buffer))
@@ -1599,10 +1665,12 @@ In explicit unshared mode, refresh state/history and prefill the fork text."
               (with-current-buffer chat-buf
                 (pilish--finish-session-transition generation))))))))))
 
-(defun pilish--show-fork-selector (proc messages)
+(cl-defun pilish--show-fork-selector
+    (proc messages &optional (input-context (pilish--capture-input-context proc)))
   "Show selector for MESSAGES and fork on selection.
 PROC is the pi process.
-MESSAGES is a vector of plists from get_fork_messages."
+MESSAGES is a vector of plists from get_fork_messages.
+INPUT-CONTEXT is captured before fetching those messages or prompting."
   (let* ((index 0)
          ;; Reverse so most recent messages appear first (upstream sends chronological order)
          (reversed-messages (reverse (append messages nil)))
@@ -1621,7 +1689,7 @@ MESSAGES is a vector of plists from get_fork_messages."
                                   nil t))
          (selected (cdr (assoc choice formatted))))
     (when selected
-      (pilish--execute-fork proc (plist-get selected :entryId)))))
+      (pilish--execute-fork proc (plist-get selected :entryId) input-context))))
 
 ;;;; Custom Commands
 
@@ -1633,10 +1701,13 @@ Signal `user-error' when no live chat buffer is linked to the current buffer."
       (user-error "No pi session in current buffer"))
     chat-buf))
 
-(defun pilish-run-command (name &optional args)
+(cl-defun pilish-run-command
+    (name &optional args (input-context (pilish--capture-input-context
+                                        (pilish--get-process))))
   "Run pi slash command NAME with optional ARGS in the current session.
 NAME is the command name without the leading slash.  ARGS, when
 non-nil and non-empty, is appended after one space.
+INPUT-CONTEXT is captured before interactive selection or argument entry.
 
 This command sends through the pi session associated with the current
 pi chat buffer or its linked input buffer.  Signal `user-error' when the
@@ -1644,25 +1715,33 @@ current buffer is not part of a pi session."
   (interactive
    (progn
      (pilish--command-chat-buffer-or-error)
-     (list (completing-read "Pi command: "
-                            (mapcar (lambda (cmd) (plist-get cmd :name))
-                                    pilish--commands)
-                            nil t)
-           (read-string "Args: "))))
+     (let ((context (pilish--capture-input-context (pilish--get-process))))
+       (list (completing-read "Pi command: "
+                             (mapcar (lambda (cmd) (plist-get cmd :name))
+                                     pilish--commands)
+                             nil t)
+             (read-string "Args: ")
+             context))))
   (let ((chat-buf (pilish--command-chat-buffer-or-error)))
     (let ((full-command (if (or (null args) (string-empty-p args))
                             (format "/%s" name)
                           (format "/%s %s" name args))))
       (with-current-buffer chat-buf
+        (when (and (pilish--process-shared-p (pilish--get-process))
+                   (not (equal input-context
+                               (pilish--capture-input-context (pilish--get-process)))))
+          (user-error "Conversation changed while composing command; nothing was sent"))
         (pilish--prepare-and-send full-command)))))
 
-(defun pilish--run-custom-command (cmd)
-  "Execute custom command CMD.
+(cl-defun pilish--run-custom-command
+    (cmd &optional (input-context (pilish--capture-input-context
+                                  (pilish--get-process))))
+  "Execute custom command CMD in its captured INPUT-CONTEXT.
 Always prompts for arguments - user can press Enter if none needed.
 Sends the literal /command text to pi, which handles expansion."
   (let* ((name (plist-get cmd :name))
          (args-string (read-string (format "/%s: " name))))
-    (pilish-run-command name args-string)))
+    (pilish-run-command name args-string input-context)))
 
 (defun pilish-run-custom-command ()
   "Select and run a custom command.
@@ -1670,7 +1749,8 @@ Uses commands from pi's `get_commands' RPC."
   (interactive)
   (if (null pilish--commands)
       (message "Pi: No commands available")
-    (let* ((choices (mapcar (lambda (cmd)
+    (let* ((input-context (pilish--capture-input-context (pilish--get-process)))
+           (choices (mapcar (lambda (cmd)
                               (cons (format "%s - %s"
                                             (plist-get cmd :name)
                                             (or (plist-get cmd :description) ""))
@@ -1679,7 +1759,7 @@ Uses commands from pi's `get_commands' RPC."
            (choice (completing-read "Command: " choices nil t))
            (cmd (cdr (assoc choice choices))))
       (when cmd
-        (pilish--run-custom-command cmd)))))
+        (pilish--run-custom-command cmd input-context)))))
 
 ;;;; Transient Menu
 
@@ -1773,7 +1853,8 @@ This ordering is shared by run keys (a-z) and edit keys (A-Z)."
 Returns a list suitable for `transient-parse-suffixes'.
 Commands are grouped by location (path, project, user).
 Descriptions are truncated to fit the current frame width."
-  (let* ((path-cmds (pilish--commands-by-source-and-location source "path"))
+  (let* ((input-context (pilish--capture-input-context (pilish--get-process)))
+         (path-cmds (pilish--commands-by-source-and-location source "path"))
          (project-cmds (pilish--commands-by-source-and-location source "project"))
          (user-cmds (pilish--commands-by-source-and-location source "user"))
          ;; Extensions don't have location, get them separately
@@ -1808,7 +1889,7 @@ Descriptions are truncated to fit the current frame width."
                                     (truncate-string-to-width desc available-width))
                             `(lambda ()
                                (interactive)
-                               (pilish--run-custom-command ',cmd)))
+                               (pilish--run-custom-command ',cmd ',input-context)))
                       children)
                 (cl-incf key)))))))
     (nreverse children)))
@@ -1952,6 +2033,7 @@ Sections are displayed side-by-side to use horizontal space."
 Shows up to MAX-SHOWN commands starting at START-KEY.
 MORE-KEY and MORE-MENU provide access to the full list (shown first)."
   (let ((shown (seq-take commands max-shown))
+        (input-context (pilish--capture-input-context (pilish--get-process)))
         (suffixes (list title))
         (key start-key))
     ;; Add "all..." link first for discovery
@@ -1961,7 +2043,7 @@ MORE-KEY and MORE-MENU provide access to the full list (shown first)."
       (let ((name (plist-get cmd :name)))
         (push (list (number-to-string key)
                     (truncate-string-to-width name 18)
-                    `(lambda () (interactive) (pilish--run-custom-command ',cmd)))
+                    `(lambda () (interactive) (pilish--run-custom-command ',cmd ',input-context)))
               suffixes)
         (setq key (1+ key))))
     (apply #'vector (nreverse suffixes))))

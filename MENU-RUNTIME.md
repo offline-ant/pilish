@@ -44,6 +44,33 @@ Live export uses `export_html` on the owner. Stopped managed export calls
 exact configured release executable. The storage helper's claim/readiness contract
 refuses active/uncertain writers and existing outputs. There is no raw export Pi.
 
+## Delayed action context
+
+Every mutating RPC carries the exact opaque `pimuxContext` from the successfully
+applied snapshot. Model/thinking discovery, fork-message getters, selectors,
+argument prompts and destructive confirmations capture it **before** yielding.
+They never substitute a newer file, leaf or snapshot generation when a callback
+runs. New/fork/resume confirmation preserves an already-bound context. The owning
+router rejects stale commands; rejection is not permission to repeat them.
+
+`pilish--resume-selected-session` and `pilish--execute-fork` accept an optional
+captured context for delayed callers. `pilish-set-session-name` does likewise.
+Browser live rename decides its RPC-versus-stopped-file dispatch before asking
+for text, so a later session adoption cannot retarget the name or switch into a
+new dispatch path. Stopped mutations retain their common lease protection.
+
+Custom slash-command pickers refuse a changed context before calling prompt
+preparation; their preflight must preserve that same context until native RPC
+submission. Image selection and tree-label entry refuse if their draft/tree owner
+changed while the minibuffer was active. Runtime Stop/Resume confirmations also
+retain the original mux and saved-file identity rather than acting on whatever
+agent later occupies the view. A failed steering acknowledgement retains its
+requester's text under its original context, not in the replacement draft.
+
+`test/pilish-command-context-test.el` covers these delayed-action races with
+explicit core helper doubles. Core's own validation/wire tests and native mux
+acceptance remain separate evidence.
+
 ## Owning integration and tests
 
 The runtime module must supply the public APIs listed above and the configured
