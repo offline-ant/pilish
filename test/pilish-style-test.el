@@ -301,14 +301,26 @@ one starting with visible text keeps its `before-string'."
 The classic style shows the headings, so it copies them."
   (dolist (case '((pi . nil) (classic . t)))
     (pilish-style-test--with-chat (car case)
+      ;; Evil's optional chat-mode hook selects raw copying.  This fixture
+      ;; explicitly exercises visible copying, regardless of earlier tests.
+      (setq-local pilish-copy-raw-markdown nil)
       (pilish--display-history-messages pilish-style-test--history)
+      (font-lock-ensure)
       (pilish-style-test--decorate)
       (let ((text (filter-buffer-substring (point-min) (point-max))))
         (should (string-match-p "Hello Pi" text))
         (should (string-match-p "Plain assistant text\\." text))
         (should (eq (cdr case) (and (string-match-p "^You · " text) t)))
         (should (eq (cdr case) (and (string-match-p "^Assistant$" text) t)))
-        (should (eq (cdr case) (and (string-match-p "^===" text) t))))
+        ;; Markdown hides the setext underline in both styles.  Classic keeps
+        ;; the heading text, not the markup removed by visible copying.
+        (should-not (string-match-p "^===" text)))
+      (let* ((pilish-copy-raw-markdown t)
+             (raw (filter-buffer-substring (point-min) (point-max))))
+        (should (string-match-p "^You · " raw))
+        (should (string-match-p "^Assistant$" raw))
+        (should (string-match-p "^===" raw))
+        (should (string-search "Plain *assistant* text." raw)))
       (let ((kill-ring nil))
         (kill-ring-save (point-min) (point-max))
         (should (eq (cdr case) (and (string-match-p "^Assistant$" (car kill-ring)) t)))))))
