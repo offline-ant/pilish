@@ -36,7 +36,7 @@ SELECTOR ?=
 VERBOSE ?=
 
 .PHONY: test test-unit test-core test-ui test-render test-arguments test-table test-input test-menu test-browse test-jsonl test-snapshot test-build test-grammars test-session-api test-dialog test-queue test-shared test-style test-pair test-answer test-terminal-image
-.PHONY: test-drafts test-shared-input test-menu-detached test-storage test-runtime
+.PHONY: test-drafts test-shared-input test-menu-detached test-storage test-runtime test-runtime-native
 .PHONY: test-integration test-integration-fake test-integration-real test-integration-ci test-integration-ci-real test-gui test-gui-ci test-all
 .PHONY: bench bench-batch bench-reload-resume bench-reload-resume-batch bench-reload-resume-smoke
 .PHONY: bench-tool-update bench-tool-update-batch bench-tool-update-smoke
@@ -61,6 +61,7 @@ help:
 	@echo "  make test-menu-detached Detached reconnect/stop menu tests only"
 	@echo "  make test-storage     Managed session mutation tests only"
 	@echo "  make test-runtime     Detached socket/runtime tests only"
+	@echo "  make test-runtime-native Explicit synthetic real-Pi/faux detached lane"
 	@echo "  make test-browse      Session/tree browser tests only"
 	@echo "  make test-jsonl        JSONL reader/tree/projection tests only"
 	@echo "  make test-snapshot     Static saved subagent snapshot tests only"
@@ -207,6 +208,10 @@ test-storage: .deps-stamp
 	@$(BATCH_TEST) -l pilish-storage-test $(ERT_RUN)
 test-runtime: .deps-stamp
 	@$(BATCH_TEST) -l pilish-runtime-test $(ERT_RUN)
+# The caller explicitly supplies a marked synthetic claim root and candidate
+# executables/fixture. No global Pi, real provider, service or home asset fallback.
+test-runtime-native: .deps-stamp
+	@$(BATCH_TEST) -l pilish-runtime-native-test $(ERT_RUN)
 test-style: .deps-stamp
 	@$(BATCH_TEST) -l pilish-style-test $(ERT_RUN)
 
