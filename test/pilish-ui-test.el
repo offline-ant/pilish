@@ -798,7 +798,8 @@ The gesture works without the Evil integration, mirroring
   (let ((root "/tmp/pilish-test-chat-i-open-input/"))
     (make-directory root t)
     (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
-              ((symbol-function 'pilish--start-process) (lambda (_) nil)))
+              ((symbol-function 'pilish--start-process)
+               (lambda (_ &optional _args _environment) nil)))
       (unwind-protect
           (let* ((chat (pilish--setup-session root nil))
                  (input (buffer-local-value 'pilish--input-buffer chat)))
