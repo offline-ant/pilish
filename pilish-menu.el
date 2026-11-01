@@ -61,6 +61,7 @@
 (declare-function pilish--draft-context "pilish-drafts" ())
 (declare-function pilish--capture-input-context "pilish-core" (proc))
 (declare-function pilish--bind-input-context "pilish-core" (command context))
+(declare-function pilish--valid-input-context-p "pilish-core" (context))
 (defvar pilish-runtime-pi-executable)
 
 (defconst pilish--minimum-transient-version "0.9.0"
@@ -123,16 +124,35 @@ than stored as navigable state.  Returns CMD (modified in place)."
         (cl-remf cmd :path))))
   cmd)
 
+(defun pilish--menu-available-input-context (proc)
+  "Copy PROC's existing input capability for read-only menu construction.
+An unavailable capability stays nil; this never authorizes a later mutation."
+  (when (processp proc)
+    (let ((context (process-get proc 'pilish-input-context)))
+      (when (pilish--valid-input-context-p context) (copy-tree context)))))
+
 (defun pilish--fetch-commands (proc callback &optional anchor)
   "Fetch available commands via RPC, call CALLBACK with result.
 PROC is the pi process.  CALLBACK receives the command list on success.
-ANCHOR is the session directory used to normalize command source paths."
-  (let ((input-context (pilish--capture-input-context proc)))
+ANCHOR is the session directory used to normalize command source paths.
+A snapshot may not have installed input permission yet: this read only needs
+its runtime/session generation, not a mutation capability."
+  (let ((input-context (pilish--menu-available-input-context proc))
+        (shared (and (processp proc)
+                     (or (process-get proc 'pilish-detached)
+                         (pilish--process-shared-p proc))))
+        (mux-id (plist-get (pilish--process-shared-p proc) :muxId))
+        (generation (and (processp proc)
+                         (process-get proc 'pilish-mux-generation))))
     (pilish--rpc-async proc '(:type "get_commands")
       (lambda (response)
         (when (and (eq (plist-get response :success) t)
-                   (or (not (pilish--process-shared-p proc))
-                       (equal input-context (process-get proc 'pilish-input-context))))
+                   (or (not shared)
+                       (and (equal mux-id (plist-get (pilish--process-shared-p proc) :muxId))
+                            (equal generation (process-get proc 'pilish-mux-generation))
+                            (or (not input-context)
+                                (equal input-context
+                                       (process-get proc 'pilish-input-context))))))
           (let* ((data (plist-get response :data))
                (commands-vec (plist-get data :commands))
                (commands (mapcar (lambda (cmd)
@@ -1868,7 +1888,7 @@ This ordering is shared by run keys (a-z) and edit keys (A-Z)."
 Returns a list suitable for `transient-parse-suffixes'.
 Commands are grouped by location (path, project, user).
 Descriptions are truncated to fit the current frame width."
-  (let* ((input-context (pilish--capture-input-context (pilish--get-process)))
+  (let* ((input-context (pilish--menu-available-input-context (pilish--get-process)))
          (path-cmds (pilish--commands-by-source-and-location source "path"))
          (project-cmds (pilish--commands-by-source-and-location source "project"))
          (user-cmds (pilish--commands-by-source-and-location source "user"))
@@ -2048,7 +2068,7 @@ Sections are displayed side-by-side to use horizontal space."
 Shows up to MAX-SHOWN commands starting at START-KEY.
 MORE-KEY and MORE-MENU provide access to the full list (shown first)."
   (let ((shown (seq-take commands max-shown))
-        (input-context (pilish--capture-input-context (pilish--get-process)))
+        (input-context (pilish--menu-available-input-context (pilish--get-process)))
         (suffixes (list title))
         (key start-key))
     ;; Add "all..." link first for discovery
