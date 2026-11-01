@@ -55,12 +55,19 @@
 ;; transition settles.  Navigation does not auto-reopen the browser
 ;; (refresh with `g'); rewinding before the first message points at the
 ;; chat's fork command instead.
+;;
+;; When a managed runtime is configured, stopped-file appends, deletions and
+;; rewrites instead acquire the common pimux lease in `pilish-storage'.  Any
+;; live or uncertain writer refuses.  A live name change keeps using its RPC;
+;; a live branch move needs the owning runtime's navigation API, not this
+;; unshared disk-rewrite path.  Refusal never falls back to an unguarded write.
 
 ;;; Code:
 
 (require 'pilish-core)
 (require 'pilish-ui)
 (require 'pilish-jsonl)
+(require 'pilish-storage)
 (require 'cl-lib)
 (require 'ucs-normalize)
 (require 'magit-section)
@@ -2801,8 +2808,10 @@ replacement that preserves the canonical spelling, and an independent
 writer can still change the path between this check and `delete-file'.
 Live detection
 covers only Pilish processes in this Emacs, not another Emacs or a
-system-wide process.  Cancellation and a signaled `delete-file' leave
-the browser snapshot unrefreshed; success refreshes through the existing
+system-wide process in explicit unshared mode.  Managed mode also acquires
+its common stopped-file lease after confirmation, before deleting anything;
+a live or uncertain runtime in any frontend refuses.  Cancellation or failure
+leaves the browser snapshot unrefreshed; success refreshes through the existing
 scan path."
   (interactive)
   (if-let* ((session (pilish--session-browser-item-at-point))
@@ -2842,8 +2851,10 @@ scan path."
             (user-error "Selected session changed while awaiting confirmation"))
           ;; Keep the policy named by the prompt stable even if Lisp run
           ;; from the minibuffer changed the global option meanwhile.
-          (let ((delete-by-moving-to-trash trash-p))
-            (delete-file raw-path trash-p))
+          (if (pilish-storage-managed-p)
+              (pilish-storage-delete-session raw-path trash-p identity)
+            (let ((delete-by-moving-to-trash trash-p))
+              (delete-file raw-path trash-p)))
           (pilish--session-browser-fetch-and-render)
           (if trash-p
               (message "Pi: Moved %s to trash" name)
@@ -2920,7 +2931,7 @@ wider 16-hex id, mirroring pi's full-UUID fallback."
                                   (random #x100000000)
                                   (random #x100000000))))
 
-(defun pilish--browse-append-session-entry (path type payload action)
+(defun pilish--browse-append-unshared-session-entry (path type payload action)
   "Append one out-of-band entry of TYPE with PAYLOAD to session file PATH.
 ACTION names the operation for messages (\"rename\", \"label\").
 Mirrors pi's appenders without a live process.  The file is re-read
@@ -2966,6 +2977,15 @@ message) when PATH is unreadable."
     (message "Pi: Cannot %s: session file is unreadable: %s" action path)
     nil))
 
+(defun pilish--browse-append-session-entry (path type payload action)
+  "Append TYPE and PAYLOAD to PATH according to the configured storage policy.
+ACTION names the operation for unshared diagnostics.  Managed mutations
+require a stopped-file lease; a live or uncertain owner refuses, including
+another frontend's writer.  No refusal falls back to an unguarded append."
+  (if (pilish-storage-managed-p)
+      (progn (pilish-storage-append-entry path type payload) t)
+    (pilish--browse-append-unshared-session-entry path type payload action)))
+
 (defun pilish--browse-append-session-info (path name)
   "Append a session_info entry naming session file PATH to NAME, out-of-band.
 Thin wrapper over `pilish--browse-append-session-entry' with
@@ -2996,17 +3016,28 @@ current-vs-other session (see
              (existing (and item
                             (pilish--normalize-string-or-null
                              (plist-get item :name))))
+             (managed (pilish-storage-managed-p))
+             (identity (or (and item (pilish--session-item-key item))
+                           (pilish--canonical-session-path path)))
              (input (read-string "Rename session: " (or existing "")))
              (clean (pilish--browse-clean-session-name input)))
         (if (string-empty-p clean)
             (message "Pi: Rename cancelled")
-          (if (pilish--browse-session-file-matches-p
-               (pilish--get-chat-buffer) path)
-              (progn
-                (pilish-set-session-name clean)
-                (pilish--session-browser-fetch-and-render))
-            (when (pilish--browse-append-session-info path clean)
-              (pilish--session-browser-fetch-and-render)))))
+          (let ((chat-buf (pilish--get-chat-buffer)))
+            (if (and (pilish--browse-session-file-matches-p chat-buf path)
+                     (or (not (pilish-storage-managed-p))
+                         (pilish--session-live-process-p
+                          (buffer-local-value 'pilish--process chat-buf))))
+                (progn
+                  (pilish-set-session-name clean)
+                  (pilish--session-browser-fetch-and-render))
+              (when (if (or managed (pilish-storage-managed-p))
+                        (progn
+                          (pilish-storage-append-entry
+                           path "session_info" (list :name clean) identity)
+                          t)
+                      (pilish--browse-append-session-info path clean))
+                (pilish--session-browser-fetch-and-render))))))
     (message "Pi: No session at point")))
 
 ;;;; Point-Preserving Rerender
@@ -3225,7 +3256,8 @@ Wrapped because that alist is a private Magit internal; if Magit ever
 changes the mechanism, this is the single place to adapt.
 
 Unregistered types (e.g. the `time-group' headings, which are not
-interactive) silently fall back to the plain `magit-section' section class;
+interactive) silently fall back to the plain section class symbol
+`magit-section';
 that is fine for display-only sections."
   (setf (alist-get 'session magit--section-type-alist)
         'pilish-session-section)
@@ -5010,8 +5042,11 @@ writer coordination."
                       ;; Re-signal the guard's own wording before any
                       ;; write happens.
                       (user-error (signal (car err) (cdr err))))
-                    (let ((lines (pilish-jsonl-navigation-lines
-                                  path (plist-get target :leaf-id))))
+                    (let* ((source-digest
+                            (and (pilish-storage-managed-p)
+                                 (pilish-storage-file-digest path)))
+                           (lines (pilish-jsonl-navigation-lines
+                                   path (plist-get target :leaf-id))))
                       (if (null lines)
                           (message
                            (concat
@@ -5028,8 +5063,10 @@ writer coordination."
                              (pilish--browse-navigate-noncurrent
                               node-id (cdr decision) navigation-owner))
                             ('ready
-                             (when (pilish--browse-rewrite-session-file
-                                    path lines)
+                             (when (if (pilish-storage-managed-p)
+                                       (pilish--browse-rewrite-session-file
+                                        path lines source-digest)
+                                     (pilish--browse-rewrite-session-file path lines))
                                (pilish--resume-selected-session
                                 proc chat-buf path)
                                (let ((replace-draft-p
@@ -5062,7 +5099,17 @@ with no refetch, truncated to 60; without a preview use the bare
                  (pilish--truncate-string preview 60))
       (message "Pi: Continued from selected turn"))))
 
-(defun pilish--browse-rewrite-session-file (path lines)
+(defun pilish--browse-rewrite-session-file (path lines &optional expected-digest)
+  "Replace stopped PATH with LINES under managed storage when configured.
+EXPECTED-DIGEST binds managed rewrites to the source read before LINES were
+derived.  Live managed owners refuse: navigation must be mediated by that
+runtime, never a parallel disk rewrite.  Explicit unshared mode preserves
+its native atomic rewrite policy."
+  (if (pilish-storage-managed-p)
+      (progn (pilish-storage-rewrite-session path lines expected-digest) t)
+    (pilish--browse-rewrite-unshared-session-file path lines)))
+
+(defun pilish--browse-rewrite-unshared-session-file (path lines)
   "Atomically replace the session file at PATH with LINES.
 LINES is the `pilish-jsonl-navigation-lines' vector; the
 joined bytes gain one final LF.  The ONLY call that touches PATH is
