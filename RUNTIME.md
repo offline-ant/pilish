@@ -59,12 +59,21 @@ parent directory, protocol/capabilities, mux and exact actual Pi PID/start/boot
 identity, then applies the authoritative snapshot/replay/live boundary. The
 `on-ready` callback reports success only after that boundary. A listening socket,
 launcher exit or metadata response alone is not ready. Unsupported/mismatched
-owners refuse; no second writer is spawned as recovery.
+owners refuse; no second writer is spawned as recovery. Opening a saved file in a
+new detached view supplies that exact file to the initial managed launch. Opening
+another file in an existing view requires its successful live boundary; an unready
+view refuses without launching a different conversation.
 
 Snapshots adopt the current file, flat entries, leaf, model, thinking and history
 together, including an initiating client's own session transition. Newer
 generations abandon unfinished replay; gaps and snapshot errors gate input.
 History failure removes the old transcript instead of relabelling stale history.
+The authoritative new file/runtime identity is retained even when history cannot
+be rendered. Only a successfully applied full snapshot with both history arrays
+and the owning `inputContext` token can complete its live boundary. Renderer,
+identity or reconciliation errors invalidate that token and suspend local input;
+a later live marker cannot repair a failed application. Reconnect explicitly to
+obtain a new full boundary; recovery never resends the suspended input.
 No independent disk/history reconstruction is mixed into shared replay. Dialogs
 are first-answer-wins and close through authoritative closure, timeout or snapshot
 reconciliation, not an unrelated run. Pi's aggregate prompt signal still cannot

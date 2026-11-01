@@ -20,6 +20,7 @@
 (declare-function pilish--runtime-note-snapshot "pilish-runtime" (proc snapshot))
 (declare-function pilish--runtime-live "pilish-runtime" (proc))
 (declare-function pilish--runtime-snapshot-failed "pilish-runtime" (proc error))
+(declare-function pilish--valid-input-context-p "pilish-core" (context))
 
 (defun pilish-session-mux (chat-buffer)
   "Return CHAT-BUFFER's validated protocol-2 hello, or nil.
@@ -34,7 +35,12 @@ This identifies a shared transport, not a frontend-owned Pi process."
        (not (process-get proc 'pilish-mux-snapshot))
        (integerp (process-get proc 'pilish-mux-live-generation))
        (equal (process-get proc 'pilish-mux-live-generation)
-              (process-get proc 'pilish-mux-generation))))
+              (process-get proc 'pilish-mux-generation))
+       (equal (process-get proc 'pilish-mux-applied-generation)
+              (process-get proc 'pilish-mux-generation))
+       (or (not (process-get proc 'pilish-detached))
+           (pilish--valid-input-context-p
+            (process-get proc 'pilish-input-context)))))
 
 (defun pilish--shared-wait-for-snapshot (proc generation)
   "Discard unfinished replay/paints and wait for PROC's GENERATION boundary."
@@ -44,6 +50,8 @@ This identifies a shared transport, not a frontend-owned Pi process."
     (process-put proc 'pilish-mux-min-generation generation)
     (process-put proc 'pilish-mux-awaiting-snapshot t)
     (process-put proc 'pilish-mux-snapshot nil)
+    (process-put proc 'pilish-mux-applied-generation nil)
+    (process-put proc 'pilish-input-context nil)
     (pilish--cancel-stream-delta-flush)
     (pilish--cancel-tool-update-flush)
     (pilish--cancel-tool-times-state)))
@@ -65,14 +73,8 @@ This identifies a shared transport, not a frontend-owned Pi process."
                       (>= generation (or (process-get proc 'pilish-mux-min-generation) 0))
                       (>= generation (or (process-get proc 'pilish-mux-generation) 0))
                       (> generation (or (process-get proc 'pilish-mux-live-generation) 0)))
-             (process-put proc 'pilish-mux-snapshot nil)
-             (process-put proc 'pilish-mux-awaiting-snapshot t)
-             (when (fboundp 'pilish--runtime-snapshot-failed)
-               (pilish--runtime-snapshot-failed proc (plist-get event :error)))
-             (pilish--add-chat-notice
-              (format "Shared snapshot failed: %s. Reconnect explicitly; input is not ready."
-                      (plist-get event :error))
-              'pilish-error-notice))))
+             (pilish--shared-snapshot-application-failed
+              proc (plist-get event :error) (pilish--draft-context)))))
         ("pimux_editor_text" (pilish--recover-editor-notice proc event))
         ("pimux_model_changed"
          (setq pilish--state (plist-put pilish--state :model (plist-get event :model)))
@@ -85,38 +87,74 @@ This identifies a shared transport, not a frontend-owned Pi process."
   (and (processp pilish--process)
        (process-get pilish--process 'pilish-mux-snapshot) t))
 
+(defun pilish--shared-snapshot-application-failed (proc reason context)
+  "Invalidate PROC's input after snapshot failure REASON.
+Suspend local work bound to CONTEXT without losing the authoritative identity."
+  ;; Close the gate before any rendering, recovery or integration callback can
+  ;; fail.  A following live record must not commit this unsuccessful boundary.
+  (process-put proc 'pilish-mux-snapshot nil)
+  (process-put proc 'pilish-mux-awaiting-snapshot t)
+  (process-put proc 'pilish-mux-applied-generation nil)
+  (process-put proc 'pilish-input-context nil)
+  (process-put proc 'pilish-mux-application-error reason)
+  (pilish--quarantine-local-work "snapshot-application-failed" context)
+  (when (fboundp 'pilish--runtime-snapshot-failed)
+    (pilish--runtime-snapshot-failed proc reason))
+  (pilish--add-chat-notice
+   (format "Shared snapshot failed: %s. Reconnect explicitly; input is not ready." reason)
+   'pilish-error-notice))
+
 (defun pilish--shared-apply-snapshot (proc snapshot)
   "Rebuild the current chat from PROC's SNAPSHOT before any replay arrives."
   (let ((generation (plist-get snapshot :generation))
-        (run (plist-get snapshot :run)))
+        (run (plist-get snapshot :run))
+        (old-context (pilish--draft-context)))
     (when (and (integerp generation)
                (> generation (or (process-get proc 'pilish-mux-generation) 0))
                (>= generation (or (process-get proc 'pilish-mux-min-generation) 0)))
-      ;; A newer boundary abandons unfinished buffered output from the old one.
-      (pilish--cancel-stream-delta-flush)
-      (pilish--cancel-tool-update-flush)
-      (pilish--cancel-tool-times-state)
       (process-put proc 'pilish-mux-generation generation)
       (process-put proc 'pilish-mux-snapshot snapshot)
       (process-put proc 'pilish-mux-awaiting-snapshot t)
-      (dolist (request (pilish--extension-dialog-pending proc))
-        (pilish--extension-dialog-set proc (plist-get request :id) :pilish-stale t))
-      ;; Do not skip a snapshot for an initiating client's own transition.  That
-      ;; would mix independently read history with replay and miss context moves.
-      (pilish--draft-adopt-context snapshot)
-      (if (pilish--shared-session-moved-p snapshot)
-          (pilish--shared-adopt-session proc snapshot)
-        (pilish--shared-rebuild snapshot))
-      (process-put proc 'pilish-mux-stale-ui (pilish--shared-ui-keys))
-      (setq pilish--settle-releases-streaming (eq (plist-get run :active) t))
-      (when (fboundp 'pilish--runtime-note-snapshot)
-        (pilish--runtime-note-snapshot proc snapshot))
-      (when (and (eq (plist-get run :active) t)
-                 (eq (plist-get run :tailTruncated) t))
-        (process-put proc 'pilish-mux-refresh t)
-        (pilish--add-chat-notice
-         "Part of this run's output was lost; the full text follows when it ends."
-         'pilish-retry-notice)))))
+      (process-put proc 'pilish-mux-applied-generation nil)
+      (process-put proc 'pilish-input-context nil)
+      (condition-case err
+          (progn
+            ;; A newer boundary abandons unfinished buffered output from the old one.
+            (pilish--cancel-stream-delta-flush)
+            (pilish--cancel-tool-update-flush)
+            (pilish--cancel-tool-times-state)
+            (dolist (request (pilish--extension-dialog-pending proc))
+              (pilish--extension-dialog-set proc (plist-get request :id) :pilish-stale t))
+            ;; Adopt authoritative runtime identity even when history is unavailable.
+            (when (fboundp 'pilish--runtime-note-snapshot)
+              (pilish--runtime-note-snapshot proc snapshot))
+            (pilish--draft-adopt-context snapshot)
+            (if (pilish--shared-session-moved-p snapshot)
+                (pilish--shared-adopt-session proc snapshot)
+              (pilish--shared-rebuild snapshot))
+            (when (or (plist-get snapshot :historyError)
+                      (not (vectorp (plist-get snapshot :messages)))
+                      (not (vectorp (plist-get snapshot :entries))))
+              (error "Snapshot history is incomplete; a full resynchronization is required"))
+            (when (and (process-get proc 'pilish-detached)
+                       (not (pilish--valid-input-context-p
+                             (plist-get snapshot :inputContext))))
+              (error "Snapshot has no valid owning input context"))
+            (process-put proc 'pilish-mux-stale-ui (pilish--shared-ui-keys))
+            (setq pilish--settle-releases-streaming (eq (plist-get run :active) t))
+            (when (and (eq (plist-get run :active) t)
+                       (eq (plist-get run :tailTruncated) t))
+              (process-put proc 'pilish-mux-refresh t)
+              (pilish--add-chat-notice
+               "Part of this run's output was lost; the full text follows when it ends."
+               'pilish-retry-notice))
+            (process-put proc 'pilish-input-context
+                         (copy-tree (plist-get snapshot :inputContext)))
+            (process-put proc 'pilish-mux-applied-generation generation)
+            (process-put proc 'pilish-mux-application-error nil))
+        (error
+         (pilish--shared-snapshot-application-failed
+          proc (error-message-string err) old-context))))))
 
 (defun pilish--shared-session-moved-p (snapshot)
   "Return non-nil when SNAPSHOT names another file or session directory."
@@ -149,19 +187,26 @@ This identifies a shared transport, not a frontend-owned Pi process."
   "Finish PROC's matching snapshot LIVE and reconcile unreplayed UI."
   (when (and (process-get proc 'pilish-mux-snapshot)
              (equal (plist-get live :generation)
+                    (process-get proc 'pilish-mux-applied-generation))
+             (equal (plist-get live :generation)
                     (plist-get (process-get proc 'pilish-mux-snapshot) :generation)))
-    (process-put proc 'pilish-mux-snapshot nil)
-    (process-put proc 'pilish-mux-awaiting-snapshot nil)
-    (process-put proc 'pilish-mux-live-generation (plist-get live :generation))
-    (dolist (request (pilish--extension-dialog-pending proc))
-      (when (plist-get request :pilish-stale)
-        (pilish--extension-dialog-close proc (plist-get request :id))))
-    (pcase-dolist (`(,kind . ,key) (process-get proc 'pilish-mux-stale-ui))
-      (if (eq kind 'status)
-          (pilish--extension-ui-set-status (list :statusKey key))
-        (pilish--set-extension-widget key nil)))
-    (process-put proc 'pilish-mux-stale-ui nil)
-    (when (fboundp 'pilish--runtime-live) (pilish--runtime-live proc))))
+    (condition-case err
+        (progn
+          (dolist (request (pilish--extension-dialog-pending proc))
+            (when (plist-get request :pilish-stale)
+              (pilish--extension-dialog-close proc (plist-get request :id))))
+          (pcase-dolist (`(,kind . ,key) (process-get proc 'pilish-mux-stale-ui))
+            (if (eq kind 'status)
+                (pilish--extension-ui-set-status (list :statusKey key))
+              (pilish--set-extension-widget key nil)))
+          (process-put proc 'pilish-mux-stale-ui nil)
+          (process-put proc 'pilish-mux-snapshot nil)
+          (process-put proc 'pilish-mux-awaiting-snapshot nil)
+          (process-put proc 'pilish-mux-live-generation (plist-get live :generation))
+          (when (fboundp 'pilish--runtime-live) (pilish--runtime-live proc)))
+      (error
+       (pilish--shared-snapshot-application-failed
+        proc (error-message-string err) (pilish--draft-context))))))
 
 (defun pilish--shared-refresh-after-run (proc)
   "Request the full authoritative boundary after PROC's truncated run settled."
@@ -169,6 +214,8 @@ This identifies a shared transport, not a frontend-owned Pi process."
              (process-get proc 'pilish-mux-refresh))
     (process-put proc 'pilish-mux-refresh nil)
     (process-put proc 'pilish-mux-awaiting-snapshot t)
+    (process-put proc 'pilish-mux-applied-generation nil)
+    (process-put proc 'pilish-input-context nil)
     (pilish--rpc-async
      proc '(:type "pimux_bootstrap" :include ["entries" "messages"])
      (lambda (response)

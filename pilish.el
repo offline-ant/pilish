@@ -483,7 +483,7 @@ displayed session starts with only the chat window visible."
   "Start or switch to pi coding agent session in current project.
 With prefix arg, prompt for SESSION name to allow multiple sessions.
 If already in a pi buffer and no SESSION specified, ensures this session
-is visible. When both chat and input are already shown in the current
+is visible.  When both chat and input are already shown in the current
 frame, keeps layout unchanged and focuses the input window."
   (interactive
    (list (when current-prefix-arg
@@ -513,13 +513,28 @@ visited local regular readable .jsonl file when there is one."
                         session-file))
          (dir (pilish--session-file-cwd-or-error session-file)))
     (pilish--check-dependencies dir)
-    (let* ((chat-buf (pilish--setup-session dir))
-           (input-buf (buffer-local-value 'pilish--input-buffer
-                                          chat-buf))
+    (let* ((detached (pilish-runtime-configured-p))
+           (existing (and detached (pilish--find-session dir)))
+           (initial-open (and detached (not existing)))
+           (chat-buf
+            (cond
+             (initial-open
+              ;; Detached startup is asynchronous: reserve/open exactly the
+              ;; selected file, never start a fresh conversation to resume later.
+              (pilish--setup-session dir nil (list "--session" session-file)
+                                     nil nil nil session-file))
+             (existing existing)
+             (t (pilish--setup-session dir))))
+           (input-buf (buffer-local-value 'pilish--input-buffer chat-buf))
            (proc (buffer-local-value 'pilish--process chat-buf)))
       (pilish--show-session-buffers chat-buf input-buf)
-      (when (pilish--session-transition-ready-p chat-buf "open")
-        (pilish--resume-selected-session proc chat-buf session-file))
+      (unless initial-open
+        (when (and detached
+                   (not (and (processp proc) (process-live-p proc)
+                             (pilish--shared-input-ready-p proc))))
+          (user-error "Detached view is not ready; reconnect explicitly before opening another conversation"))
+        (when (pilish--session-transition-ready-p chat-buf "open")
+          (pilish--resume-selected-session proc chat-buf session-file)))
       chat-buf)))
 
 ;;;###autoload
