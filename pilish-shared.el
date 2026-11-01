@@ -1,67 +1,79 @@
-;;; pilish-shared.el --- Pi processes shared with other frontends -*- lexical-binding: t; -*-
+;;; pilish-shared.el --- Authoritative symmetric pimux views -*- lexical-binding: t; -*-
 
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;;; Commentary:
 
-;; pimux runs `pi --mode rpc' for the frontend that starts it (here Pilish,
-;; with `pilish-executable' set to ("pimux" "--" "pi")) and lets other
-;; frontends attach to the same process, so all of them see one
-;; conversation live.  Its records have types starting with \"pimux_\";
-;; pi-ant's `orchestration/pimux/README.md' is the contract.  This module
-;; handles them for a chat buffer:
-;;
-;; - `pimux_hello' marks the process shared (`pilish--process-shared-p').
-;; - `pimux_dialog_closed' closes a dialog answered elsewhere, expired or
-;;   abandoned; on a shared process a new run cancels no dialog.
-;; - `pimux_snapshot' ... `pimux_live' is a snapshot sequence: the state at
-;;   one point of Pi's output, then replayed records of the work in flight
-;;   there, which pass through the ordinary event handler.  A snapshot
-;;   naming another session than the chat's, whatever caused it, makes the
-;;   chat adopt that session in place: same process, same buffers, draft
-;;   and queued follow-ups kept.  A tree move, a lost stretch of output
-;;   (`pimux_gap') or a requested snapshot rebuilds the transcript the same
-;;   way.  Never through `pilish-reload', which restarts the process.
-;;   `pimux_live' ends the sequence: dialogs, statuses and widgets it did
-;;   not replay are gone.  A status is cleared only then, not before the
-;;   replay, so one that stays never flickers for its observers.
-;; - A snapshot whose replay lost part of the run (`run.tailTruncated')
-;;   says so in the chat; when the run ends, a requested snapshot brings
-;;   the complete transcript.
-;; - `pimux_model_changed' updates the model.  Thinking level and session
-;;   name changes come as Pi's own events.
-;;
-;; Requests Pilish itself is switching sessions for (resume, new, fork) are
-;; rebuilt by their own transition, so their snapshot only replays.
+;; Protocol 2 has equal socket clients, not a primary frontend.  The core/runtime
+;; validate the hello and owned Pi identity before accepting commands.  This
+;; module applies exact snapshot/replay/live boundaries.  Every snapshot adopts
+;; the current session, branch, model and thinking level; history failure never
+;; leaves the old transcript under a new identity.  Local input is context-bound
+;; by pilish-drafts before replay can settle a run or release any local follow-up.
+;; Dialogs close only on authoritative closure, timeout or snapshot reconciliation.
 
 ;;; Code:
 
 (require 'pilish-menu)
+(require 'pilish-drafts)
+
+(declare-function pilish--runtime-note-snapshot "pilish-runtime" (proc snapshot))
+(declare-function pilish--runtime-live "pilish-runtime" (proc))
+(declare-function pilish--runtime-snapshot-failed "pilish-runtime" (proc error))
 
 (defun pilish-session-mux (chat-buffer)
-  "Return the pimux identity of CHAT-BUFFER's process, or nil.
-The value is the `pimux_hello' record (:muxId, :socket, :piPid ...) when
-other frontends can attach to the process."
+  "Return CHAT-BUFFER's validated protocol-2 hello, or nil.
+This identifies a shared transport, not a frontend-owned Pi process."
   (when (buffer-live-p chat-buffer)
     (pilish--process-shared-p (buffer-local-value 'pilish--process chat-buffer))))
 
+(defun pilish--shared-input-ready-p (proc)
+  "Return non-nil after PROC's current authoritative snapshot reached live."
+  (and (pilish--process-shared-p proc)
+       (not (process-get proc 'pilish-mux-awaiting-snapshot))
+       (not (process-get proc 'pilish-mux-snapshot))
+       (integerp (process-get proc 'pilish-mux-live-generation))
+       (equal (process-get proc 'pilish-mux-live-generation)
+              (process-get proc 'pilish-mux-generation))))
+
+(defun pilish--shared-wait-for-snapshot (proc generation)
+  "Discard unfinished replay/paints and wait for PROC's GENERATION boundary."
+  (when (and (integerp generation)
+             (> generation (max (or (process-get proc 'pilish-mux-min-generation) 0)
+                                (or (process-get proc 'pilish-mux-generation) 0))))
+    (process-put proc 'pilish-mux-min-generation generation)
+    (process-put proc 'pilish-mux-awaiting-snapshot t)
+    (process-put proc 'pilish-mux-snapshot nil)
+    (pilish--cancel-stream-delta-flush)
+    (pilish--cancel-tool-update-flush)
+    (pilish--cancel-tool-times-state)))
+
 (defun pilish--shared-handle-record (event)
-  "Handle the pimux record EVENT for the current chat buffer's process."
+  "Handle the pimux EVENT for the current chat's validated transport."
   (let ((proc pilish--process))
     (when (pilish--process-shared-p proc)
       (pcase (plist-get event :type)
         ("pimux_dialog_closed"
          (pilish--extension-dialog-close proc (plist-get event :id)))
-        ("pimux_gap"
-         ;; Updates were lost: paint nothing more until the snapshot.
-         (pilish--cancel-stream-delta-flush)
-         (pilish--cancel-tool-update-flush)
-         (pilish--cancel-tool-times-state))
+        ((or "pimux_gap" "pimux_session_changed" "pimux_tree_changed")
+         (pilish--shared-wait-for-snapshot proc (plist-get event :generation)))
         ("pimux_snapshot" (pilish--shared-apply-snapshot proc event))
         ("pimux_live" (pilish--shared-finish-snapshot proc event))
         ("pimux_snapshot_failed"
-         (process-put proc 'pilish-mux-snapshot nil)
-         (message "Pi: Shared session snapshot failed: %s" (plist-get event :error)))
+         (let ((generation (plist-get event :generation)))
+           (when (and (integerp generation)
+                      (>= generation (or (process-get proc 'pilish-mux-min-generation) 0))
+                      (>= generation (or (process-get proc 'pilish-mux-generation) 0))
+                      (> generation (or (process-get proc 'pilish-mux-live-generation) 0)))
+             (process-put proc 'pilish-mux-snapshot nil)
+             (process-put proc 'pilish-mux-awaiting-snapshot t)
+             (when (fboundp 'pilish--runtime-snapshot-failed)
+               (pilish--runtime-snapshot-failed proc (plist-get event :error)))
+             (pilish--add-chat-notice
+              (format "Shared snapshot failed: %s. Reconnect explicitly; input is not ready."
+                      (plist-get event :error))
+              'pilish-error-notice))))
+        ("pimux_editor_text" (pilish--recover-editor-notice proc event))
         ("pimux_model_changed"
          (setq pilish--state (plist-put pilish--state :model (plist-get event :model)))
          (force-mode-line-update t))))))
@@ -69,58 +81,62 @@ other frontends can attach to the process."
 ;;;; Snapshots
 
 (defun pilish--shared-replaying-p ()
-  "Return non-nil while the current chat's process replays a snapshot.
-Replayed records keep their content but not their time: a tool start
-arrives when it is replayed, not when the tool started."
+  "Return non-nil while this chat's transport replays an authoritative snapshot."
   (and (processp pilish--process)
-       (process-get pilish--process 'pilish-mux-snapshot)
-       t))
+       (process-get pilish--process 'pilish-mux-snapshot) t))
 
 (defun pilish--shared-apply-snapshot (proc snapshot)
-  "Rebuild the current chat from PROC's SNAPSHOT before its replay arrives."
+  "Rebuild the current chat from PROC's SNAPSHOT before any replay arrives."
   (let ((generation (plist-get snapshot :generation))
         (run (plist-get snapshot :run)))
-    (when (> generation (or (process-get proc 'pilish-mux-generation) 0))
+    (when (and (integerp generation)
+               (> generation (or (process-get proc 'pilish-mux-generation) 0))
+               (>= generation (or (process-get proc 'pilish-mux-min-generation) 0)))
+      ;; A newer boundary abandons unfinished buffered output from the old one.
+      (pilish--cancel-stream-delta-flush)
+      (pilish--cancel-tool-update-flush)
+      (pilish--cancel-tool-times-state)
       (process-put proc 'pilish-mux-generation generation)
       (process-put proc 'pilish-mux-snapshot snapshot)
-      ;; What is still open is replayed; `pimux_live' closes the rest.
+      (process-put proc 'pilish-mux-awaiting-snapshot t)
       (dolist (request (pilish--extension-dialog-pending proc))
         (pilish--extension-dialog-set proc (plist-get request :id) :pilish-stale t))
-      (unless pilish--session-transition-active
-        (if (pilish--shared-session-moved-p snapshot)
-            (pilish--shared-adopt-session proc snapshot)
-          (pilish--shared-rebuild snapshot)))
+      ;; Do not skip a snapshot for an initiating client's own transition.  That
+      ;; would mix independently read history with replay and miss context moves.
+      (pilish--draft-adopt-context snapshot)
+      (if (pilish--shared-session-moved-p snapshot)
+          (pilish--shared-adopt-session proc snapshot)
+        (pilish--shared-rebuild snapshot))
       (process-put proc 'pilish-mux-stale-ui (pilish--shared-ui-keys))
       (setq pilish--settle-releases-streaming (eq (plist-get run :active) t))
+      (when (fboundp 'pilish--runtime-note-snapshot)
+        (pilish--runtime-note-snapshot proc snapshot))
       (when (and (eq (plist-get run :active) t)
                  (eq (plist-get run :tailTruncated) t))
         (process-put proc 'pilish-mux-refresh t)
         (pilish--add-chat-notice
-         "⚠ Part of this run's output was lost; the full text follows when it ends."
+         "Part of this run's output was lost; the full text follows when it ends."
          'pilish-retry-notice)))))
 
 (defun pilish--shared-session-moved-p (snapshot)
-  "Return non-nil when SNAPSHOT names another session than the current chat's.
-It need not say `session_changed': a client that falls behind loses that
-snapshot and gets the session in a later one."
-  (or (equal (plist-get snapshot :reason) "session_changed")
-      (let* ((session (plist-get snapshot :session))
-             (file (plist-get pilish--state :session-file))
-             (new-file (pilish--shared-session-file session))
-             (dir (pilish--shared-session-directory (plist-get session :cwd))))
-        (or (and file new-file (not (equal file new-file)))
-            (and dir (not (equal dir (file-name-as-directory
-                                      (pilish--chat-session-directory)))))))))
+  "Return non-nil when SNAPSHOT names another file or session directory."
+  (let* ((session (plist-get snapshot :session))
+         (file (plist-get pilish--state :session-file))
+         (new-file (pilish--shared-session-file session))
+         (dir (pilish--shared-session-directory (plist-get session :cwd))))
+    (or (and file (not (equal file new-file)))
+        (and dir (not (equal dir (file-name-as-directory
+                                  (pilish--chat-session-directory))))))))
 
 (defun pilish--shared-ui-keys ()
-  "Return the current chat's extension statuses and widgets as (KIND . KEY)."
+  "Return the current statuses and widgets as a list of (KIND . KEY)."
   (append (mapcar (lambda (status) (cons 'status (car status)))
                   pilish--extension-status)
           (mapcar (lambda (widget) (cons 'widget (car widget)))
                   pilish--extension-widgets)))
 
 (defun pilish--shared-note-ui-replay (proc event)
-  "Keep the extension UI that PROC's snapshot replay EVENT names."
+  "Keep the extension UI that PROC's replayed EVENT names."
   (when (and (pilish--process-shared-p proc)
              (process-get proc 'pilish-mux-snapshot))
     (process-put proc 'pilish-mux-stale-ui
@@ -130,10 +146,13 @@ snapshot and gets the session in a later one."
                          (process-get proc 'pilish-mux-stale-ui)))))
 
 (defun pilish--shared-finish-snapshot (proc live)
-  "End PROC's snapshot sequence LIVE: what it did not replay is gone."
-  (when (equal (plist-get live :generation)
-               (plist-get (process-get proc 'pilish-mux-snapshot) :generation))
+  "Finish PROC's matching snapshot LIVE and reconcile unreplayed UI."
+  (when (and (process-get proc 'pilish-mux-snapshot)
+             (equal (plist-get live :generation)
+                    (plist-get (process-get proc 'pilish-mux-snapshot) :generation)))
     (process-put proc 'pilish-mux-snapshot nil)
+    (process-put proc 'pilish-mux-awaiting-snapshot nil)
+    (process-put proc 'pilish-mux-live-generation (plist-get live :generation))
     (dolist (request (pilish--extension-dialog-pending proc))
       (when (plist-get request :pilish-stale)
         (pilish--extension-dialog-close proc (plist-get request :id))))
@@ -141,49 +160,49 @@ snapshot and gets the session in a later one."
       (if (eq kind 'status)
           (pilish--extension-ui-set-status (list :statusKey key))
         (pilish--set-extension-widget key nil)))
-    (process-put proc 'pilish-mux-stale-ui nil)))
+    (process-put proc 'pilish-mux-stale-ui nil)
+    (when (fboundp 'pilish--runtime-live) (pilish--runtime-live proc))))
 
 (defun pilish--shared-refresh-after-run (proc)
-  "Ask PROC for a snapshot if the settled run's replay was truncated."
+  "Request the full authoritative boundary after PROC's truncated run settled."
   (when (and (pilish--process-shared-p proc)
              (process-get proc 'pilish-mux-refresh))
     (process-put proc 'pilish-mux-refresh nil)
+    (process-put proc 'pilish-mux-awaiting-snapshot t)
     (pilish--rpc-async
-     proc '(:type "pimux_bootstrap" :include ["messages"])
+     proc '(:type "pimux_bootstrap" :include ["entries" "messages"])
      (lambda (response)
        (unless (eq (plist-get response :success) t)
          (message "Pi: Shared session snapshot failed: %s"
                   (plist-get response :error)))))))
 
 (defun pilish--shared-session-file (session)
-  "Return the file of the snapshot's SESSION as a path of the current chat."
+  "Return snapshot SESSION's file as an Emacs path in the current chat."
   (pilish--passive-emacs-path
    (pilish--normalize-string-or-null (plist-get session :file))
    (pilish--chat-session-directory)))
 
 (defun pilish--shared-apply-session-state (snapshot)
-  "Set the current chat's session state from SNAPSHOT."
+  "Set file, flat entries, leaf, model and thinking from SNAPSHOT."
   (let* ((session (plist-get snapshot :session))
          (messages (plist-get snapshot :messages))
          (name (plist-get session :name)))
     (setq pilish--state
-          (list :status pilish--status
-                :model (plist-get snapshot :model)
+          (list :status pilish--status :model (plist-get snapshot :model)
                 :thinking-level (plist-get snapshot :thinkingLevel)
                 :session-id (plist-get session :id)
                 :session-file (pilish--shared-session-file session)
+                :leaf-id (pilish--normalize-string-or-null (plist-get snapshot :leafId))
+                :entries (plist-get snapshot :entries)
                 :message-count (and (vectorp messages) (length messages))
                 :pending-message-count (plist-get pilish--state :pending-message-count))
           pilish--session-name (and (stringp name) name))))
 
 (defun pilish--shared-rebuild (snapshot)
-  "Rebuild the current chat's transcript from SNAPSHOT in place.
-Work in flight at the snapshot follows as replayed events, so the chat
-starts without it: idle, unless a prompt of its own awaits its start."
+  "Replace this chat's transcript with SNAPSHOT before replaying live work."
   (setq pilish--status (if (and (eq pilish--status 'sending)
                                 (pilish--prompt-start-wait-active-p))
-                           'sending
-                         'idle)
+                           'sending 'idle)
         pilish--pre-compaction-status nil
         pilish--assistant-header-shown nil
         pilish--in-thinking-block nil
@@ -191,47 +210,49 @@ starts without it: idle, unless a prompt of its own awaits its start."
         pilish--line-parse-state 'line-start
         pilish--local-user-message nil)
   (pilish--clear-local-user-message-region)
-  (when (eq pilish--status 'idle)
-    (pilish--set-activity-phase "idle"))
+  (when (eq pilish--status 'idle) (pilish--set-activity-phase "idle"))
   (pilish--shared-apply-session-state snapshot)
   (pilish--display-session-history (plist-get snapshot :messages) (current-buffer))
-  (when pilish--process
-    (pilish--dialog-reanchor (current-buffer)))
+  (when-let* ((error (or (plist-get snapshot :historyError)
+                        (unless (plist-member snapshot :messages)
+                          "The snapshot did not include message history"))))
+    (pilish--add-chat-notice (format "History unavailable: %s" error)
+                             'pilish-error-notice))
+  (when pilish--process (pilish--dialog-reanchor (current-buffer)))
+  (pilish--note-session-identity)
   (force-mode-line-update t))
 
 (defun pilish--shared-adopt-session (proc snapshot)
-  "Make the current chat show the session of PROC's SNAPSHOT.
-Another frontend or an extension replaced Pi's session.  The chat keeps
-its process, draft and queued follow-ups.  Its buffers move to the session's
-directory, under a free name if another chat has theirs there."
-  (let* ((followups pilish--followup-queue)
-         (prompt-wait pilish--prompt-wait)
-         (dir (pilish--shared-session-directory
-               (plist-get (plist-get snapshot :session) :cwd))))
+  "Adopt PROC's authoritative SNAPSHOT identity in the existing view.
+Context-bound local work was quarantined before entry; never preserve an old
+prompt request or automatic follow-up across this reset."
+  (let ((dir (pilish--shared-session-directory
+              (plist-get (plist-get snapshot :session) :cwd)))
+        (followups pilish--followup-queue)
+        (prompt-wait pilish--prompt-wait))
     (when (and dir (not (equal dir (file-name-as-directory
                                     (pilish--chat-session-directory)))))
       (pilish--retarget-session-identity dir (pilish--shared-free-session-name dir)))
     (pilish--reset-session-state)
-    (setq pilish--followup-queue followups
-          pilish--prompt-wait prompt-wait)
+    ;; Only work left after the context guard can survive initial identity
+    ;; adoption; a real replacement already suspended/invalidated its owners.
+    (setq pilish--followup-queue followups pilish--prompt-wait prompt-wait)
     (pilish--queue-changed)
     (pilish--shared-rebuild snapshot)
     (pilish--answer-history-loaded)
     (pilish--refresh-header)
-    (pilish--refresh-commands proc)
-    (pilish--note-session-identity)))
+    (pilish--refresh-commands proc)))
 
 (defun pilish--shared-session-directory (cwd)
-  "Return Pi's session CWD as a session directory of the current chat, or nil."
+  "Return snapshot CWD as an Emacs session directory, or nil."
   (when-let* ((path (pilish--passive-emacs-path
                      (pilish--normalize-string-or-null cwd)
                      (pilish--chat-session-directory))))
     (file-name-as-directory path)))
 
 (defun pilish--shared-free-session-name (dir)
-  "Return the current chat's session name if free in DIR, else a free number."
-  (let ((name (pilish--chat-session-name))
-        (number 1))
+  "Return this chat's name if free in DIR, otherwise a free numbered name."
+  (let ((name (pilish--chat-session-name)) (number 1))
     (while (or (pilish--find-session dir name)
                (get-buffer (pilish--buffer-name :chat dir name))
                (get-buffer (pilish--buffer-name :input dir name)))
