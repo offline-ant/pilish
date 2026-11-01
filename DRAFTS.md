@@ -14,6 +14,28 @@ do not make a partially reconstructed view ready. Dialogs survive unrelated run
 starts and close through authoritative closure, timeouts or stale-dialog snapshot
 reconciliation. Statuses/widgets retained by replay do not flicker through clearing.
 
+## Owning command context
+
+A complete snapshot supplies `inputContext`: `{sessionFile, leafId, contextId}`.
+This is the router's opaque selected-file/branch anchor, not the moving history
+head or snapshot generation. Keep it unchanged across ordinary same-branch
+appends and unrelated refreshes. Actual file/branch replacement changes the
+anchor. Never manufacture one from displayed file/leaf fields.
+
+Every mutating RPC, including Abort, dialog answers and global queue clearing,
+carries the captured anchor as reserved `pimuxContext`; pimux validates it before
+forwarding and strips the metadata before native Pi. The public
+`pilish-session-input-context(buffer)` returns a copy only from a ready detached
+view. Pass that copy to `pilish-submit-prompt` for delayed programmatic actions.
+Immediate actions capture at dispatch; asynchronous selectors, confirmations,
+prompt preflight and dialogs preserve their original expectation. A rejection
+never retries against the newer conversation.
+
+Only explicit read-only getters and pimux management requests may cross a pending
+boundary without the anchor. In particular, a stale Abort cannot abort the new
+conversation. Shared queue confirmations validate their original context again
+before taking local work, then send that same expectation to the router.
+
 ## Local input is not a shared queue
 
 `pilish-drafts.el` binds local text, materialized images, automatic follow-ups and
@@ -75,8 +97,9 @@ These are internal module contracts, not additional transports or compatibility
 paths:
 
 1. Core/runtime command gates consult `pilish--shared-input-ready-p(proc)` for
-   shared user-input commands. Management/bootstrap/explicit Abort remain possible
-   while a snapshot is pending; a pending boundary never authorizes prompt replay.
+   shared user-input commands. Read-only getters and management/bootstrap remain
+   possible while a snapshot is pending; Abort and dialog answers remain gated.
+   A pending or failed boundary never authorizes prompt replay.
 2. Shared calls `pilish--runtime-note-snapshot(proc,snapshot)` after authoritative
    state/history adoption, `pilish--runtime-live(proc)` after the matching replay
    boundary, and `pilish--runtime-snapshot-failed(proc,error)` for a non-superseded

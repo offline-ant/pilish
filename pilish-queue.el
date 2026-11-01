@@ -236,7 +236,10 @@ when present, receives the actual response after requester-only recovery."
   (let ((chat (pilish--get-chat-buffer)))
     (condition-case err
         (pilish--rpc-async
-         proc '(:type "clear_queue")
+         proc (if (process-get proc 'pilish-detached)
+                  (list :type "clear_queue" :pimuxContext
+                        (or (plist-get context :runtime-context) :null))
+                '(:type "clear_queue"))
          (lambda (response)
            (when (buffer-live-p chat)
              (with-current-buffer chat
@@ -251,34 +254,41 @@ when present, receives the actual response after requester-only recovery."
 
 (defun pilish--remove-shared-queued-messages ()
   "Confirm one global clear and suspend its acknowledged recovery locally."
-  (when (pilish--confirm-shared-queue-clear)
-    (let ((context (pilish--draft-context))
-          (local (pilish--take-unsubmitted-followups))
-          (proc (pilish--get-process)))
-      (when local
-        (pilish--quarantine-input "local-queue-recovery" context :followups local))
-      (pilish--clear-shared-queue-confirmed proc context))))
+  (let* ((proc (pilish--get-process))
+         (input-context (pilish--capture-input-context proc))
+         (context (pilish--draft-context)))
+    (when (pilish--confirm-shared-queue-clear)
+      (unless (equal input-context (pilish--capture-input-context proc))
+        (user-error "Queue confirmation belongs to a previous conversation; nothing was cleared"))
+      (let ((local (pilish--take-unsubmitted-followups)))
+        (when local
+          (pilish--quarantine-input "local-queue-recovery" context :followups local))
+        (pilish--clear-shared-queue-confirmed proc context)))))
 
 (defun pilish--abort-shared-turn ()
   "Confirm global queue removal, suspend local work and abort this shared run.
 Called by the owning Abort control, before it changes queues or stop intent.
 Later delayed-start aborts must send only Abort, not clear new shared input."
-  (when (pilish--confirm-shared-queue-clear)
-    (let* ((context (pilish--draft-context))
-           (local (pilish--take-unsubmitted-followups))
-           (proc (pilish--get-process))
-           (retired (pilish--cancel-tool-times-state)))
+  (let* ((proc (pilish--get-process))
+         (input-context (pilish--capture-input-context proc))
+         (context (pilish--draft-context)))
+    (when (pilish--confirm-shared-queue-clear)
+      (unless (equal input-context (pilish--capture-input-context proc))
+        (user-error "Abort confirmation belongs to a previous conversation; nothing was cleared or aborted"))
+      (let* ((local (pilish--take-unsubmitted-followups))
+             (retired (pilish--cancel-tool-times-state)))
       (unwind-protect
           (progn
             (when local
               (pilish--quarantine-input "local-abort-recovery" context :followups local))
-            (pilish--set-aborted t)
+            (pilish--set-aborted t input-context)
             (pilish--clear-shared-queue-confirmed proc context)
             (pilish--cancel-process-dialogs proc)
-            (pilish--rpc-async proc '(:type "abort") #'ignore))
+            (pilish--rpc-async proc (pilish--bind-input-context '(:type "abort") input-context)
+                               #'ignore))
         (pilish--paint-retired-tool-times retired))
       (message "Pi: Aborting the shared turn; acknowledged cleared input is recoverable here only")
-      t)))
+      t))))
 
 ;;;###autoload
 (defun pilish-restore-queued-messages (&optional event)
