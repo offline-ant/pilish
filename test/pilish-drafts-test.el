@@ -20,9 +20,13 @@
   `(save-window-excursion
      (pilish-test-with-rpc-session (chat input proc commands)
        (ignore chat input proc commands)
+       (process-put proc 'pilish-detached t)
        (process-put proc 'pilish-mux '(:protocol 2 :muxId "draft-test" :piPid 42))
+       (process-put proc 'pilish-input-context
+                    '(:sessionFile "/synthetic/one.jsonl" :leafId "a" :contextId "fake-branch"))
        (process-put proc 'pilish-mux-generation 0)
        (process-put proc 'pilish-mux-live-generation 0)
+       (process-put proc 'pilish-mux-applied-generation 0)
        (with-current-buffer chat
          (setq pilish--state (list :session-file "/synthetic/one.jsonl"))
          (setq pilish--draft-context '(:session-file "/synthetic/one.jsonl" :leaf-id "a")))
@@ -45,6 +49,7 @@
   (list :type "pimux_snapshot" :generation generation :reason reason
         :session (list :file file :id "synthetic" :cwd default-directory :name :null)
         :leafId leaf :entries entries :messages messages :replay 0 :idle t
+        :inputContext (list :sessionFile file :leafId leaf :contextId "fake-branch")
         :model '(:id "faux" :provider "faux") :thinkingLevel "high"
         :run '(:active :false :compacting :false :tailTruncated :false)))
 
@@ -400,12 +405,13 @@
     (let (calls)
       (cl-letf (((symbol-function 'pilish--runtime-note-snapshot)
                  (lambda (_proc snapshot)
-                   (should (equal (plist-get pilish--state :leaf-id)
-                                  (plist-get snapshot :leafId)))
+                   (should (equal (plist-get (plist-get snapshot :session) :file)
+                                  "/synthetic/one.jsonl"))
                    (push 'snapshot calls)))
                 ((symbol-function 'pilish--runtime-live)
                  (lambda (transport)
                    (should (pilish--shared-input-ready-p transport))
+                   (should (equal (plist-get pilish--state :leaf-id) "a"))
                    (push 'live calls))))
         (pilish-drafts-test--deliver proc (pilish-drafts-test--snapshot)))
       (should (equal (reverse calls) '(snapshot live))))))

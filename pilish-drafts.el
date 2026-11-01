@@ -46,6 +46,12 @@ ordinary live appends, so a missed later tree move must not look like append."
                       (list :session-file (plist-get pilish--state :session-file)
                             :leaf-id (plist-get pilish--state :leaf-id)))))
         (tail (car (last (append pilish--canonical-messages nil)))))
+    (when (and (not (plist-get context :runtime-context))
+               (processp pilish--process)
+               (pilish--valid-input-context-p
+                (process-get pilish--process 'pilish-input-context)))
+      (setq context (plist-put context :runtime-context
+                               (copy-tree (process-get pilish--process 'pilish-input-context)))))
     (if tail (plist-put context :tail-digest (pilish--context-message-digest tail))
       context)))
 
@@ -181,6 +187,10 @@ non-descendant leaf quarantines it, including after a missed change/gap."
                       (reverse (append (plist-get snapshot :entries) nil)))))
          (changed
           (or (and old-file (not (equal old-file file)))
+              (and (plist-get old :runtime-context)
+                   (pilish--valid-input-context-p (plist-get snapshot :inputContext))
+                   (not (equal (plist-get (plist-get old :runtime-context) :contextId)
+                               (plist-get (plist-get snapshot :inputContext) :contextId))))
               (and (equal old-file file) (not (equal old-leaf leaf))
                    (or (equal (plist-get snapshot :reason) "tree_changed")
                        (not (pilish--snapshot-descends-from-p snapshot old-leaf))))
@@ -191,7 +201,9 @@ non-descendant leaf quarantines it, including after a missed change/gap."
     (when changed
       (pilish--quarantine-local-work
        (if (equal old-file file) "branch-change" "session-change") old))
-    (setq pilish--draft-context (list :session-file file :leaf-id leaf))
+    (setq pilish--draft-context
+          (list :session-file file :leaf-id leaf
+                :runtime-context (copy-tree (plist-get snapshot :inputContext))))
     (pilish--note-desktop-local-state)))
 
 (defun pilish--draft-submission-noted (text image wait)
