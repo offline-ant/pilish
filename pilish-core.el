@@ -34,6 +34,10 @@
 (require 'cl-lib)
 (require 'json)
 
+(declare-function pilish--runtime-accept-hello "pilish-runtime-process" (process hello))
+(declare-function pilish--runtime-note-exit "pilish-runtime-process" (process event))
+(declare-function pilish--shared-input-ready-p "pilish-shared" (proc))
+
 ;;;; JSON Parsing
 
 (defun pilish--parse-json-line (line)
@@ -520,6 +524,15 @@ Maps request IDs to command type strings."
 COMMAND is a plist that will be augmented with a unique ID.
 CALLBACK is called with the response plist when received.
 Encoding or scheduling failures leave no pending request behind."
+  (when (and (process-get process 'pilish-detached)
+             (not (and (process-get process 'pilish-mux)
+                       (pilish--shared-input-ready-p process)))
+             (not (member (plist-get command :type)
+                          '("pimux_bootstrap" "abort" "get_state" "get_commands"
+                            "get_available_models" "get_session_stats"))))
+    (user-error "Detached view is not snapshot-ready; input retained, reconnect explicitly"))
+  (when (>= (hash-table-count (pilish--get-pending-requests process)) 256)
+    (user-error "Too many pending runtime requests; no command was sent"))
   (let* ((id (pilish--next-request-id))
          (full-command (plist-put (copy-sequence command) :id id))
          ;; Encode before registration so serialization failures cannot create
@@ -541,6 +554,9 @@ Encoding or scheduling failures leave no pending request behind."
   "Send extension UI RESPONSE to pi PROCESS.
 RESPONSE must include the original :id from the request, as pi uses
 this to match responses to pending promises."
+  (when (and (process-get process 'pilish-detached)
+             (not (pilish--shared-input-ready-p process)))
+    (user-error "Wait for the authoritative live boundary before answering"))
   (pilish--send-string process (pilish--encode-command response)))
 
 (defun pilish--rpc-sync (process command &optional timeout)
@@ -607,6 +623,11 @@ may also reset this wall-clock observation baseline."
          (lines (car result))
          (registered (eq proc (get-process (process-name proc)))))
     (process-put proc 'pilish-partial-output-chunks (cdr result))
+    (when (and (process-get proc 'pilish-detached)
+               (or (> (apply #'+ (mapcar #'string-bytes (cdr result))) (* 128 1024 1024))
+                   (seq-some (lambda (line) (> (string-bytes line) (* 128 1024 1024))) lines)))
+      (delete-process proc)
+      (error "Detached runtime exceeded its record bound"))
     ;; OS exit can precede final stdout or happen during dispatch.  Stop for
     ;; removal from Emacs's process table, not merely a non-live status.
     (while (and lines (or (not registered)
@@ -614,12 +635,22 @@ may also reset this wall-clock observation baseline."
       (let ((line (pop lines)))
         (if (equal line pilish--remote-ready-marker)
             (pilish--mark-process-ready proc)
-          (when-let* ((json (pilish--parse-json-line line)))
+          (let ((json (pilish--parse-json-line line)))
             (condition-case err
-                (pilish--dispatch-response proc json)
+                (progn
+                  (when (and (process-get proc 'pilish-detached) (not (listp json)))
+                    (error "Runtime sent a malformed JSON object"))
+                  (when (and (process-get proc 'pilish-detached)
+                             (not (process-get proc 'pilish-mux))
+                             (not (equal (plist-get json :type) "pimux_hello")))
+                    (error "Runtime did not begin with a valid protocol-2 hello"))
+                  (when json (pilish--dispatch-response proc json)))
               (error
                (message "pilish: error dispatching process response: %s"
-                        (error-message-string err))))))))))
+                        (error-message-string err))
+               (when (and (process-get proc 'pilish-detached) (process-live-p proc)
+                          (or (not (process-get proc 'pilish-mux)) (not (listp json))))
+                 (delete-process proc))))))))))
 
 (defun pilish--process-sentinel (proc event)
   "Handle process state change EVENT for PROC."
@@ -683,7 +714,10 @@ Calls only the handler registered for this specific process."
   ;; Observe before display registration or adoption, including reload candidates.
   (pcase (plist-get event :type)
     ("queue_update" (process-put proc 'pilish-queue-snapshot event))
-    ("pimux_hello" (pilish--note-shared-process proc event)))
+    ("pimux_hello" (pilish--note-shared-process proc event))
+    ("pimux_exit"
+     (when (process-get proc 'pilish-detached)
+       (pilish--runtime-note-exit proc event))))
   (let ((registered (eq proc (get-process (process-name proc)))))
     (unless (run-hook-wrapped
              'pilish-process-event-functions
@@ -699,97 +733,25 @@ Calls only the handler registered for this specific process."
 
 ;;;; Shared processes
 
-;; pimux runs Pi for one frontend and lets others attach to the same
-;; process; its first record, `pimux_hello', marks the process shared.
-;; `pilish-shared' handles the rest of its protocol.
+;; A detached runtime owns Pi; this process is only a symmetric socket client.
+;; A validated protocol-2 hello precedes every snapshot and user command.
 
 (defun pilish--process-shared-p (process)
   "Return PROCESS's `pimux_hello' record when other frontends may share it."
   (and (processp process) (process-get process 'pilish-mux)))
 
 (defun pilish--note-shared-process (process hello)
-  "Record PROCESS as shared from its HELLO, with its Pi's start time.
-A replacement process says hello before it is its chat's process."
-  (process-put process 'pilish-mux hello)
-  (let* ((chat (process-get process 'pilish-chat-buffer))
-         (default-directory (if (buffer-live-p chat)
-                                (buffer-local-value 'default-directory chat)
-                              default-directory)))
-    (process-put process 'pilish-mux-pi-start
-                 (alist-get 'start (process-attributes (plist-get hello :piPid))))))
-
-(defconst pilish--shared-close-seconds 5
-  "Seconds a shared Pi has to exit after end of input before it is killed.")
-
-(defconst pilish--shared-kill-seconds 1
-  "Seconds a killed shared Pi has to disappear before stopping fails.")
-
-(defconst pilish--shared-stop-poll-seconds 0.05
-  "Seconds between checks that a stopping shared process is gone.")
-
-(defun pilish--shared-pi-running-p (process)
-  "Return non-nil while the Pi of shared PROCESS runs.
-PROCESS is pimux, which outlives Pi unless it is killed: Pi then still
-finishes on its own, writing its session file.  The start time recorded
-at `pimux_hello' keeps a recycled PID from counting as Pi.
-`default-directory' selects the host."
-  (when-let* ((pid (plist-get (process-get process 'pilish-mux) :piPid))
-              (recorded (process-get process 'pilish-mux-pi-start))
-              (attributes (process-attributes pid))
-              (start (alist-get 'start attributes)))
-    (and (not (equal (alist-get 'state attributes) "Z"))
-         ;; Emacs derives it from the uptime on each call, so it varies a little.
-         (< (abs (- (float-time start) (float-time recorded))) 2))))
-
-(defun pilish--poll-shared-stop (process kill-time give-up-time callback)
-  "Call CALLBACK once PROCESS and its Pi are gone, killing them at KILL-TIME.
-CALLBACK gets nil, or a reason when something still runs at GIVE-UP-TIME."
-  (let ((directory default-directory)
-        (now (float-time)))
-    (cond
-     ((not (or (process-live-p process) (pilish--shared-pi-running-p process)))
-      (funcall callback nil))
-     ((> now give-up-time)
-      (funcall callback "Pi did not exit"))
-     (t
-      (when (and kill-time (>= now kill-time))
-        (setq kill-time nil)
-        (when (pilish--shared-pi-running-p process)
-          (ignore-errors
-            (signal-process (plist-get (process-get process 'pilish-mux) :piPid)
-                            'SIGKILL directory)))
-        (when (process-live-p process)
-          (delete-process process)))
-      (run-at-time pilish--shared-stop-poll-seconds nil
-                   (lambda ()
-                     (let ((default-directory directory))
-                       (pilish--poll-shared-stop
-                        process kill-time give-up-time callback))))))))
-
-(defun pilish--stop-shared-process (process callback)
-  "Stop shared PROCESS and its Pi, then call CALLBACK with nil or a reason.
-End of input makes pimux stop Pi and tell the other frontends, which
-killing pimux would not.  What still runs `pilish--shared-close-seconds'
-later is killed.  PROCESS may be gone already while its Pi, which then
-saw its input end, is not.  CALLBACK runs with this `default-directory',
-possibly at once."
-  (let* ((unreachable (and (process-live-p process)
-                           (condition-case nil
-                               (progn (process-send-eof process) nil)
-                             (error t))))
-         (kill-time (+ (float-time) (if unreachable 0 pilish--shared-close-seconds))))
-    (pilish--poll-shared-stop process kill-time
-                              (+ kill-time pilish--shared-kill-seconds)
-                              callback)))
+  "Record PROCESS as shared only after its protocol-2 HELLO validates."
+  (unless (and (process-get process 'pilish-detached)
+               (fboundp 'pilish--runtime-accept-hello))
+    (error "Primary-bound pimux transports are unsupported; configure the detached release API"))
+  (pilish--runtime-accept-hello process hello))
 
 (defun pilish--terminate-process (process)
-  "Stop the live pi PROCESS without waiting for it.
-Only a shared process gets to finish (`pilish--stop-shared-process');
-others are killed at once."
-  (when (process-live-p process)
-    (if (pilish--process-shared-p process)
-        (pilish--stop-shared-process process #'ignore)
-      (delete-process process))))
+  "Disconnect live PROCESS; native unshared Pi keeps its ordinary lifetime.
+For a detached socket this only removes a client.  Explicit acknowledged
+runtime stop is a separate operation and never signals a bare Pi PID."
+  (when (process-live-p process) (delete-process process)))
 
 (defconst pilish--process-stderr-max-chars 4000
   "Maximum number of stderr characters to keep in process exit excerpts.")
@@ -977,10 +939,6 @@ Runtime status transitions are driven by events from pi:
 Local commands may mark a session busy before the first event arrives,
 for example normal prompt submission and manual compaction during the
 RPC pre-event window.")
-
-(defvar-local pilish--exited-shared-process nil
-  "The shared process that last exited in this chat, or nil.
-Its Pi can outlive it, so reopening the session file waits for that.")
 
 (defvar-local pilish--settle-releases-streaming nil
   "Non-nil when the next agent_settled also ends `streaming'.
