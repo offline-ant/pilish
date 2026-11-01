@@ -30,7 +30,7 @@ SELECTOR ?=
 # Example: make test VERBOSE=1
 VERBOSE ?=
 
-.PHONY: test test-unit test-core test-ui test-render test-arguments test-table test-input test-menu test-browse test-jsonl test-snapshot test-build test-session-api test-dialog test-queue test-shared test-style test-pair test-answer test-terminal-image
+.PHONY: test test-unit test-core test-ui test-render test-arguments test-table test-input test-menu test-browse test-jsonl test-snapshot test-build test-grammars test-session-api test-dialog test-queue test-shared test-style test-pair test-answer test-terminal-image
 .PHONY: test-integration test-integration-fake test-integration-real test-integration-ci test-integration-ci-real test-gui test-gui-ci test-all
 .PHONY: bench bench-batch bench-reload-resume bench-reload-resume-batch bench-reload-resume-smoke
 .PHONY: bench-tool-update bench-tool-update-batch bench-tool-update-smoke
@@ -54,6 +54,7 @@ help:
 	@echo "  make test-jsonl        JSONL reader/tree/projection tests only"
 	@echo "  make test-snapshot     Static saved subagent snapshot tests only"
 	@echo "  make test-build       Build/dependency helper tests only"
+	@echo "  make test-grammars    Essential provisioning API tests (builtins only)"
 	@echo "  make test-unit        Compile + all unit tests"
 	@echo "  make test-integration Shared integration tests (fake first, then real; local target starts Ollama for the real lane)"
 	@echo "  make test-integration-fake Shared integration tests against fake backend only"
@@ -146,6 +147,7 @@ test: .deps-stamp
 		-l pilish-jsonl-test \
 		-l pilish-snapshot-test \
 		-l pilish-build-test \
+		-l pilish-grammars-test \
 		-l pilish-evil-test \
 		-l pilish-fake-pi-test \
 		-l pilish-gui-test-utils-test \
@@ -213,6 +215,10 @@ test-snapshot: .deps-stamp
 
 test-build: .deps-stamp
 	@$(BATCH_TEST) -l pilish-build-test $(ERT_RUN)
+
+# This API is independently loadable; never consult home assets or package caches.
+test-grammars:
+	@$(EMACS) --batch -Q -L . -L test -l pilish-grammars-test $(ERT_RUN)
 
 test-unit: compile test
 
