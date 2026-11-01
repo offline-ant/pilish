@@ -3465,43 +3465,74 @@ a new grammar (e.g., `zig') appears in the missing set."
 ;;; Install Helper: pilish--install-grammars
 
 (ert-deftest pilish-test-install-grammars-returns-count ()
-  "install-grammars returns number of successfully installed grammars."
-  (cl-letf (((symbol-function 'treesit-install-language-grammar)
-             (lambda (_lang &optional _out-dir) nil))
-            ((symbol-function 'message) #'ignore))
-    (should (= (pilish--install-grammars '(python rust go)) 3))))
+  "install-grammars counts the artifacts supplied by its installer."
+  (let* ((dir (make-temp-file "pilish-grammar-count-" t))
+         (user-emacs-directory (file-name-as-directory dir))
+         (treesit-extra-load-path (list dir)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'treesit-install-language-grammar)
+                   ;; File-existence fixture only: never load these artifacts.
+                   (pilish-test--fake-grammar-install dir))
+                  ((symbol-function 'message) #'ignore))
+          (should (= (pilish--install-grammars '(python rust go)) 3))
+          (dolist (lang '(python rust go))
+            (should (equal (pilish--grammar-library-files lang)
+                           (list (expand-file-name
+                                  (pilish--grammar-library-file-name lang) dir))))))
+      (delete-directory dir t))))
 
 (ert-deftest pilish-test-install-grammars-empty-list ()
   "install-grammars with empty list returns 0."
   (should (= (pilish--install-grammars '()) 0)))
 
 (ert-deftest pilish-test-install-grammars-failure-returns-partial-count ()
-  "install-grammars returns count of grammars installed before failure."
-  (let ((warning-text nil))
-    (cl-letf (((symbol-function 'treesit-install-language-grammar)
-               (lambda (lang &optional _out-dir)
-                 (when (eq lang 'rust)
-                   (error "cc: not found"))))
-              ((symbol-function 'display-warning)
-               (lambda (_type msg &rest _) (setq warning-text msg)))
-              ((symbol-function 'message) #'ignore))
-      ;; python succeeds (idx=1), rust fails (idx=2, returned as 1)
-      (should (= (pilish--install-grammars '(python rust go)) 1))
-      (should (string-match-p "rust" warning-text))
-      (should (string-match-p "1/3" warning-text)))))
+  "install-grammars counts only artifacts written before a failure."
+  (let* ((dir (make-temp-file "pilish-grammar-partial-" t))
+         (user-emacs-directory (file-name-as-directory dir))
+         (treesit-extra-load-path (list dir))
+         (warning-text nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'treesit-install-language-grammar)
+                   (lambda (lang &optional out-dir)
+                     (when (eq lang 'rust)
+                       (error "cc: not found"))
+                     (funcall (pilish-test--fake-grammar-install dir)
+                              lang out-dir)))
+                  ((symbol-function 'display-warning)
+                   (lambda (_type msg &rest _) (setq warning-text msg)))
+                  ((symbol-function 'message) #'ignore))
+          ;; Python writes an artifact; Rust fails before writing one.
+          (should (= (pilish--install-grammars '(python rust go)) 1))
+          (should (pilish--grammar-library-files 'python))
+          (should-not (pilish--grammar-library-files 'rust))
+          (should-not (pilish--grammar-library-files 'go))
+          (should (string-match-p "rust" warning-text))
+          (should (string-match-p "1/3" warning-text)))
+      (delete-directory dir t))))
 
 (ert-deftest pilish-test-install-grammars-names-failing-grammar ()
-  "install-grammars warning identifies which grammar failed."
-  (let ((warning-text nil))
-    (cl-letf (((symbol-function 'treesit-install-language-grammar)
-               (lambda (lang &optional _out-dir)
-                 (when (eq lang 'go)
-                   (error "compilation failed"))))
-              ((symbol-function 'display-warning)
-               (lambda (_type msg &rest _) (setq warning-text msg)))
-              ((symbol-function 'message) #'ignore))
-      (pilish--install-grammars '(python rust go))
-      (should (string-match-p "`go'" warning-text)))))
+  "install-grammars names the failure after two synthetic artifacts."
+  (let* ((dir (make-temp-file "pilish-grammar-failure-" t))
+         (user-emacs-directory (file-name-as-directory dir))
+         (treesit-extra-load-path (list dir))
+         (warning-text nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'treesit-install-language-grammar)
+                   (lambda (lang &optional out-dir)
+                     (when (eq lang 'go)
+                       (error "compilation failed"))
+                     (funcall (pilish-test--fake-grammar-install dir)
+                              lang out-dir)))
+                  ((symbol-function 'display-warning)
+                   (lambda (_type msg &rest _) (setq warning-text msg)))
+                  ((symbol-function 'message) #'ignore))
+          (should (= (pilish--install-grammars '(python rust go)) 2))
+          (should (pilish--grammar-library-files 'python))
+          (should (pilish--grammar-library-files 'rust))
+          (should-not (pilish--grammar-library-files 'go))
+          (should (string-match-p "`go'" warning-text))
+          (should (string-match-p "2/3" warning-text)))
+      (delete-directory dir t))))
 
 ;;; Installed Optional Grammars
 
