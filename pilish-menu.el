@@ -31,7 +31,7 @@
 ;; Key entry points:
 ;;   `pilish-menu'            Transient menu (C-c C-p)
 ;;   `pilish-new-session'     Start fresh session
-;;   `pilish-reload'          Restart pi process
+;;   `pilish-reload'          Reconnect a shared view, or reload native Pi
 ;;   `pilish-select-model'    Choose model interactively
 ;;   `pilish-select-thinking' Choose thinking level interactively
 ;;   `pilish-cycle-thinking'  Cycle thinking levels from header-line
@@ -43,10 +43,23 @@
 (require 'cl-lib)
 (require 'pilish-jsonl)
 (require 'pilish-render)
+(require 'pilish-storage)
 (require 'transient)
 
 (declare-function pilish-session-browser "pilish-browse")
 (declare-function pilish-tree-browser "pilish-browse")
+(declare-function pilish-session-runtime "pilish-runtime" (buffer))
+(declare-function pilish-reconnect-runtime "pilish-runtime" (buffer &optional callback))
+(declare-function pilish-resume-stopped-session "pilish-runtime" (buffer &optional callback))
+(declare-function pilish-stop-runtime "pilish-runtime" (buffer &optional callback))
+(declare-function pilish-list-runtimes "pilish-runtime" ())
+(declare-function pilish-attach-runtime "pilish-runtime" (runtime &optional name))
+(declare-function pilish-session-input-buffer "pilish" (chat-buffer))
+(declare-function pilish--shared-input-ready-p "pilish-shared" (proc))
+(declare-function pilish--shared-wait-for-snapshot "pilish-shared" (proc generation))
+(declare-function pilish--quarantine-input "pilish-drafts" (origin context &rest payload))
+(declare-function pilish--draft-context "pilish-drafts" ())
+(defvar pilish-runtime-pi-executable)
 
 (defconst pilish--minimum-transient-version "0.9.0"
   "Minimum supported transient version.")
@@ -247,14 +260,97 @@ and another transition may not be discarded."
       nil)
      (t t))))
 
+(defun pilish--shared-menu-resynchronize (proc chat-buf generation)
+  "Request one authoritative snapshot for PROC and CHAT-BUF after GENERATION.
+A correlated command response never licenses an independent history read.
+Failure leaves shared input gated until an explicit reconnect succeeds."
+  (when (and (buffer-live-p chat-buf)
+             (eq proc (buffer-local-value 'pilish--process chat-buf)))
+    (process-put proc 'pilish-mux-awaiting-snapshot t)
+    (condition-case err
+        (pilish--rpc-async
+         proc '(:type "pimux_bootstrap" :include ["entries" "messages"])
+         (lambda (response)
+           (when (and (buffer-live-p chat-buf)
+                      (eq proc (buffer-local-value 'pilish--process chat-buf)))
+             (with-current-buffer chat-buf
+               (let ((boundary (plist-get (plist-get response :data) :generation)))
+                 (if (and (eq (plist-get response :success) t)
+                          (integerp boundary) (> boundary 0))
+                     (pilish--shared-wait-for-snapshot proc boundary)
+                   (message "Pi: Snapshot unavailable; reconnect explicitly: %s"
+                            (or (plist-get response :error)
+                                "missing authoritative generation"))))
+               (pilish--finish-session-transition generation)))))
+      (error
+       (with-current-buffer chat-buf
+         (pilish--finish-session-transition generation))
+       (message "Pi: Snapshot request uncertain; reconnect explicitly: %s"
+                (error-message-string err))))))
+
+(defun pilish--shared-menu-transition (proc chat-buf command action)
+  "Send shared COMMAND through PROC for CHAT-BUF after confirming ACTION.
+Only snapshot/replay/live rebuilds the view.  Returned fork text is recoverable
+input, never an overwrite of another context's draft."
+  (unless (pilish--shared-input-ready-p proc)
+    (user-error "Shared input is not ready; reconnect and wait for the snapshot"))
+  (when (y-or-n-p (format "%s changes this agent for every attached frontend.  Continue? "
+                          action))
+    (with-current-buffer chat-buf
+      (let ((generation (pilish--begin-session-transition proc))
+            (next-generation (1+ (or (process-get proc 'pilish-mux-generation) 0)))
+            (origin (pilish--draft-context))
+            (response-seen nil))
+        (condition-case err
+            (progn
+              ;; Send only from a ready view.  Gate later commands immediately
+              ;; after the send, before Emacs can dispatch further user input.
+              (pilish--rpc-async
+               proc command
+               (lambda (response)
+                 (setq response-seen t)
+                 (when (and (buffer-live-p chat-buf)
+                          (eq proc (buffer-local-value 'pilish--process chat-buf)))
+                 (with-current-buffer chat-buf
+                   (let* ((data (plist-get response :data))
+                          (cancelled (plist-get data :cancelled))
+                          (success (and (eq (plist-get response :success) t)
+                                        (not (and cancelled
+                                                  (not (pilish--json-false-p cancelled))))))
+                          (text (and success (plist-get data :text))))
+                     (when (and (stringp text) (not (string-empty-p text)))
+                       (pilish--quarantine-input "forked message; explicit reuse required"
+                                                 origin :draft text))
+                     (message "Pi: %s%s" action
+                              (cond (success " accepted; rebuilding the shared view")
+                                    ((and cancelled (not (pilish--json-false-p cancelled)))
+                                     " cancelled")
+                                    (t (format " failed or uncertain: %s"
+                                               (or (plist-get response :error)
+                                                   "unknown error"))))))
+                   ;; Even a cancelled/failed request can have produced another
+                   ;; authoritative boundary.  Reconcile, never infer old state.
+                   (pilish--shared-menu-resynchronize proc chat-buf generation)))))
+              (unless response-seen
+                (pilish--shared-wait-for-snapshot proc next-generation)))
+          ((error quit)
+           (pilish--shared-wait-for-snapshot proc next-generation)
+           (pilish--finish-session-transition generation)
+           ;; A send error is not proof that the request was never accepted.
+           (message "Pi: %s delivery uncertain; reconnect without replaying it" action)
+           (signal (car err) (cdr err))))))))
+
 ;;;###autoload
 (defun pilish-new-session ()
-  "Start a new pi session (reset)."
+  "Start a new Pi conversation, everywhere for a shared runtime."
   (interactive)
   (when-let* ((proc (pilish--get-process))
              (chat-buf (pilish--get-chat-buffer))
              ((pilish--new-session-ready-p chat-buf)))
-    (let ((generation
+    (if (pilish--process-shared-p proc)
+        (pilish--shared-menu-transition
+         proc chat-buf '(:type "new_session") "Start a new conversation")
+      (let ((generation
            (with-current-buffer chat-buf
              (pilish--begin-session-transition proc))))
       (condition-case err
@@ -298,7 +394,7 @@ and another transition may not be discarded."
          (when (buffer-live-p chat-buf)
            (with-current-buffer chat-buf
              (pilish--finish-session-transition generation)))
-         (signal (car err) (cdr err)))))))
+         (signal (car err) (cdr err))))))))
 
 (defun pilish--session-list-directory (&optional chat-buf)
   "Return the directory containing CHAT-BUF's current JSONL session file.
@@ -428,7 +524,10 @@ Calls CALLBACK with message count when history is applied successfully.
 CHAT-BUF is the target buffer; if nil, uses `pilish--get-chat-buffer'.
 Optional COMPLETION-CALLBACK is called after a current RPC response is handled,
 even when the response failed or was not safe to render.  Note: When called
-from async callbacks, pass CHAT-BUF explicitly."
+from async callbacks, pass CHAT-BUF explicitly.
+Shared views instead obtain exact history through their snapshot protocol."
+  (when (pilish--process-shared-p proc)
+    (user-error "Shared history is authoritative; reconnect this view instead"))
   (let ((chat-buf (or chat-buf (pilish--get-chat-buffer))))
     (when (and chat-buf (buffer-live-p chat-buf))
       (with-current-buffer chat-buf
@@ -500,7 +599,10 @@ HISTORY-CALLBACK runs when the history is shown; HISTORY-COMPLETION runs
 with the history response afterwards, whether or not it was shown.
 The transition remains active until both the state and history RPC callbacks
 for GENERATION have completed or failed.  Synchronous scheduling errors finish
-the transition before being re-signaled so the UI cannot stay wedged."
+the transition before being re-signaled so the UI cannot stay wedged.
+This independent refresh is only for explicit unshared sessions."
+  (when (pilish--process-shared-p proc)
+    (user-error "Shared transitions must use authoritative snapshot/replay/live"))
   (let ((latch (pilish--make-session-transition-latch
                 chat-buf proc generation 2)))
     (condition-case err
@@ -575,21 +677,15 @@ session's process, like orchestration's workers, needs this.")
 
 ;;;###autoload
 (defun pilish-reload (&optional callback)
-  "Reload the current session by restarting the pi process.
-Useful for reloading extensions, skills, prompts, and themes after
-editing them, or when the pi process has died or become unresponsive.
-Starts a fresh process, switches it back to the cached session file, then
-replaces the old process, refreshes state and commands, and rebuilds the chat
-buffer from session history.
+  "Reconnect the shared view, or reload an explicitly unshared Pi process.
+A shared view reconnects to the same runtime identity.  A missing runtime
+never starts another writer; use `pilish-resume-agent' explicitly instead.
+Reconnect neither replays input nor reloads runtime code.  Worker refusal
+hooks retain the optional extension-command reload-in-place path.
 
-A session file takes one writer.  A process nothing else talks to stays
-until its replacement has taken over, so a failed reload keeps it.  Other
-frontends can still prompt a process shared through pimux, so that one
-stops first and the new process opens the file only once its Pi has
-exited; if the restart then fails, the chat reports the process gone.
-The draft stays either way.  `pilish-restart-refusal-functions' can forbid
-replacing the process; a Pi extension command `reload' then reloads it in
-place.
+Explicit unshared mode keeps its native replacement policy: start a fresh
+process, switch it back to the cached file, then replace the old process.
+`pilish-restart-refusal-functions' can forbid replacing that process too.
 
 Non-interactively, CALLBACK is called exactly once: with nil once the
 reloaded history is shown, or with a reason string when the reload fails,
@@ -626,6 +722,14 @@ SETTLE ignores calls after its first.  Synchronous errors propagate."
      (refusal
       (with-current-buffer chat-buf
         (pilish--reload-in-place refusal settle)))
+     ((or (and (fboundp 'pilish-session-runtime)
+               (pilish-session-runtime chat-buf))
+          (pilish--process-shared-p
+           (buffer-local-value 'pilish--process chat-buf))
+          (and (pilish-storage-managed-p)
+               (let ((proc (buffer-local-value 'pilish--process chat-buf)))
+                 (not (and (processp proc) (process-live-p proc))))))
+      (pilish-reconnect-runtime chat-buf settle))
      ((not session-file)
       (message "Pi: No session file available - cannot reload")
       (funcall settle "No session file available - cannot reload"))
@@ -642,13 +746,10 @@ SETTLE ignores calls after its first.  Synchronous errors propagate."
                         dir))
           (let ((session-path (pilish--process-local-path
                                session-file dir))
-                (old-proc (or pilish--process pilish--exited-shared-process)))
+                (old-proc pilish--process))
             (setq pilish--status 'idle)
-            (if (pilish--process-shared-p old-proc)
-                (pilish--reload-after-stop
-                 old-proc dir session-file session-path settle)
-              (pilish--reload-start
-               old-proc dir session-file session-path settle)))))))))
+            (pilish--reload-start
+             old-proc dir session-file session-path settle))))))))
 
 (defun pilish--reload-in-place (refusal settle)
   "Reload the current chat's Pi without replacing its process.
@@ -682,37 +783,6 @@ command `reload' (calling `ctx.reload').  Call SETTLE with the outcome."
                (pilish--refresh-commands proc)))
            (message "Pi: Session reloaded")
            (funcall settle nil)))))))
-
-(defun pilish--reload-after-stop (old-proc dir session-file session-path settle)
-  "Stop shared OLD-PROC, then reload DIR's SESSION-FILE in a new process.
-The new process must not open SESSION-PATH while OLD-PROC's Pi can write
-it.  Once that Pi is gone a failure leaves no process, which the chat
-reports as it does for a process that exited; a later reload starts over.
-Call SETTLE with the outcome."
-  (let* ((chat-buf (current-buffer))
-         (generation (pilish--begin-session-transition old-proc))
-         (report (lambda (reason)
-                   (when (and reason (buffer-live-p chat-buf))
-                     (with-current-buffer chat-buf
-                       (pilish--finish-session-transition generation)
-                       (pilish--mark-process-exited
-                        old-proc (list :error (format "Reload failed: %s" reason)))))
-                   (funcall settle reason))))
-    (pilish--skip-process-kill-confirmation old-proc)
-    (pilish--unregister-display-handler old-proc)
-    (message "Pi: Waiting for the shared process to exit...")
-    (pilish--stop-shared-process
-     old-proc
-     (lambda (failure)
-       (cond
-        ((not (pilish--session-transition-current-p chat-buf old-proc generation))
-         (funcall settle "Reload superseded by another session change"))
-        (failure (funcall report failure))
-        (t
-         (with-current-buffer chat-buf
-           (condition-case err
-               (pilish--reload-start old-proc dir session-file session-path report)
-             (error (funcall report (error-message-string err)))))))))))
 
 (defun pilish--reload-start (old-proc dir session-file session-path settle)
   "Start the process replacing OLD-PROC, for the current chat in DIR.
@@ -791,7 +861,15 @@ is the path to refresh.  Call SETTLE with the outcome."
 
 (defun pilish--resume-selected-session (proc chat-buf selected-path)
   "Resume SELECTED-PATH using PROC and rebuild CHAT-BUF from its history."
-  (let* ((target-dir (pilish--session-file-cwd-or-error selected-path))
+  (if (pilish--process-shared-p proc)
+      (pilish--shared-menu-transition
+       proc chat-buf
+       (list :type "switch_session" :sessionPath
+             (with-current-buffer chat-buf
+               (pilish--process-local-path selected-path
+                                            (pilish--chat-session-directory))))
+       "Replace the shared conversation")
+    (let* ((target-dir (pilish--session-file-cwd-or-error selected-path))
          (session (and (buffer-live-p chat-buf)
                        (pilish--chat-session-name chat-buf)))
          (existing-target (pilish--find-session target-dir session)))
@@ -842,7 +920,66 @@ is the path to refresh.  Call SETTLE with the outcome."
                (message "Pi: Failed to resume session")
                (when (buffer-live-p chat-buf)
                  (with-current-buffer chat-buf
-                   (pilish--finish-session-transition generation)))))))))))
+                   (pilish--finish-session-transition generation))))))))))))
+
+;;;; Detached runtime controls
+
+(defun pilish--menu-runtime-action (function action &optional confirmation)
+  "Apply public runtime FUNCTION to this view and report ACTION's outcome.
+When CONFIRMATION is non-nil it must be accepted before any state changes."
+  (let ((chat-buf (pilish--get-chat-buffer)))
+    (unless (buffer-live-p chat-buf) (user-error "No Pi conversation view"))
+    (unless (fboundp function)
+      (user-error "Loaded Pilish lacks the supported detached runtime API"))
+    (when (or (not confirmation) (yes-or-no-p confirmation))
+      (funcall function chat-buf
+               (lambda (failure)
+                 (if failure
+                     (message "Pi: %s failed or uncertain: %s" action failure)
+                   (message "Pi: %s acknowledged" action)))))))
+
+(defun pilish-reconnect-agent ()
+  "Reconnect this view to the same existing agent, without starting Pi.
+No prompt, queue or tool request is replayed."
+  (interactive)
+  (pilish--menu-runtime-action #'pilish-reconnect-runtime "Reconnect"))
+
+(defun pilish-resume-agent ()
+  "Explicitly start a fresh agent for this stopped conversation.
+No paid input is inferred or replayed; task-owned workers require their parent."
+  (interactive)
+  (pilish--menu-runtime-action
+   #'pilish-resume-stopped-session "Resume stopped conversation"
+   "Start a fresh agent for this stopped conversation, without replaying input? "))
+
+(defun pilish-stop-agent ()
+  "Stop this agent everywhere, including other attached frontends.
+This differs from closing or disconnecting this view, even for an idle agent."
+  (interactive)
+  (pilish--menu-runtime-action
+   #'pilish-stop-runtime "Stop agent everywhere"
+   "Stop this agent and its owned work for EVERY attached frontend (not just this view)? "))
+
+(defun pilish-attach-agent ()
+  "Select and attach an existing compatible agent without starting Pi."
+  (interactive)
+  (unless (and (fboundp 'pilish-list-runtimes) (fboundp 'pilish-attach-runtime))
+    (user-error "Loaded Pilish lacks the supported detached runtime API"))
+  (let* ((runtimes (pilish-list-runtimes))
+         (choices
+          (mapcar
+           (lambda (runtime)
+             (cons (format "%s  %s  %s"
+                           (plist-get runtime :mux-id)
+                           (or (plist-get runtime :state) "unknown")
+                           (or (plist-get runtime :session-file) "no conversation"))
+                   runtime))
+           runtimes)))
+    (unless choices (user-error "No existing agents available; none was started"))
+    (let* ((choice (completing-read "Attach existing agent: " choices nil t))
+           (chat (pilish-attach-runtime (cdr (assoc choice choices)))))
+      (when (buffer-live-p chat)
+        (pilish--display-buffers chat (pilish-session-input-buffer chat))))))
 
 ;;;; Model and Thinking
 
@@ -1037,18 +1174,22 @@ than offering levels the current model may not support."
   "Refresh CHAT-BUF state from PROC after a thinking-level change.
 Uses `get_state' so the UI reflects the server's actual level,
 including any model-specific clamping."
-  (pilish--rpc-async
-   proc '(:type "get_state")
-   (lambda (response)
-     (if (eq (plist-get response :success) t)
-         (let* ((data (plist-get response :data))
-                (level (or (plist-get data :thinkingLevel) "off")))
-           (pilish--apply-state-response chat-buf response)
-           (message "Pi: Thinking level: %s" level))
-       (message "Pi: Thinking level updated, but failed to refresh state%s"
-                (if-let* ((error-text (plist-get response :error)))
-                    (format ": %s" error-text)
-                  ""))))))
+  (if (pilish--process-shared-p proc)
+      (pilish--shared-menu-resynchronize
+       proc chat-buf
+       (buffer-local-value 'pilish--session-transition-generation chat-buf))
+    (pilish--rpc-async
+     proc '(:type "get_state")
+     (lambda (response)
+       (if (eq (plist-get response :success) t)
+           (let* ((data (plist-get response :data))
+                  (level (or (plist-get data :thinkingLevel) "off")))
+             (pilish--apply-state-response chat-buf response)
+             (message "Pi: Thinking level: %s" level))
+         (message "Pi: Thinking level updated, but failed to refresh state%s"
+                  (if-let* ((error-text (plist-get response :error)))
+                      (format ": %s" error-text)
+                    "")))))))
 
 (defun pilish-select-thinking ()
   "Select a thinking level from the minibuffer."
@@ -1153,10 +1294,18 @@ Shows PID, status, and session file."
          (proc (and chat-buf (buffer-local-value 'pilish--process chat-buf)))
          (state (and chat-buf (buffer-local-value 'pilish--state chat-buf)))
          (status (and chat-buf (buffer-local-value 'pilish--status chat-buf)))
+         (runtime (and chat-buf (fboundp 'pilish-session-runtime)
+                       (pilish-session-runtime chat-buf)))
          (session-file (and state (plist-get state :session-file))))
     (cond
      ((not chat-buf)
       (message "Pi: No session"))
+     (runtime
+      (message "Pi: runtime %s, Pi PID %s/start %s, wrapper %s, view %s (status: %s, session: %s)"
+               (plist-get runtime :mux-id) (plist-get runtime :pi-pid)
+               (plist-get runtime :pi-start-time) (plist-get runtime :pid)
+               (if (and (processp proc) (process-live-p proc)) "connected" "disconnected")
+               (plist-get runtime :state) (or session-file "none")))
      ((not proc)
       (message "Pi: No process (status: %s, session: %s)"
                status
@@ -1216,34 +1365,50 @@ including the gap after compaction_end while extension failure hooks run."
              (pilish--handle-manual-compaction-response chat-buf response)))))))))
 
 (defun pilish-export-html (&optional output-path)
-  "Export session to HTML file.
-Optional OUTPUT-PATH specifies where to save; nil uses pi's default."
+  "Export the conversation to HTML at optional OUTPUT-PATH.
+Live sessions use their owner's RPC.  A stopped managed view uses the exact
+release launcher and stopped-file protection; it never opens raw parallel Pi."
   (interactive
    (list (let ((path (read-string
                       "Export path on session host (RET for default): ")))
            (and (not (string-empty-p path)) path))))
-  (when-let* ((proc (pilish--get-process)))
-    (let* ((chat-buf (pilish--get-chat-buffer))
-           (anchor (when (buffer-live-p chat-buf)
-                     (with-current-buffer chat-buf
-                       (pilish--chat-session-directory chat-buf))))
-           (process-output-path
-            (pilish--process-local-path output-path anchor)))
-      (pilish--rpc-async
-       proc
-       (if process-output-path
-           (list :type "export_html" :outputPath process-output-path)
-         '(:type "export_html"))
-       (lambda (response)
-         (if (eq (plist-get response :success) t)
-             (let* ((data (plist-get response :data))
-                    (path (plist-get data :path))
-                    (emacs-path (pilish--passive-emacs-path
-                                 path anchor)))
-               (if emacs-path
-                   (message "Pi: Exported to %s" emacs-path)
-                 (message "Pi: Exported, but Pi did not return a usable path")))
-           (message "Pi: Export failed")))))))
+  (let* ((proc (pilish--get-process))
+         (chat-buf (pilish--get-chat-buffer))
+         (anchor (when (buffer-live-p chat-buf)
+                   (with-current-buffer chat-buf
+                     (pilish--chat-session-directory chat-buf)))))
+    (if (and (pilish-storage-managed-p)
+             (not (and (processp proc) (process-live-p proc))))
+        (let* ((file (and chat-buf
+                          (plist-get (buffer-local-value 'pilish--state chat-buf)
+                                     :session-file)))
+               (output (and file
+                            (expand-file-name
+                             (or output-path
+                                 (concat (file-name-sans-extension file) ".html"))
+                             anchor))))
+          (unless file (user-error "Stopped view has no saved conversation to export"))
+          (unless (and (boundp 'pilish-runtime-pi-executable)
+                       (stringp pilish-runtime-pi-executable))
+            (user-error "Configure the exact release Pi before exporting"))
+          (pilish-storage-export-session file output pilish-runtime-pi-executable)
+          (message "Pi: Exported stopped conversation to %s" output))
+      (when proc
+        (let ((process-output-path (pilish--process-local-path output-path anchor)))
+          (pilish--rpc-async
+           proc
+           (if process-output-path
+               (list :type "export_html" :outputPath process-output-path)
+             '(:type "export_html"))
+           (lambda (response)
+             (if (eq (plist-get response :success) t)
+                 (let* ((data (plist-get response :data))
+                        (path (plist-get data :path))
+                        (emacs-path (pilish--passive-emacs-path path anchor)))
+                   (if emacs-path
+                       (message "Pi: Exported to %s" emacs-path)
+                     (message "Pi: Exported, but Pi did not return a usable path")))
+               (message "Pi: Export failed")))))))))
 
 (defun pilish-copy-last-message ()
   "Copy last assistant message to kill ring."
@@ -1386,11 +1551,13 @@ a preview, then forks.  Only works when the session is idle."
                         (pilish--execute-fork proc (car result))))))))))))))))
 
 (defun pilish--execute-fork (proc entry-id)
-  "Execute fork to ENTRY-ID via PROC.
-Sends the fork RPC, then on success: refreshes state, reloads history,
-and pre-fills the input buffer with the forked message text.
-Captures chat and input buffers at call time (before the async RPC)."
-  (let* ((chat-buf (pilish--get-chat-buffer))
+  "Fork at ENTRY-ID via PROC, applying only authoritative shared snapshots.
+In explicit unshared mode, refresh state/history and prefill the fork text."
+  (if (pilish--process-shared-p proc)
+      (pilish--shared-menu-transition
+       proc (pilish--get-chat-buffer) (list :type "fork" :entryId entry-id)
+       "Fork the shared conversation")
+    (let* ((chat-buf (pilish--get-chat-buffer))
          (input-buf (pilish--get-input-buffer))
          (generation (when (buffer-live-p chat-buf)
                        (with-current-buffer chat-buf
@@ -1429,7 +1596,7 @@ Captures chat and input buffers at call time (before the async RPC)."
             (message "Pi: Branch failed")
             (when (buffer-live-p chat-buf)
               (with-current-buffer chat-buf
-                (pilish--finish-session-transition generation)))))))))
+                (pilish--finish-session-transition generation))))))))))
 
 (defun pilish--show-fork-selector (proc messages)
   "Show selector for MESSAGES and fork on selection.
@@ -1522,7 +1689,11 @@ Uses commands from pi's `get_commands' RPC."
   [["Session"
     ("n" "new" pilish-new-session)
     ("r" "sessions" pilish-session-browser)
-    ("R" "reload" pilish-reload)
+    ("R" "reload / reconnect" pilish-reload)
+    ("C" "reconnect view" pilish-reconnect-agent)
+    ("B" "resume stopped" pilish-resume-agent)
+    ("J" "attach existing agent" pilish-attach-agent)
+    ("K" "stop agent everywhere" pilish-stop-agent)
     ("N" "name" pilish-set-session-name)
     ("e" "export" pilish-export-html)
     ("Q" "quit" pilish-quit)]
