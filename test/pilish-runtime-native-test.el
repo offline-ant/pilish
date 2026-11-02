@@ -187,6 +187,45 @@
         (should (= (seq-count (lambda (message) (equal (plist-get message :role) "user"))
                               (append messages nil)) 2))))))
 
+(ert-deftest pilish-runtime-native-test-resumes-identity-free-migrated-file-without-prompt ()
+  "Migration restores stopped views; explicit Resume opens only their history."
+  (pilish-runtime-native-test--with-host
+    (let ((file (expand-file-name "migrated-stopped.jsonl" default-directory))
+          (timestamp (format-time-string "%Y-%m-%dT%H:%M:%SZ" nil t))
+          ready)
+      (with-temp-file file
+        (insert (json-encode
+                 (list :type "session" :version 3 :id "migrated-native"
+                       :timestamp timestamp :cwd default-directory)) "\n"
+                (json-encode
+                 (list :type "message" :id "migrated-entry" :parentId nil
+                       :timestamp timestamp
+                       :message '(:role "user" :content "persisted migration history" :timestamp 1)))
+                "\n"))
+      (set-file-modes file #o600)
+      (setq chat (pilish-restore-session-state
+                  (list :directory default-directory :name "migrated-stopped"
+                        :session-file file :runtime nil :draft "not a prompt")))
+      (should (equal (plist-get (pilish-session-runtime chat) :state) "stopped"))
+      (should-not (pilish-session-process chat))
+      (pilish-resume-stopped-session chat (lambda (error) (setq ready (or error 'success))))
+      (pilish-runtime-native-test--wait (lambda () ready))
+      (should (eq ready 'success))
+      (setq runtime (pilish-session-runtime chat))
+      (should (equal (plist-get runtime :state) "live"))
+      (should (equal (pilish-session-file chat) file))
+      (should (equal (plist-get runtime :session-file) file))
+      (should-not (pilish-session-busy-p chat))
+      (let* ((reply (pilish-runtime-native-test--peer runtime '(:type "get_messages")))
+             (messages (plist-get (plist-get (plist-get reply :response) :data) :messages)))
+        (should (= (length messages) 1))
+        (should (string-match-p "persisted migration history" (prin1-to-string messages)))
+        (should-not (string-match-p "not a prompt" (prin1-to-string messages))))
+      (let ((desktop (pilish-session-desktop-state chat)))
+        (should (or (equal (plist-get desktop :draft) "not a prompt")
+                    (seq-find (lambda (record) (equal (plist-get record :draft) "not a prompt"))
+                              (plist-get desktop :quarantine))))))))
+
 (ert-deftest pilish-runtime-native-test-failed-render-live-stays-gated-until-reconnect ()
   "A real full boundary and live marker cannot repair a failed renderer."
   (pilish-runtime-native-test--with-host

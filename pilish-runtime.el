@@ -177,31 +177,40 @@ or unsupported runtime stays unavailable and is never started implicitly."
     (condition-case err
         (let ((runtime (pilish-session-runtime buffer)))
           (unless runtime (error "This is not a detached runtime view"))
+          (unless (plist-get runtime :mux-id)
+            (error "This saved view has no runtime to reconnect; use Resume stopped conversation"))
           (pilish--runtime-connect buffer (pilish--runtime-discovered runtime) callback))
       (error
-       (when (buffer-live-p buffer)
-         (with-current-buffer buffer
-           (setq pilish--runtime (plist-put pilish--runtime :state "unavailable"))
-           (pilish--note-desktop-state)))
+       (when (and (buffer-live-p buffer) (pilish-session-runtime buffer))
+         (pilish--runtime-stopped-view buffer (error-message-string err)))
        (funcall callback (error-message-string err))))))
 
 (defun pilish--runtime-stopped-view (buffer reason)
   "Render BUFFER as an unavailable/stopped conversation with REASON.
-Retain its writer identity: unavailable is not an authoritative stopped proof."
+An identity-free saved view is stopped, not a failed connection.  Retain any
+writer identity: unavailable is not an authoritative stopped proof.  Resume
+still acquires the saved file's managed claim before opening it."
   (with-current-buffer buffer
-    (setq pilish--runtime
-          (plist-put (or pilish--runtime (list :protocol 2))
-                     :state (if (equal (plist-get pilish--runtime :state) "stopped")
-                                "stopped" "unavailable")))
-    (pilish--add-chat-notice
-     (format "%s\nNo agent was started. Use explicit Reconnect or Resume stopped conversation; no input will be replayed."
-             reason)
-     'pilish-error-notice)
-    (pilish--note-desktop-state)))
+    (let ((stopped
+           (or (equal (plist-get pilish--runtime :state) "stopped")
+               (not (cl-some (lambda (key) (plist-get pilish--runtime key))
+                             '(:mux-id :socket :pid :pi-pid
+                               :owner-start-time :owner-boot-id
+                               :pi-start-time :pi-boot-id))))))
+      (setq pilish--runtime
+            (plist-put (or pilish--runtime (list :protocol 2))
+                       :state (if stopped "stopped" "unavailable")))
+      (pilish--add-chat-notice
+       (format "%s\nNo agent was started. %s; no input will be replayed."
+               reason (if stopped "Use explicit Resume stopped conversation"
+                        "Use explicit Reconnect or Resume after reconciling ownership"))
+       'pilish-error-notice)
+      (pilish--note-desktop-state))))
 
 (defun pilish-restore-session-state (state)
   "Restore desktop STATE as an attach-only background view.
-Missing/incompatible runtimes remain unavailable.  No saved shell, prompt,
+Identity-free conversations are stopped/resumable; missing retained runtimes
+remain unavailable.  No saved shell, prompt,
 queue, worker or Pi process is restarted by desktop restoration."
   (let* ((runtime (plist-get state :runtime))
          (existing (and (plist-get runtime :mux-id)
