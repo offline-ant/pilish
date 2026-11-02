@@ -123,8 +123,12 @@ on acknowledged success/readiness, or an error string on failure/uncertainty.
 A failed stop retains the view and local recovery. Runtime view state `"live"`
 means the validated live boundary was reached; it is distinct from activity such
 as streaming. `"disconnected"` or `"unavailable"` does not prove Pi stopped.
-Only authoritative termination/stop reports `"stopped"`. Discovery also carries
-its advertised activity state; consumers must not mistake that for view readiness.
+For a retained owner, only authoritative termination/stop reports `"stopped"`.
+An identity-free saved conversation is also a stopped view: there is no runtime
+to reconnect. Reconnect refuses it without discovery or launch; explicit Resume
+still acquires the exact file's managed claim, attaching an existing compatible
+owner or refusing conflicting ownership. Discovery also carries its advertised
+activity state; consumers must not mistake that for view readiness.
 Workers retain their parent-task/result protocol; cancellation/resume belongs to
 that owner, not a root-stop fallback.
 
@@ -142,8 +146,10 @@ saved data, not paths reopened on restore. Keep desktop files private.
 
 `pilish-restore-session-state(state)` allocates a background view and attaches the
 specified compatible surviving identity, adopting its current file and branch.
-Missing/incompatible owners stay as unavailable views with explicit recovery; it
-never opens their old JSONL for writing or starts a fresh Pi. Saved automatic
+Missing/incompatible retained owners stay as unavailable views with explicit
+recovery; identity-free legacy conversations restore as stopped/resumable views,
+not failed connections. Restoration never opens their JSONL for writing or starts
+a fresh Pi. Saved automatic
 follow-ups and uncertain submissions become suspended recovery, never armed work.
 
 Text, images, local follow-ups and uncertain submissions composed for a previous
@@ -255,12 +261,13 @@ owned by that test namespace, including a committed runtime whose UI failed befo
 its ready callback. Do not signal foreign PIDs or treat missing acknowledgement as
 proof of exit. Retain uncertain test-operation evidence for inspection.
 
-The candidate's four real Pi/faux tests passed: creation from Pilish and an
+The candidate's five real Pi/faux tests passed: creation from Pilish and an
 independent creator, equal contextual direct-socket attachment, zero-client
 survival, reconnect/desktop restore to the same actual Pi, another frontend's
 moved-session adoption/quarantine and acknowledged explicit stop. The public
 saved-file entry point opens its exact existing conversation during asynchronous
-startup and submits once there. An injected renderer failure during a real
+startup and submits once there. The migrated identity-free view additionally
+resumes its exact persisted history without submitting a draft or any prompt. An injected renderer failure during a real
 snapshot/live sequence retains identity and recoverable input, refuses prompts,
 and recovers only through explicit reconnect without replay. The independent
 synthetic peer captures the snapshot's exact `inputContext` before its one action. Deck's three native tests plus
