@@ -2,9 +2,10 @@
 
 ;;; Commentary:
 
-;; Tests for `pilish-jump-to-answer': landing on the final answer when a
-;; turn ends or the reader arrives, once per answer, and following again
-;; on the next turn.
+;; Tests for `pilish-jump-to-answer': completion lands once per answer,
+;; focus lands the latest answer again or follows active output, and
+;; dialogs/disabled positioning preserve the view.  Submission viewport
+;; tests cover returning to the live end without changing input focus.
 
 ;;; Code:
 
@@ -57,12 +58,15 @@
 (defun pilish-answer-test--turn (answer-lines)
   "Run a turn with a long first message and an answer of ANSWER-LINES lines.
 Return the start of the answer's first line."
+  (pilish--update-state-from-event '(:type "agent_start"))
   (pilish--handle-display-event '(:type "agent_start"))
   (pilish-answer-test--message (pilish-answer-test--lines "Working" 60))
-  (let ((answer (pilish-answer-test--message
-                 (pilish-answer-test--lines "Answer" answer-lines))))
-    (pilish--handle-display-event `(:type "agent_end" :messages [,answer])))
-  (pilish--handle-display-event '(:type "agent_settled"))
+  (let* ((answer (pilish-answer-test--message
+                  (pilish-answer-test--lines "Answer" answer-lines)))
+         (event `(:type "agent_end" :messages [,answer])))
+    (pilish--update-state-from-event event)
+    (pilish--handle-display-event event)
+    (pilish--update-state-from-event '(:type "agent_settled")))
   (save-excursion
     (goto-char (point-max))
     (re-search-backward "^Answer 1$")
@@ -74,63 +78,6 @@ Return the start of the answer's first line."
     (let ((start (pilish-answer-test--turn 100)))
       (should (= (window-point window) start))
       (should (= (window-start window) start)))))
-
-(ert-deftest pilish-answer-test-lands-when-pi-returns-control ()
-  "Landing waits for settlement and counts the return receipt's space."
-  (pilish-answer-test--with-chat
-    (pilish--handle-display-event '(:type "agent_start"))
-    (pilish-answer-test--message (pilish-answer-test--lines "Working" 60))
-    (let ((answer (pilish-answer-test--message
-                   (pilish-answer-test--lines
-                    "Answer" (- (window-body-height window) 2)))))
-      (pilish--handle-display-event `(:type "agent_end" :messages [,answer])))
-    (let ((start (save-excursion
-                   (goto-char (point-max))
-                   (re-search-backward "^Answer 1$")
-                   (point))))
-      (should-not pilish--answer-target)
-      (should (pilish--window-following-p window))
-      (should (pilish--answer-visible-p window start))
-      (pilish--handle-display-event '(:type "agent_settled"))
-      (should (text-property-any start (point-max) 'pilish-run-receipt t))
-      (should-not (pilish--answer-visible-p window start))
-      (should (= (window-start window) start)))))
-
-(ert-deftest pilish-answer-test-continues-before-returning-control ()
-  "Low-level turns cannot land before the run's final answer and receipt."
-  (pilish-answer-test--with-chat
-    (pilish--handle-display-event '(:type "agent_start"))
-    (let ((message (pilish-answer-test--message
-                    (pilish-answer-test--lines "Intermediate" 100))))
-      (pilish--handle-display-event `(:type "agent_end" :messages [,message])))
-    (should-not pilish--answer-target)
-    (should (pilish--window-following-p window))
-    (pilish--handle-display-event '(:type "agent_start"))
-    (let ((message (pilish-answer-test--message
-                    (pilish-answer-test--lines "Final" 100))))
-      (pilish--handle-display-event `(:type "agent_end" :messages [,message])))
-    (should-not pilish--answer-target)
-    (pilish--handle-display-event '(:type "agent_settled"))
-    (should (text-property-any (point-min) (point-max) 'pilish-run-receipt t))
-    (should (= (window-start window) pilish--answer-target))
-    (save-excursion
-      (goto-char pilish--answer-target)
-      (should (looking-at "Final 1$")))
-    (let ((target pilish--answer-target))
-      (pilish--handle-display-event '(:type "agent_settled"))
-      (should (eq target pilish--answer-target)))))
-
-(ert-deftest pilish-answer-test-receipt-is-no-answer ()
-  "A run whose final message has no text arms no answer at its receipt."
-  (pilish-answer-test--with-chat
-    (pilish--handle-display-event '(:type "agent_start"))
-    (let ((message '(:role "assistant" :content [])))
-      (pilish--handle-display-event `(:type "message_start" :message ,message))
-      (pilish--handle-display-event `(:type "message_end" :message ,message))
-      (pilish--handle-display-event `(:type "agent_end" :messages [,message])))
-    (pilish--handle-display-event '(:type "agent_settled"))
-    (should (text-property-any (point-min) (point-max) 'pilish-run-receipt t))
-    (should-not pilish--answer-target)))
 
 (ert-deftest pilish-answer-test-short-answer-keeps-following ()
   "An answer visible with the tail does not move the window."
@@ -293,12 +240,18 @@ Return the start of the answer's first line."
       (should-not pilish--answer-target))))
 
 (ert-deftest pilish-answer-test-history-off-does-not-land ()
-  "History loaded with the option off has no final answer to land on."
+  "History loaded with the option off is remembered without moving it."
   (pilish-answer-test--with-chat
-    (let ((pilish-jump-to-answer nil))
-      (pilish-answer-test--history "stop")
+    (setq-local pilish-jump-to-answer nil)
+    (let ((start (pilish-answer-test--history "stop"))
+          (position (point)))
       (pilish--answer-history-loaded)
-      (should-not pilish--answer-target))))
+      (should (= pilish--answer-target start))
+      (should (= (window-point window) position))
+      (pilish-toggle-jump-to-answer)
+      (let ((pilish--answer-focused-chat nil))
+        (pilish--answer-selection-change nil))
+      (should (= (window-point window) start)))))
 
 
 (ert-deftest pilish-answer-test-revived-landing-follows-next-turn ()
@@ -339,6 +292,250 @@ Return the start of the answer's first line."
             (should-not (buffer-local-value 'pilish-jump-to-answer buffer))
             (should (default-value 'pilish-jump-to-answer)))
         (kill-buffer input)))))
+
+;;;; Submission viewport
+
+(defmacro pilish-answer-test--with-input (&rest body)
+  "Run BODY with `input' below the chat's `window', selected for typing."
+  (declare (indent 0) (debug t))
+  `(pilish-answer-test--with-chat
+     (let ((input (generate-new-buffer " *pilish-submit-input*"))
+           (pilish-input-window-display 'always))
+       (unwind-protect
+           (progn
+             (pilish--append-to-chat
+              (concat (pilish-answer-test--lines "Earlier" 100) "\n"))
+             (goto-char (point-min))
+             (set-window-start window (point-min))
+             (setq pilish--input-buffer input)
+             (let ((input-window (split-window window -5 'below)))
+               (set-window-buffer input-window input)
+               (with-current-buffer input
+                 (pilish-input-mode)
+                 (setq pilish--chat-buffer buffer))
+               (select-window input-window)
+               ,@body))
+         (kill-buffer input)))))
+
+;;;; Focus viewport
+
+(ert-deftest pilish-answer-test-focus-revisits-settled-answer ()
+  "Each session arrival lands a read final answer, from above or inside it."
+  (pilish-answer-test--with-input
+    (let* ((start (with-current-buffer buffer (pilish-answer-test--turn 100)))
+           (pilish--answer-focused-chat buffer))
+      (dolist (position (list 1 (+ start 20)))
+        (set-window-point window position)
+        ;; Leave through another buffer, then return to the session's input.
+        (set-window-buffer input-window "*scratch*")
+        (pilish--answer-selection-change nil)
+        (should-not pilish--answer-focused-chat)
+        (set-window-buffer input-window input)
+        (pilish--answer-selection-change nil)
+        (should (= (window-point window) start))
+        (should (= (window-start window) start))
+        (should (eq (selected-window) input-window))
+        (should (with-current-buffer buffer pilish--answer-settled))))))
+
+(ert-deftest pilish-answer-test-explicit-focus-before-redisplay ()
+  "Workspace focus can land even when transient sidebar selection is unseen."
+  (pilish-answer-test--with-input
+    (let ((start (with-current-buffer buffer (pilish-answer-test--turn 100)))
+          (pilish--answer-focused-chat buffer))
+      (set-window-point window 1)
+      (pilish--answer-selection-change nil)
+      (should (= (window-point window) 1))
+      (pilish-position-session-on-focus buffer)
+      (should (= (window-point window) start))
+      (should (eq (selected-window) input-window)))))
+
+(ert-deftest pilish-answer-test-focus-working-follows-output ()
+  "Entering active work follows the latest output, without selecting chat."
+  (dolist (status '(sending streaming compacting))
+    (pilish-answer-test--with-input
+      (with-current-buffer buffer (setq pilish--status status))
+      (let ((pilish--answer-focused-chat nil))
+        (pilish--answer-selection-change nil))
+      (with-current-buffer buffer
+        (should (= (window-point window) (point-max)))
+        (should (> (window-start window) (point-min))))
+      (should (eq (selected-window) input-window)))))
+
+(ert-deftest pilish-answer-test-focus-disabled-preserves-view ()
+  "An off toggle preserves the view when entering idle or active sessions."
+  (dolist (status '(idle streaming compacting))
+    (pilish-answer-test--with-input
+      (with-current-buffer buffer
+        (pilish-answer-test--turn 100)
+        (setq-local pilish-jump-to-answer nil)
+        (setq pilish--status status))
+      (set-window-point window 1)
+      (set-window-start window 1)
+      (let ((pilish--answer-focused-chat nil))
+        (pilish--answer-selection-change nil))
+      (should (= (window-point window) 1))
+      (should (= (window-start window) 1))
+      (should (eq (selected-window) input-window)))))
+
+(ert-deftest pilish-answer-test-chat-input-moves-are-not-arrivals ()
+  "Moving between a session's chat and input never repeats its focus jump."
+  (pilish-answer-test--with-input
+    (with-current-buffer buffer (pilish-answer-test--turn 100))
+    (let ((pilish--answer-focused-chat nil))
+      (pilish--answer-selection-change nil)
+      (set-window-point window 1)
+      (set-window-start window 1)
+      (select-window window)
+      (pilish--answer-selection-change nil)
+      (should (= (window-point window) 1))
+      (select-window input-window)
+      (pilish--answer-selection-change nil)
+      (should (= (window-point window) 1)))))
+
+(ert-deftest pilish-answer-test-focus-dialog-retains-priority ()
+  "Pending dialogs suppress idle-answer and active-output focus jumps."
+  (dolist (status '(idle streaming))
+    (pilish-answer-test--with-input
+      (with-current-buffer buffer (pilish-answer-test--turn 100))
+      (let ((process (make-pipe-process :name "pilish-answer-dialog" :noquery t)))
+        (unwind-protect
+            (progn
+              (with-current-buffer buffer
+                (setq pilish--status status)
+                (pilish--set-process process))
+              (process-put process 'pilish-pending-dialogs
+                           '((:id "pending" :method "select")))
+              (set-window-point window 1)
+              (set-window-start window 1)
+              (let ((pilish--answer-focused-chat nil))
+                (pilish--answer-selection-change nil))
+              (should (= (window-point window) 1))
+              (should (= (window-start window) 1))
+              (should (eq (selected-window) input-window)))
+          (delete-process process))))))
+
+(ert-deftest pilish-answer-test-completion-dialog-retains-priority ()
+  "Completion cannot pull the chat away from an unanswered dialog."
+  (pilish-answer-test--with-chat
+    (let ((process (make-pipe-process :name "pilish-answer-dialog" :noquery t)))
+      (unwind-protect
+          (progn
+            (pilish--set-process process)
+            (pilish--handle-display-event '(:type "agent_start"))
+            (let ((answer (pilish-answer-test--message
+                           (pilish-answer-test--lines "Answer" 100))))
+              (process-put process 'pilish-pending-dialogs
+                           '((:id "pending" :method "select")))
+              (pilish--handle-display-event
+               `(:type "agent_end" :messages [,answer])))
+            (should (pilish--window-following-p window)))
+        (delete-process process)))))
+
+(ert-deftest pilish-answer-test-toggle-on-after-completion ()
+  "Enabling positioning after a finished turn uses that answer on focus."
+  (pilish-answer-test--with-input
+    (with-current-buffer buffer (setq-local pilish-jump-to-answer nil))
+    (let ((start (with-current-buffer buffer (pilish-answer-test--turn 100))))
+      (set-window-point window 1)
+      (with-current-buffer input (pilish-toggle-jump-to-answer))
+      (should (= (window-point window) 1))
+      (let ((pilish--answer-focused-chat nil))
+        (pilish--answer-selection-change nil))
+      (should (= (window-point window) start)))))
+
+(ert-deftest pilish-answer-test-explicit-focus-never-displays-hidden-chat ()
+  "Positioning a hidden session never changes layout or its saved point."
+  (pilish-answer-test--with-input
+    (with-current-buffer buffer (pilish-answer-test--turn 100))
+    (set-window-buffer window "*scratch*")
+    (with-current-buffer buffer (goto-char 1))
+    (pilish-position-session-on-focus buffer)
+    (should-not (get-buffer-window buffer))
+    (should (= (with-current-buffer buffer (point)) 1))
+    (should (eq (selected-window) input-window))))
+
+(ert-deftest pilish-answer-test-focus-short-answer-follows-tail ()
+  "A short answer is shown with the tail on each session focus."
+  (pilish-answer-test--with-input
+    (with-current-buffer buffer (pilish-answer-test--turn 2))
+    (set-window-point window 1)
+    (let ((pilish--answer-focused-chat nil))
+      (pilish--answer-selection-change nil))
+    (with-current-buffer buffer
+      (should (pilish--window-following-p window)))))
+
+(ert-deftest pilish-answer-test-submit-jumps-by-default ()
+  "Submission jumping is enabled unless explicitly disabled."
+  (should (default-value 'pilish-jump-to-end-on-submit)))
+
+(ert-deftest pilish-answer-test-submit-viewport-and-focus ()
+  "Accepted drafts follow the end only when enabled, with input focus kept."
+  (dolist (enabled '(t nil))
+    (dolist (kind '(direct follow-up steer double-return))
+      (pilish-answer-test--with-input
+        (let ((pilish-jump-to-end-on-submit enabled)
+              (pilish-send-on-double-return 0.4)
+              (last-command 'pilish-newline-or-send)
+              (this-command 'pilish-newline-or-send)
+              (start (window-start window))
+              (position (window-point window)))
+          (with-current-buffer buffer
+            (setq pilish--status (if (memq kind '(follow-up steer))
+                                     'streaming 'idle)))
+          (insert "new prompt")
+          ;; Composing alone never changes the reading position.
+          (should (= (window-point window) position))
+          (cl-letf (((symbol-function 'pilish--prepare-and-send)
+                     (lambda (text &rest _) (pilish--display-user-message text)))
+                    ((symbol-function 'pilish--send-steer-message)
+                     (lambda (_) t))
+                    ((symbol-function 'input-pending-p) (lambda () nil)))
+            (pcase kind
+              ('direct (pilish-send))
+              ('follow-up (pilish-queue-followup))
+              ('steer (pilish-queue-steering))
+              ('double-return
+               (insert "\n")
+               (setq pilish--last-return (cons (float-time) (point)))
+               (pilish-newline-or-send))))
+          (should (string-empty-p (buffer-string)))
+          (should (eq (selected-window) input-window))
+          (with-current-buffer buffer
+            (if enabled
+                (progn
+                  (should (= (window-point window) (point-max)))
+                  (should (> (window-start window) start)))
+              (should (= (window-point window) position))
+              (should (= (window-start window) start)))))))))
+
+(ert-deftest pilish-answer-test-refused-submit-keeps-reading-position ()
+  "Empty, refused and unavailable-steering submissions do not move the chat."
+  (dolist (text '("" "/compact" "steer without a process"))
+    (pilish-answer-test--with-input
+      (let ((position (window-point window))
+            (start (window-start window))
+            (pilish-jump-to-end-on-submit t))
+        (with-current-buffer buffer (setq pilish--status 'streaming))
+        (insert text)
+        (if (string-prefix-p "steer" text)
+            (pilish-queue-steering)
+          (pilish-send))
+        (should (equal (buffer-string) text))
+        (should (= (window-point window) position))
+        (should (= (window-start window) start))))))
+
+(ert-deftest pilish-answer-test-submit-does-not-display-hidden-chat ()
+  "Queuing a draft never opens a hidden chat or moves its stored point."
+  (pilish-answer-test--with-input
+    (with-current-buffer buffer (setq pilish--status 'streaming))
+    (set-window-buffer window "*scratch*")
+    (let ((position (with-current-buffer buffer (point)))
+          (pilish-jump-to-end-on-submit t))
+      (insert "queued while hidden")
+      (pilish-queue-followup)
+      (should-not (get-buffer-window buffer))
+      (should (= (with-current-buffer buffer (point)) position))
+      (should (eq (selected-window) input-window)))))
 
 (provide 'pilish-answer-test)
 ;;; pilish-answer-test.el ends here
