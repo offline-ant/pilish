@@ -1320,12 +1320,24 @@ from its beginning.  Windows where you scrolled elsewhere stay, and an
 answer already visible together with the end of the buffer moves
 nothing.  Stopped turns, and turns followed at once by a queued
 follow-up, do not jump.  A window that is not shown when the turn ends,
-such as one in another tab, lands when it is shown again.  When the
-next turn starts, a landed window whose point you left in place follows
-the output again.
+such as one in another tab, can land an answer not shown yet when it is
+shown again.  When the next turn starts, a landed window whose point you
+left in place follows the output again.
+
+The same option also controls automatic positioning when you focus a
+session from elsewhere.  A finished session shows its latest final answer
+again, even if already read; a working session follows its latest output.
+Moving between that session's chat and input or using the minibuffer does
+not retrigger this jump.  Pending extension dialogs take priority.  Focus
+positioning affects only the selected frame and never opens a hidden chat.
 
 =pilish-toggle-jump-to-answer= toggles the setting for the current
-session only, buffer-locally in its chat buffer.
+session only, buffer-locally in its chat buffer.  Turning it off preserves
+your view on focus as well as completion.  Toggling itself does not move
+the chat; turning it on after a turn finished uses that answer on the next
+focus.  Workspace integrations call =pilish-position-session-on-focus=
+with the chat buffer for explicit focus actions that transiently select
+another window and return before Emacs redisplays.
 
 ** Window pairs
 

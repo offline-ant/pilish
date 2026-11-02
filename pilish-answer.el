@@ -23,19 +23,16 @@
 
 ;;; Commentary:
 
-;; With `pilish-jump-to-answer', a finished session shows the start of its
-;; final assistant message, the answer after the last tool call, so a long
-;; answer is read from its beginning instead of its end.  Each answer lands
-;; once per session.
+;; `pilish-jump-to-answer' controls automatic positioning at turn completion
+;; and when the reader focuses a session from elsewhere.  A long final
+;; answer shows from its beginning; a short one shows with the buffer end.
 ;;
-;; When a turn ends, chat windows following the output land; a window
-;; where the reader scrolled elsewhere stays.  An answer not shown that way
-;; lands when the reader arrives: when a chat window is displayed, such as
-;; one of another tab, or when the selection enters the session from
-;; elsewhere.  An arriving reader above the answer moves forward to it, one
-;; inside the answer stays, and one at the end lands.  A session loaded
-;; from history counts as a finished turn.  An answer that fits below the
-;; window's top, with the end visible, shows at the end instead.
+;; Completion lands following windows once per answer; a reader scrolled
+;; elsewhere stays.  Displaying a chat can land an answer not shown yet.
+;; Focusing the session lands its latest final answer again, even if it
+;; was already read.  A working session instead follows its latest output.
+;; Moving between a session's chat and input, or using the minibuffer, is
+;; not a new arrival.  Pending dialogs take priority over automatic jumps.
 ;;
 ;; A landed window whose point the reader left in place follows the
 ;; output again when the next turn starts.  `pilish--answer-windows'
@@ -46,24 +43,28 @@
 
 (require 'pilish-ui)
 
+(declare-function pilish-session-pending-dialogs "pilish-dialog" (chat-buffer))
+
 (defcustom pilish-jump-to-answer nil
-  "Whether a finished session shows the start of its final answer.
-When non-nil, each answer of a turn that ended without being stopped,
-or of a session loaded from history, lands once: chat windows following
-the output move to the start of the last assistant message when the turn
-ends, and otherwise the reader lands there on displaying the chat or
-selecting the session from elsewhere, unless already inside the answer.
-Setting it buffer-locally in a chat buffer, as
+  "Whether to jump automatically on turn completion and session focus.
+When a turn ends normally, following windows show its final answer from
+its start once; a reader scrolled elsewhere stays.  Displaying a chat
+can land an answer not shown yet.  Focusing a session from elsewhere
+shows its latest final answer again, or follows its latest output while
+working.  Chat/input moves and the minibuffer are not new arrivals.
+Pending dialogs take priority.  Short answers show with the buffer end.
+Setting this buffer-locally in a chat buffer, as
 `pilish-toggle-jump-to-answer' does, affects only that session."
   :type 'boolean
   :group 'pilish)
 
 (defvar-local pilish--answer-target nil
-  "Marker at the start of the finished turn's final answer, or nil.
-Non-nil from the end of a turn until the next turn starts.")
+  "Marker at the start of the latest finished turn's final answer, or nil.
+Retained even with automatic positioning off, until the next turn starts.")
 
 (defvar-local pilish--answer-settled nil
-  "Non-nil when `pilish--answer-target' has landed and must not again.")
+  "Non-nil after `pilish--answer-target' landed on completion or display.
+An explicit session focus may land it again.")
 
 (defvar-local pilish--history-answer-marker nil
   "Marker at the start of the final answer of replayed history, or nil.")
@@ -87,11 +88,9 @@ The setting becomes buffer-local in the session's chat buffer."
       (user-error "Not in a Pilish session"))
     (with-current-buffer chat
       (setq-local pilish-jump-to-answer (not pilish-jump-to-answer))
-      ;; Landed windows keep their records, so they still follow the
-      ;; next turn; only a pending landing for hidden windows is dropped.
-      (unless pilish-jump-to-answer
-        (pilish--answer-forget-target))
-      (message "Pilish: jump to answer %s"
+      ;; Keep the latest answer so enabling this after completion also
+      ;; works on the next focus.  Toggling itself never moves the view.
+      (message "Pilish: automatic jump %s"
                (if pilish-jump-to-answer "on" "off"))
       pilish-jump-to-answer)))
 
@@ -118,18 +117,18 @@ The current buffer must be WINDOW's buffer."
 
 (defun pilish--answer-land (window target arrival)
   "Show TARGET in WINDOW of the current chat buffer, if WINDOW takes it.
-A following window does; with ARRIVAL, a reader coming to WINDOW above
-TARGET does too.  Return non-nil when that settles TARGET, as does
-arriving inside the answer."
+A following window does; with ARRIVAL, a reader above TARGET does too.
+ARRIVAL `focus' always lands, including inside an already read answer.
+Return non-nil when that settles TARGET, as does arriving inside it."
   (let ((following (pilish--window-following-p window))
         (above (< (window-point window) target)))
     (when (or following arrival)
-      (when (or following above)
+      (when (or following above (eq arrival 'focus))
         (cond ((not (pilish--answer-visible-p window target))
                (set-window-point window target)
                (set-window-start window target)
-               (push (cons window target) pilish--answer-windows))
-              ((not following)
+               (setf (alist-get window pilish--answer-windows) target))
+              ((or (not following) (eq arrival 'focus))
                (pilish--restore-tail-window window target))))
       t)))
 
@@ -137,20 +136,22 @@ arriving inside the answer."
   "Bring WINDOW of the current chat buffer up to date with the answer state.
 An unmoved landing on an earlier answer follows the output again, and an
 unsettled `pilish--answer-target' lands, see `pilish--answer-land'.
-ARRIVAL means the reader came to WINDOW.  Return non-nil when that
-settles the target."
-  (let ((entry (assq window pilish--answer-windows))
-        (target pilish--answer-target))
-    (unless (and entry (eq (cdr entry) target))
-      (when entry
-        (when (pilish--answer-unmoved-p window (cdr entry))
-          (set-window-point window (point-max)))
-        (setq pilish--answer-windows (delq entry pilish--answer-windows))
-        (unless (rassq (cdr entry) pilish--answer-windows)
-          (set-marker (cdr entry) nil)))
-      (and target
-           (not pilish--answer-settled)
-           (pilish--answer-land window target arrival)))))
+ARRIVAL means the reader came to WINDOW; `focus' can land a read answer
+again.  Return non-nil when that settles the target."
+  (let* ((entry (assq window pilish--answer-windows))
+         (target pilish--answer-target)
+         (landed (and entry (eq (cdr entry) target))))
+    (when (and entry (not landed))
+      (when (pilish--answer-unmoved-p window (cdr entry))
+        (set-window-point window (point-max)))
+      (setq pilish--answer-windows (delq entry pilish--answer-windows))
+      (unless (rassq (cdr entry) pilish--answer-windows)
+        (set-marker (cdr entry) nil)))
+    (and pilish-jump-to-answer target
+         (not (pilish-session-pending-dialogs (current-buffer)))
+         (or (eq arrival 'focus)
+             (and (not landed) (not pilish--answer-settled)))
+         (pilish--answer-land window target arrival))))
 
 (defun pilish--answer-update-windows (windows arrival)
   "Update WINDOWS of the current chat buffer together.
@@ -177,11 +178,10 @@ ARRIVAL means the reader came to them."
           pilish--answer-settled nil)))
 
 (defun pilish--answer-turn-end ()
-  "Land following windows on the final answer of the turn that ended.
-Do nothing when the turn was stopped, a queued follow-up starts the
-next turn at once, or `pilish-jump-to-answer' is nil."
-  (when (and pilish-jump-to-answer
-             (not pilish--aborted)
+  "Remember the final answer and land following windows when enabled.
+Do nothing when the turn was stopped or a queued follow-up starts the
+next turn at once."
+  (when (and (not pilish--aborted)
              (not pilish--followup-queue))
     (when-let* ((start (pilish--answer-start pilish--message-start-marker)))
       (pilish--answer-arm start)
@@ -190,9 +190,7 @@ next turn at once, or `pilish-jump-to-answer' is nil."
 (defun pilish--answer-history-loaded ()
   "Land on the final answer of the session history just displayed.
 The history rebuilt the chat buffer, so an earlier answer is gone."
-  (pilish--answer-arm
-   (and pilish-jump-to-answer
-        (pilish--answer-start pilish--history-answer-marker)))
+  (pilish--answer-arm (pilish--answer-start pilish--history-answer-marker))
   (when pilish--answer-target
     (pilish--answer-update-live-windows t)))
 
@@ -216,19 +214,34 @@ The history rebuilt the chat buffer, so an earlier answer is gone."
       (when (or pilish--answer-target pilish--answer-windows)
         (pilish--answer-update-windows (list window) t)))))
 
+(defun pilish-position-session-on-focus (chat-buffer)
+  "Apply enabled automatic positioning to CHAT-BUFFER in the selected frame.
+Workspace UIs can call this for an explicit focus action, even when it
+returns to the same selected window before redisplay.  A working chat
+follows its output; a finished chat shows its latest final answer again.
+Pending dialogs and a disabled `pilish-jump-to-answer' leave the view alone.
+Do not display a hidden chat, select a window, or change the input draft."
+  (when (buffer-live-p chat-buffer)
+    (with-current-buffer chat-buffer
+      (when (and pilish-jump-to-answer
+                 (not (pilish-session-pending-dialogs chat-buffer)))
+        (let ((windows (get-buffer-window-list chat-buffer nil (selected-frame))))
+          (if (pilish--session-busy-p)
+              (dolist (window windows)
+                (pilish--restore-tail-window window (window-start window)))
+            (pilish--answer-update-windows windows 'focus)))))))
+
 (defun pilish--answer-selection-change (_frame)
-  "Land the final answer of a session the selection just entered.
-Moving between a session's windows arrives nowhere, and the minibuffer
-is no departure: a session reader used there can select another session."
+  "Position a session the selection just entered, when enabled.
+Moving between its chat/input windows arrives nowhere, and the minibuffer
+is no departure.  Pending dialogs retain their reading position and focus."
   (unless (minibufferp (window-buffer))
     (let ((chat (with-current-buffer (window-buffer)
                   (pilish--get-chat-buffer))))
       (unless (eq chat pilish--answer-focused-chat)
         (setq pilish--answer-focused-chat chat)
         (when (buffer-live-p chat)
-          (with-current-buffer chat
-            (when pilish--answer-target
-              (pilish--answer-update-live-windows t))))))))
+          (pilish-position-session-on-focus chat))))))
 
 (defun pilish--answer-setup ()
   "Track windows displaying the current chat buffer."
@@ -237,6 +250,9 @@ is no departure: a session reader used there can select another session."
 
 (add-hook 'pilish-chat-mode-hook #'pilish--answer-setup)
 (add-hook 'window-selection-change-functions #'pilish--answer-selection-change)
+;; Replacing the selected window's buffer does not count as selecting a
+;; different window.  It can nevertheless enter or leave a session.
+(add-hook 'window-buffer-change-functions #'pilish--answer-selection-change)
 
 (provide 'pilish-answer)
 ;;; pilish-answer.el ends here

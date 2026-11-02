@@ -87,6 +87,7 @@ cat >> "$RUNNER_FILE" << EOF
 (require 'pilish-gui-tests)
 (require 'pilish-submit-gui-tests)
 (require 'pilish-queue-gui-tests)
+(require 'pilish-answer-gui-tests)
 
 ;; Redirect messages to file for results
 (defvar pilish-gui-test--output-file "$RESULTS_FILE")
