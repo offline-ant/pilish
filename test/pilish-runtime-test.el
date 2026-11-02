@@ -172,6 +172,45 @@
       (should-not (string-match-p "\\\"type\\\":\\\"prompt\\\""
                                   (mapconcat #'identity pilish-runtime-test--received ""))))))
 
+(ert-deftest pilish-runtime-test-identity-free-desktop-is-stopped-and-resumable ()
+  (pilish-runtime-test--with-peer '(:silent t)
+    (cl-letf (((symbol-function 'pilish-list-runtimes)
+               (lambda () (ert-fail "Identity-free restoration needs no discovery")))
+              ((symbol-function 'pilish--runtime-call)
+               (lambda (&rest _) (ert-fail "Restoration must not start Pi"))))
+      (setq pilish-runtime-test--chat
+            (pilish-restore-session-state
+             (list :directory directory :name "legacy" :session-file file
+                   :leaf-id "saved-leaf" :runtime nil :draft "kept legacy draft")))
+      (should (equal (plist-get (pilish-session-runtime pilish-runtime-test--chat) :state) "stopped"))
+      (should-not (plist-get (pilish-session-runtime pilish-runtime-test--chat) :mux-id))
+      (should (equal (pilish-session-file pilish-runtime-test--chat) file))
+      (should (equal (plist-get (pilish-session-desktop-state pilish-runtime-test--chat) :leaf-id) "saved-leaf"))
+      (should (equal (plist-get (pilish-session-desktop-state pilish-runtime-test--chat) :draft) "kept legacy draft"))
+      (should-not (pilish-session-process pilish-runtime-test--chat)))))
+
+(ert-deftest pilish-runtime-test-reconcile-identity-free-unavailable-view-in-place ()
+  (pilish-runtime-test--with-peer '(:silent t)
+    (setq pilish-runtime-test--chat
+          (pilish-restore-session-state
+           (list :directory directory :name "legacy-repair" :session-file file
+                 :runtime nil :draft "preserve in place")))
+    (with-current-buffer pilish-runtime-test--chat
+      (setq pilish--runtime '(:protocol 2 :state "unavailable")))
+    (let ((before (pilish-session-desktop-state pilish-runtime-test--chat)) called)
+      (cl-letf (((symbol-function 'pilish-list-runtimes)
+                 (lambda () (ert-fail "No owner identity to discover")))
+                ((symbol-function 'pilish--runtime-call)
+                 (lambda (&rest _) (ert-fail "No implicit launch"))))
+        (pilish-reconnect-runtime pilish-runtime-test--chat (lambda (error) (push error called))))
+      (should (= (length called) 1))
+      (should (string-match-p "Resume stopped conversation" (car called)))
+      (should (equal (plist-get (pilish-session-runtime pilish-runtime-test--chat) :state) "stopped"))
+      (should (equal (pilish-session-file pilish-runtime-test--chat) (plist-get before :session-file)))
+      (should (equal (plist-get (pilish-session-desktop-state pilish-runtime-test--chat) :draft)
+                     (plist-get before :draft)))
+      (should-not (pilish-session-process pilish-runtime-test--chat)))))
+
 (ert-deftest pilish-runtime-test-missing-restore-retains-draft-never-spawns ()
   (pilish-runtime-test--with-peer '(:silent t)
     (cl-letf (((symbol-function 'pilish-list-runtimes) (lambda () nil))
