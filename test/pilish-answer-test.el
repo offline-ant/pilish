@@ -66,7 +66,7 @@ Return the start of the answer's first line."
          (event `(:type "agent_end" :messages [,answer])))
     (pilish--update-state-from-event event)
     (pilish--handle-display-event event)
-    (pilish--update-state-from-event '(:type "agent_settled")))
+    (pilish--handle-display-event '(:type "agent_settled")))
   (save-excursion
     (goto-char (point-max))
     (re-search-backward "^Answer 1$")
@@ -78,6 +78,40 @@ Return the start of the answer's first line."
     (let ((start (pilish-answer-test--turn 100)))
       (should (= (window-point window) start))
       (should (= (window-start window) start)))))
+
+(ert-deftest pilish-answer-test-lands-when-pi-returns-control ()
+  "The answer lands at settlement, counting the run's return receipt.
+An answer that fits with the tail only without the receipt shows from
+its start, so the receipt cannot push its first line out of view."
+  (pilish-answer-test--with-chat
+    (pilish--handle-display-event '(:type "agent_start"))
+    (pilish-answer-test--message (pilish-answer-test--lines "Working" 60))
+    (let ((answer (pilish-answer-test--message
+                   (pilish-answer-test--lines
+                    "Answer" (- (window-body-height window) 2)))))
+      (pilish--handle-display-event `(:type "agent_end" :messages [,answer])))
+    (let ((start (save-excursion
+                   (goto-char (point-max))
+                   (re-search-backward "^Answer 1$")
+                   (point))))
+      (should (pilish--window-following-p window))
+      (should (pilish--answer-visible-p window start))
+      (pilish--handle-display-event '(:type "agent_settled"))
+      (should (text-property-any start (point-max) 'pilish-run-receipt t))
+      (should-not (pilish--answer-visible-p window start))
+      (should (= (window-start window) start)))))
+
+(ert-deftest pilish-answer-test-receipt-is-no-answer ()
+  "A run whose final message shows no text arms no answer at its receipt."
+  (pilish-answer-test--with-chat
+    (pilish--handle-display-event '(:type "agent_start"))
+    (let ((message '(:role "assistant" :content [])))
+      (pilish--handle-display-event `(:type "message_start" :message ,message))
+      (pilish--handle-display-event `(:type "message_end" :message ,message))
+      (pilish--handle-display-event `(:type "agent_end" :messages [,message])))
+    (pilish--handle-display-event '(:type "agent_settled"))
+    (should (text-property-any (point-min) (point-max) 'pilish-run-receipt t))
+    (should-not pilish--answer-target)))
 
 (ert-deftest pilish-answer-test-short-answer-keeps-following ()
   "An answer visible with the tail does not move the window."
@@ -427,7 +461,8 @@ Return the start of the answer's first line."
               (process-put process 'pilish-pending-dialogs
                            '((:id "pending" :method "select")))
               (pilish--handle-display-event
-               `(:type "agent_end" :messages [,answer])))
+               `(:type "agent_end" :messages [,answer]))
+              (pilish--handle-display-event '(:type "agent_settled")))
             (should (pilish--window-following-p window)))
         (delete-process process)))))
 

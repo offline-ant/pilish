@@ -1898,9 +1898,10 @@ Updates buffer-local state and renders display updates."
                  (equal (plist-get event :type) "agent_settled"))
         ;; Consume the clock before fallible presentation.  The receipt belongs
         ;; before idle hooks and follow-ups, either of which may start new work.
-        (let ((run-started-at pilish--run-started-at))
+        (let ((run-started-at pilish--run-started-at)
+              (aborted pilish--aborted))
           (pilish--reset-run-clock)
-          (when pilish--aborted
+          (when aborted
             (pilish--clear-followup-queue))
           (pilish--set-aborted nil)
           (when run-started-at
@@ -1909,6 +1910,9 @@ Updates buffer-local state and renders display updates."
               (error
                (message "Pi: Could not display return receipt: %s"
                         (error-message-string err)))))
+          ;; A run can end several low-level turns; its final answer is the
+          ;; one before the receipt.
+          (pilish--answer-turn-end aborted)
           (pilish--set-activity-phase "idle")
           (pilish--process-followup-queue)))
       (when (memq delta-kind '(text thinking))
@@ -2161,8 +2165,7 @@ Updates buffer-local state and renders display updates."
      (pilish--display-agent-end)
      (pilish--clear-live-details-state)
      (pilish--update-hot-tail-boundary)
-     (pilish--queue-tool-cooling-outside-hot-tail)
-     (pilish--answer-turn-end))
+     (pilish--queue-tool-cooling-outside-hot-tail))
     ("agent_settled" (pilish--shared-refresh-after-run pilish--process))
     ("auto_retry_start"
      (pilish--display-retry-start event))

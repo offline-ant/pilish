@@ -1318,9 +1318,10 @@ Customize them to match another Pi theme.  Changing the option through
 With =pilish-jump-to-answer= non-nil, a turn that ends normally moves
 chat windows following the output to the start of the final assistant
 message, the answer after the last tool call, so a long answer is read
-from its beginning.  Windows where you scrolled elsewhere stay, and an
-answer already visible together with the end of the buffer moves
-nothing.  Stopped turns, and turns followed at once by a queued
+from its beginning.  This happens when Pi returns control, after the
+return receipt.  Windows where you scrolled elsewhere stay, and an
+answer already visible together with the end of the buffer, receipt
+included, moves nothing.  Stopped turns, and turns followed at once by a queued
 follow-up, do not jump.  A window that is not shown when the turn ends,
 such as one in another tab, can land an answer not shown yet when it is
 shown again.  When the next turn starts, a landed window whose point you
