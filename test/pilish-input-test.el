@@ -5111,12 +5111,12 @@ Follow-ups Pi never received return to the draft."
     (let ((header (pilish--header-line-string)))
       (should (string-match-p "thinking" header)))))
 
-(ert-deftest pilish-test-quit-prompts-even-when-process-noquery ()
-  "Explicit quit still asks before killing a live noquery process."
+(ert-deftest pilish-test-quit-closes-live-noquery-session-without-confirmation ()
+  "Explicit Quit closes a live noquery session without a confirmation opt-out."
   (let ((chat-buf (generate-new-buffer "*pilish-test-quit-chat*"))
         (input-buf (generate-new-buffer "*pilish-test-quit-input*"))
         (proc (start-process "test-quit-noquery" nil "cat"))
-        (asked nil))
+        (pilish-quit-without-confirmation nil))
     (unwind-protect
         (progn
           (set-process-query-on-exit-flag proc nil)
@@ -5127,16 +5127,16 @@ Follow-ups Pi never received return to the draft."
           (with-current-buffer input-buf
             (pilish-input-mode)
             (pilish--set-chat-buffer chat-buf))
+          (should (process-live-p proc))
           (cl-letf (((symbol-function 'yes-or-no-p)
-                     (lambda (_prompt)
-                       (setq asked t)
-                       nil)))
+                     (lambda (_) (ert-fail "Explicit Quit asked for confirmation")))
+                    ((symbol-function 'y-or-n-p)
+                     (lambda (_) (ert-fail "Explicit Quit asked for confirmation"))))
             (with-current-buffer chat-buf
-              (should-error (pilish-quit) :type 'user-error)))
-          (should asked)
-          (should (buffer-live-p chat-buf))
-          (should (buffer-live-p input-buf))
-          (should (process-live-p proc)))
+              (pilish-quit)))
+          (should-not (buffer-live-p chat-buf))
+          (should-not (buffer-live-p input-buf))
+          (should-not (process-live-p proc)))
       (when (process-live-p proc)
         (delete-process proc))
       (pilish-test--kill-live-buffers input-buf chat-buf))))

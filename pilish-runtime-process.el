@@ -16,6 +16,8 @@
   "Absolute Pi executable of the configured immutable release.")
 (defvar pilish-runtime-pimux-executable nil
   "Absolute compiled pimux executable of the configured immutable release.")
+(defvar pilish-runtime-task-status-executable nil
+  "Absolute read-only task-status executable of the configured release.")
 (defvar pilish-runtime-pi-version "1.4.0"
   "Exact host version passed to the managed launcher.")
 (defvar pilish-runtime-pi-sha256 nil
@@ -28,6 +30,25 @@
   "This view's uncommitted launcher process, if any.")
 (defvar-local pilish--runtime-ready-callback nil
   "Callback awaiting this view's authoritative live boundary.")
+(defvar pilish-session-closed-functions nil
+  "Functions called with CHAT before its terminated view is removed.
+Public session/runtime/desktop accessors remain available during notification.
+This hook never runs for transport loss, frontend exit or local disconnection.
+Observers must not dispose the buffers.  Failures are retained as diagnostics;
+remaining observers and teardown still run, and Close reports the errors.")
+(defvar-local pilish--runtime-close-callbacks nil
+  "Callbacks waiting for authoritative termination of this view's runtime.")
+(defvar-local pilish--runtime-close-timer nil
+  "Bounded wait for a dispatched worker cancellation.")
+(defvar-local pilish--runtime-task-timer nil
+  "Read-only polling of this view's captured worker task evidence.")
+(defvar-local pilish--runtime-retiring nil
+  "Non-nil while authoritative retirement owns this view's teardown.")
+
+(declare-function pilish--runtime-retire-view "pilish-runtime" (chat))
+(declare-function pilish--runtime-finish-close "pilish-runtime" (chat error))
+(declare-function pilish--runtime-worker-terminated "pilish-runtime-task" (chat))
+(declare-function pilish--runtime-task-cancel-poll "pilish-runtime-task" ())
 
 (declare-function pilish-session-process "pilish" (chat-buffer))
 (declare-function pilish-session-directory "pilish" (chat-buffer))
@@ -266,9 +287,12 @@ protocol owns cleanup; a committed runtime is left available for attachment."
   (when-let* ((chat (process-get process 'pilish-chat-buffer))
               ((buffer-live-p chat)))
     (with-current-buffer chat
-      (setq pilish--runtime (plist-put pilish--runtime :state "stopped"))
-      (setq pilish--runtime (plist-put pilish--runtime :exit event))
-      (pilish--note-desktop-state))))
+      (when (eq process pilish--process)
+        (setq pilish--runtime (plist-put pilish--runtime :state "stopped"))
+        (setq pilish--runtime (plist-put pilish--runtime :exit event))
+        (if (equal (plist-get pilish--runtime :placement) "worker")
+            (pilish--runtime-worker-terminated chat)
+          (pilish--runtime-retire-view chat))))))
 
 (defun pilish--runtime-transport-exit (process)
   "Preserve runtime identity when PROCESS's frontend transport disappears."
@@ -284,12 +308,18 @@ protocol owns cleanup; a committed runtime is left available for attachment."
           (pilish--quarantine-local-work
            "Transport disconnected; delivery is uncertain" (pilish--draft-context))
           (pilish--note-desktop-state)
+          (unless (and (equal (plist-get pilish--runtime :placement) "worker")
+                       (plist-get pilish--runtime :task-cancel-requested))
+            (pilish--runtime-finish-close chat "Close outcome uncertain after disconnection; reconnect or reconcile the retained identity"))
           (pilish--runtime-complete-ready chat "Disconnected before readiness; reconnect explicitly"))))))
 
 (defun pilish--runtime-register-socket (process chat runtime)
   "Associate PROCESS with CHAT and expected RUNTIME before accepting records."
   (unless (process-get process 'pilish-detached)
     (process-put process 'pilish-detached t)
+    ;; Generic buffer/Emacs exit only disconnects this socket, so it must
+    ;; not ask the native-Pi termination question.
+    (process-put process 'pilish-skip-kill-confirmation t)
     (process-put process 'pilish-runtime-expect runtime)
     (process-put process 'pilish-chat-buffer chat)
     (process-put process 'pilish-mux-awaiting-snapshot t)
@@ -306,8 +336,18 @@ protocol owns cleanup; a committed runtime is left available for attachment."
       (pilish--runtime-complete-ready chat "Connection replaced by explicit reconnect"))
     (when (and (processp pilish--process) (process-live-p pilish--process))
       (delete-process pilish--process))
-    (setq pilish--runtime (plist-put (copy-tree runtime) :state "synchronizing")
-          pilish--runtime-ready-callback callback)
+    (let ((next (plist-put (copy-tree runtime) :state "synchronizing")))
+      (if (cl-every (lambda (key) (equal (plist-get runtime key) (plist-get pilish--runtime key)))
+                    '(:mux-id :socket :pi-pid :pi-start-time :pi-boot-id :parent :placement))
+          ;; Discovery does not contain this equal client's cancellation history.
+          ;; Reconnection must not unpin the task or rearm ambiguous slash input.
+          (dolist (key '(:task-binding :task-status :task-cancel-requested :task-error))
+            (when (plist-member pilish--runtime key)
+              (setq next (plist-put next key (copy-tree (plist-get pilish--runtime key))))))
+        (pilish--runtime-task-cancel-poll)
+        (pilish--runtime-finish-close chat "View reconnected to a different runtime"))
+      (setq pilish--runtime next
+            pilish--runtime-ready-callback callback))
     (condition-case err
         (progn
           (unless (pilish--runtime-private-socket-p (plist-get runtime :socket))
@@ -389,6 +429,11 @@ CALLBACK takes nil/error once.  No initial prompt or inferred recovery is sent."
 
 (defun pilish--runtime-kill-view ()
   "Disconnect this view; cancel only its own uncommitted launcher, if any."
+  (pilish--runtime-task-cancel-poll)
+  (when pilish--runtime-close-timer
+    (cancel-timer pilish--runtime-close-timer)
+    (setq pilish--runtime-close-timer nil))
+  (pilish--runtime-finish-close (current-buffer) "View disconnected before close was acknowledged")
   (when (process-live-p pilish--runtime-launcher)
     (delete-process pilish--runtime-launcher))
   (when (and pilish--runtime (process-live-p pilish--process))

@@ -378,7 +378,7 @@ Also verifies that the new session-file is stored in state for reload to work."
 
 (defmacro pilish-test--with-quit-confirmable-session
     (binding-spec &rest body)
-  "Run BODY with a pi session whose live process would prompt on quit.
+  "Run BODY with a live unshared pi session requiring generic kill queries.
 BINDING-SPEC is (DIR CHAT-NAME INPUT-NAME PROC).  DIR is evaluated once."
   (declare (indent 1) (debug t))
   (let ((dir (nth 0 binding-spec))
@@ -409,36 +409,37 @@ BINDING-SPEC is (DIR CHAT-NAME INPUT-NAME PROC).  DIR is evaluated once."
              (delete-process ,proc))
            (pilish-test--kill-session-buffers ,dir-value))))))
 
-(ert-deftest pilish-test-quit-cancelled-preserves-session ()
-  "When user cancels quit confirmation, both buffers remain intact and linked."
-  (pilish-test--with-quit-confirmable-session
-      ("/tmp/pilish-test-quit-cancel/" chat-name input-name _proc)
-    (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) nil)))
-      (with-current-buffer input-name
-        (should-error (pilish-quit) :type 'user-error)))
-    (should (get-buffer chat-name))
-    (should (get-buffer input-name))
-    (with-current-buffer chat-name
-      (should (eq (pilish--get-input-buffer)
-                  (get-buffer input-name))))
-    (with-current-buffer input-name
-      (should (eq (pilish--get-chat-buffer)
-                  (get-buffer chat-name))))))
-
-(ert-deftest pilish-test-quit-confirmed-kills-both ()
-  "When user confirms quit, both buffers are killed without double-prompting."
-  (let ((prompt-count 0))
+(ert-deftest pilish-test-quit-from-input-closes-live-session-without-confirmation ()
+  "Explicit input Quit closes both buffers and Pi without generic kill queries."
+  (let ((pilish-quit-without-confirmation nil))
     (pilish-test--with-quit-confirmable-session
-        ("/tmp/pilish-test-quit-confirm/" chat-name input-name _proc)
+        ("/tmp/pilish-test-quit-input/" chat-name input-name proc)
+      (should (process-live-p proc))
       (cl-letf (((symbol-function 'yes-or-no-p)
-                 (lambda (_)
-                   (cl-incf prompt-count)
-                   t)))
+                 (lambda (_) (ert-fail "Explicit Quit asked for confirmation")))
+                ((symbol-function 'y-or-n-p)
+                 (lambda (_) (ert-fail "Explicit Quit asked for confirmation"))))
         (with-current-buffer input-name
           (pilish-quit)))
       (should-not (get-buffer chat-name))
       (should-not (get-buffer input-name))
-      (should (<= prompt-count 1)))))
+      (should-not (process-live-p proc)))))
+
+(ert-deftest pilish-test-quit-from-chat-closes-live-session-without-confirmation ()
+  "Explicit chat Quit closes both buffers and Pi without a confirmation opt-out."
+  (let ((pilish-quit-without-confirmation nil))
+    (pilish-test--with-quit-confirmable-session
+        ("/tmp/pilish-test-quit-chat/" chat-name input-name proc)
+      (should (process-live-p proc))
+      (cl-letf (((symbol-function 'yes-or-no-p)
+                 (lambda (_) (ert-fail "Explicit Quit asked for confirmation")))
+                ((symbol-function 'y-or-n-p)
+                 (lambda (_) (ert-fail "Explicit Quit asked for confirmation"))))
+        (with-current-buffer chat-name
+          (pilish-quit)))
+      (should-not (get-buffer chat-name))
+      (should-not (get-buffer input-name))
+      (should-not (process-live-p proc)))))
 
 (ert-deftest pilish-test-quit-without-confirmation-kills-both-without-prompt ()
   "When configured, quitting a live session kills both buffers without prompting."
@@ -532,7 +533,7 @@ BINDING-SPEC is (DIR CHAT-NAME INPUT-NAME PROC).  DIR is evaluated once."
       (pilish--skip-process-kill-confirmation proc)
       (should (pilish--session-kill-emacs-query))
       (process-put proc 'pilish-skip-kill-confirmation nil)
-      ;; Opt-out defcustom applies to Emacs exit as it does to quit.
+      ;; The opt-out defcustom still applies to generic Emacs-exit queries.
       (let ((pilish-quit-without-confirmation t))
         (should (pilish--session-kill-emacs-query)))
       ;; A dead process is nothing to protect.

@@ -995,14 +995,6 @@ No paid input is inferred or replayed; task-owned workers require their parent."
    #'pilish-resume-stopped-session "Resume stopped conversation"
    "Start a fresh agent for this stopped conversation, without replaying input? "))
 
-(defun pilish-stop-agent ()
-  "Stop this agent everywhere, including other attached frontends.
-This differs from closing or disconnecting this view, even for an idle agent."
-  (interactive)
-  (pilish--menu-runtime-action
-   #'pilish-stop-runtime "Stop agent everywhere"
-   "Stop this agent and its owned work for EVERY attached frontend (not just this view)? "))
-
 (defun pilish-attach-agent ()
   "Select and attach an existing compatible agent without starting Pi."
   (interactive)
@@ -1791,10 +1783,9 @@ Uses commands from pi's `get_commands' RPC."
     ("C" "reconnect view" pilish-reconnect-agent)
     ("B" "resume stopped" pilish-resume-agent)
     ("J" "attach existing agent" pilish-attach-agent)
-    ("K" "stop agent everywhere" pilish-stop-agent)
     ("N" "name" pilish-set-session-name)
     ("e" "export" pilish-export-html)
-    ("Q" "quit" pilish-quit)]
+    ("Q" "close agent" pilish-quit)]
    ["Context"
     ("c" "compact" pilish-compact)
     ("f" "fork" pilish-fork)
