@@ -13,6 +13,10 @@ remain in read-only `*Pilish closed agents*`, not a stopped active-agent placeho
 Emacs exit, direct buffer disposal and transport loss only disconnect. They never
 implicitly stop, restart or replay a detached agent. Desktop restoration returns
 nil for authoritative terminal identities; absent evidence remains unavailable.
+Workers require complete task evidence even when a stopped runtime receipt exists.
+Failed attachment/readiness reconciles that evidence too. Unknown workers remain
+parent-task-owned, without independent Resume; only validated pending evidence
+permits read-only polling.
 
 ## Focused evidence
 
@@ -24,6 +28,8 @@ reconciliation. `test/pilish-runtime-task-test.el` covers task namespace/binding
 missing/failed/wrong/unsafe evidence, timeout/late completion and reconnect without
 repeated cancellation, pending-Close submission/drain gates, unsent FIFO recovery,
 notification failure and definitive-rejection retry versus uncertain delivery.
+It also covers restoration races at socket/readiness failure and polling stopping
+on missing, invalid, changed or failed evidence.
 Run `test/pilish-command-context-test.el` for captured mux/receipt identity checks.
 
 For actual Pi/faux evidence use the explicit isolated native lane documented in
