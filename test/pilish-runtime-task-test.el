@@ -165,6 +165,134 @@
       (pilish-runtime-test--write-task task-file task-record)
       (should (pilish-session-state-closed-p state)))))
 
+(ert-deftest pilish-runtime-task-test-restore-complete-worker-skips-view-and-keeps-recovery ()
+  (pilish-runtime-test--with-worker nil
+    (setq task-record (plist-put task-record :state "complete"))
+    (pilish-runtime-test--write-task task-file task-record)
+    (cl-letf (((symbol-function 'pilish--runtime-new-view)
+               (lambda (&rest _) (ert-fail "Completed task allocated an active view")))
+              ((symbol-function 'pilish-list-runtimes)
+               (lambda () (ert-fail "Completed task attempted attachment")))
+              ((symbol-function 'pilish--runtime-call)
+               (lambda (&rest _) (ert-fail "Desktop restore sent runtime control"))))
+      (should-not
+       (pilish-restore-session-state
+        (list :directory directory :name "complete-worker" :session-file file
+              :runtime runtime :draft "completed worker desktop recovery"
+              :followups '("never replay completed work")))))
+    (with-current-buffer "*Pilish closed agents*"
+      (should (string-search "completed worker desktop recovery" (buffer-string)))
+      (should (string-search "never replay completed work" (buffer-string))))))
+
+(ert-deftest pilish-runtime-task-test-restore-retains-unknown-task-despite-runtime-receipt ()
+  (dolist (change '(pending failed missing binding))
+    (pilish-runtime-test--with-worker nil
+      (setq runtime (plist-put runtime :task-binding (copy-tree task-record))
+            runtime (plist-put runtime :terminal-receipt
+                               '(:muxId "test-runtime" :state "stopped" :code 0)))
+      (pcase change
+        ('failed (setq task-record (plist-put task-record :state "failed")
+                       task-record (plist-put task-record :error "retained owning cleanup failure")))
+        ('missing (setq task-record :null))
+        ('binding (setq task-record (plist-put task-record :state "complete")
+                        task-record (plist-put task-record :parent
+                                               (list :process json-identity :taskId "replacement-task")))))
+      (pilish-runtime-test--write-task task-file task-record)
+      (cl-letf (((symbol-function 'pilish-list-runtimes) (lambda () nil))
+                ((symbol-function 'pilish--runtime-terminal-receipt)
+                 (lambda (&rest _) (ert-fail "Worker restore trusted a root receipt")))
+                ((symbol-function 'pilish--runtime-call)
+                 (lambda (&rest _) (ert-fail "Worker restore launched or stopped an agent")))
+                ((symbol-function 'pilish-submit-prompt)
+                 (lambda (&rest _) (ert-fail "Worker restore replayed input"))))
+        (setq pilish-runtime-test--chat
+              (pilish-restore-session-state
+               (list :directory directory :name "uncertain-worker" :session-file file
+                     :runtime runtime :draft "uncertain worker recovery"))))
+      (should (buffer-live-p pilish-runtime-test--chat))
+      (should-not (pilish-session-process pilish-runtime-test--chat))
+      (should (equal (plist-get (pilish-session-desktop-state pilish-runtime-test--chat) :draft)
+                     "uncertain worker recovery"))
+      (with-current-buffer pilish-runtime-test--chat
+        (should (string-search "Reconcile the owning parent task" (buffer-string)))
+        (should (= (how-many "No agent was started" (point-min) (point-max)) 1)))
+      (if (eq change 'pending)
+          (should (timerp (buffer-local-value 'pilish--runtime-task-timer pilish-runtime-test--chat)))
+        (should-not (buffer-local-value 'pilish--runtime-task-timer pilish-runtime-test--chat))
+        ;; Neither restoration nor a later start request can poll uncertainty.
+        (pilish--runtime-task-start-poll pilish-runtime-test--chat)
+        (should-not (buffer-local-value 'pilish--runtime-task-timer pilish-runtime-test--chat))))))
+
+(ert-deftest pilish-runtime-task-test-restore-reconciles-completion-during-failed-attachment ()
+  (pilish-runtime-test--with-worker nil
+    (let* ((closed 0)
+           (pilish-session-closed-functions (list (lambda (_) (cl-incf closed)))))
+      ;; The preflight sees pending. Discovery races final publication and an
+      ;; already removed socket, so connect reports failure through its callback.
+      (cl-letf (((symbol-function 'pilish-list-runtimes)
+                 (lambda ()
+                   (setq task-record (plist-put task-record :state "complete"))
+                   (pilish-runtime-test--write-task task-file task-record)
+                   (delete-file socket)
+                   (list runtime)))
+                ((symbol-function 'pilish--runtime-call)
+                 (lambda (&rest _) (ert-fail "Restore race sent runtime control"))))
+        (setq pilish-runtime-test--chat
+              (pilish-restore-session-state
+               (list :directory directory :name "racing-worker" :session-file file
+                     :runtime runtime :draft "attachment race recovery")))
+        (should-not pilish-runtime-test--chat))
+      (should (= closed 1))
+      (should-not (pilish--runtime-find-view "test-runtime"))
+      (with-current-buffer "*Pilish closed agents*"
+        (should (string-search "attachment race recovery" (buffer-string)))))))
+
+(ert-deftest pilish-runtime-task-test-restore-reconciles-completion-before-async-readiness-failure ()
+  (pilish-runtime-test--with-worker '(:silent t)
+    (let* ((closed 0)
+           (pilish-session-closed-functions (list (lambda (_) (cl-incf closed)))))
+      (cl-letf (((symbol-function 'pilish-list-runtimes) (lambda () (list runtime)))
+                ((symbol-function 'pilish--runtime-call)
+                 (lambda (&rest _) (ert-fail "Restore readiness failure sent runtime control"))))
+        (setq pilish-runtime-test--chat
+              (pilish-restore-session-state
+               (list :directory directory :name "prelive-worker" :session-file file
+                     :runtime runtime :draft "prelive worker recovery")))
+        (pilish-runtime-test--wait (lambda () pilish-runtime-test--clients))
+        (setq task-record (plist-put task-record :state "complete"))
+        (pilish-runtime-test--write-task task-file task-record)
+        (delete-process (car pilish-runtime-test--clients))
+        (pilish-runtime-test--wait (lambda () (not (buffer-live-p pilish-runtime-test--chat))))
+        (should (= closed 1))
+        (should-not pilish-runtime-test--received)
+        (with-current-buffer "*Pilish closed agents*"
+          (should (string-search "prelive worker recovery" (buffer-string))))))))
+
+(ert-deftest pilish-runtime-task-test-restore-failed-readiness-retains-pending-until-late-completion ()
+  (pilish-runtime-test--with-worker '(:silent t)
+    (cl-letf (((symbol-function 'pilish-list-runtimes) (lambda () (list runtime)))
+              ((symbol-function 'pilish--runtime-call)
+               (lambda (&rest _) (ert-fail "Late restore completion sent runtime control")))
+              ((symbol-function 'pilish-submit-prompt)
+               (lambda (&rest _) (ert-fail "Late restore completion submitted input"))))
+      (setq pilish-runtime-test--chat
+            (pilish-restore-session-state
+             (list :directory directory :name "pending-prelive-worker" :session-file file
+                   :runtime runtime :draft "late restore completion recovery")))
+      (pilish-runtime-test--wait (lambda () pilish-runtime-test--clients))
+      (delete-process (car pilish-runtime-test--clients))
+      (pilish-runtime-test--wait
+       (lambda () (buffer-local-value 'pilish--runtime-task-timer pilish-runtime-test--chat)))
+      (should (buffer-live-p pilish-runtime-test--chat))
+      (should (equal (plist-get (pilish-session-runtime pilish-runtime-test--chat) :task-binding)
+                     task-record))
+      (setq task-record (plist-put task-record :state "complete"))
+      (pilish-runtime-test--write-task task-file task-record)
+      (pilish-runtime-test--wait (lambda () (not (buffer-live-p pilish-runtime-test--chat))))
+      (should-not pilish-runtime-test--received)
+      (with-current-buffer "*Pilish closed agents*"
+        (should (string-search "late restore completion recovery" (buffer-string)))))))
+
 (ert-deftest pilish-runtime-task-test-disconnect-cancels-owned-polling-only ()
   (pilish-runtime-task-test--with-view
     (pilish--runtime-note-exit (pilish-session-process chat) '(:type "pimux_exit" :code 0))
@@ -173,6 +301,36 @@
       (pilish-disconnect-session chat)
       (should-not (memq timer timer-list))
       (should (process-live-p server)))))
+
+(ert-deftest pilish-runtime-task-test-poll-stops-on-missing-invalid-or-failed-evidence ()
+  (dolist (change '(missing malformed binding failed))
+    (pilish-runtime-task-test--with-view
+      (let ((binding (copy-tree task-record)))
+        (with-current-buffer (pilish-session-input-buffer chat) (insert "retained after polling failure"))
+        (pilish--runtime-worker-terminated chat)
+        (let ((timer (buffer-local-value 'pilish--runtime-task-timer chat)))
+          (should (memq timer timer-list))
+          (pcase change
+            ('missing (setq task-record :null))
+            ('malformed (setq task-record (plist-put task-record :state "invalid")))
+            ('binding (setq task-record (plist-put task-record :parent
+                                                   (list :process json-identity :taskId "replacement-task"))))
+            ('failed (setq task-record (plist-put task-record :state "failed")
+                           task-record (plist-put task-record :error "final cleanup failure"))))
+          (pilish-runtime-test--write-task task-file task-record)
+          ;; Run the owned timer callback directly instead of waiting a period.
+          (apply (timer--function timer) (timer--args timer))
+          (should-not (memq timer timer-list))
+          (should-not (buffer-local-value 'pilish--runtime-task-timer chat))
+          (should (buffer-live-p chat))
+          (should (equal (plist-get (pilish-session-runtime chat) :task-binding) binding))
+          (should (stringp (plist-get (pilish-session-runtime chat) :task-error)))
+          (should (equal (plist-get (pilish-session-desktop-state chat) :draft)
+                         "retained after polling failure"))
+          (pilish--runtime-task-start-poll chat)
+          (should-not (buffer-local-value 'pilish--runtime-task-timer chat))
+          (pilish--runtime-worker-terminated chat)
+          (should-not (buffer-local-value 'pilish--runtime-task-timer chat)))))))
 
 (ert-deftest pilish-runtime-task-test-reconnect-preserves-binding-and-never-rearms-cancellation ()
   (pilish-runtime-task-test--with-view

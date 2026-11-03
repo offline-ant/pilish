@@ -138,7 +138,14 @@ A retained :task-binding also pins the lease and both process identities."
               (pilish--runtime-task-apply chat record)
             (with-current-buffer chat (pilish--runtime-task-cancel-poll))
             (pilish--runtime-finish-close chat "Worker identity changed while reading task evidence")))
-      (error (pilish--runtime-task-error chat (error-message-string failure))))))
+      (error
+       ;; A previous pending record cannot authorize repeated queries after
+       ;; current evidence becomes missing, unsafe or identity-inconsistent.
+       ;; Keep the pinned binding and local work for explicit reconciliation.
+       (with-current-buffer chat
+         (pilish--runtime-task-cancel-poll)
+         (setq pilish--runtime (plist-put pilish--runtime :task-status nil)))
+       (pilish--runtime-task-error chat (error-message-string failure))))))
 
 (defun pilish-reconcile-worker-task (buffer runtime)
   "Reconcile BUFFER with captured worker RUNTIME using read-only task evidence.
@@ -164,11 +171,12 @@ Return nil on success, including an already dead BUFFER."
   nil)
 
 (defun pilish--runtime-task-start-poll (chat)
-  "Poll CHAT's task evidence until final publication or local disposal.
-A waiter timeout never fabricates success or recalls its settled callback."
+  "Poll CHAT only while its last validated task evidence is pending.
+A waiter timeout never fabricates success or recalls its settled callback.
+Missing or invalid evidence stops polling until explicit reconciliation."
   (with-current-buffer chat
-    (unless (or pilish--runtime-task-timer
-                (equal (plist-get (plist-get pilish--runtime :task-status) :state) "failed"))
+    (when (and (not pilish--runtime-task-timer)
+               (equal (plist-get (plist-get pilish--runtime :task-status) :state) "pending"))
       (let ((runtime (pilish-session-runtime chat)) timer)
         (setq timer
               (run-at-time 0.25 0.25

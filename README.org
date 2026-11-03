@@ -37,7 +37,7 @@ answer streams in above, and scroll, search, and copy from previous
 output with the keys you already use everywhere else.
 
 Ordinary unshared Pilish and Pi's terminal UI use the same =pi= CLI.
-Phimacs instead pins its own exact release CLI without changing a global
+Phimacs instead uses its checkout-owned exact CLI without changing a global
 installation.  Configured model providers, sessions, skills and prompt
 templates belong to the selected private agent directory.
 Pi extensions work with basic UI support.  See =Extension support=
@@ -52,38 +52,24 @@ under Advanced for the supported features and limits.
 * Quick start
 
 Choose the matching installation path.  The ordinary unshared path below
-supports Emacs 29.1 or later; Phimacs detached sharing has a stricter,
-release-pinned contract.
+supports Emacs 29.1 or later; Phimacs detached sharing has a stricter
+runtime and public-API contract.
 
-** Phimacs detached setup: pinned fork required
+** Phimacs detached setup
 
-This checkout contains the Phimacs integration candidate, not a published
-Phimacs release.  Use the complete tested immutable release and its pinned
-Pilish source/archive when it becomes approved.  Stock MELPA Pilish or a
-moving default branch does not supply the versioned integration API; do not
-install it over the selected fork.  Linux, Node 24, Emacs 31.1 or newer,
-the exact release-owned Pi and compiled pimux, and explicitly provisioned
-Markdown grammars are required.  Normal reference startup does not download
-or compile missing assets.
+Use [[file:../phimacs/docs/install.md][Phimacs checkout setup]] with this compatible Pilish fork and an
+explicit reusable asset directory.  Linux, Node 24, Emacs 31.1 or newer,
+the checkout-owned Pi and compiled pimux, and provisioned Markdown grammars
+are required.  Normal startup does not download or compile missing assets.
+Frontend source edits do not require archives or native-asset rebuilds.
 
-After adding that release's documented Lisp load paths:
-
-#+begin_src emacs-lisp
-(require 'pilish)
-(pilish-configure-runtime
- :pi-executable "/absolute/release/node_modules/.bin/pi"
- :pimux-executable "/absolute/release/node_modules/.bin/pimux"
- :task-status-executable "/absolute/release/node_modules/.bin/phimacs-task-status"
- :protocol 2)
-#+end_src
-
-The paths are placeholders for one installed release, not commands from
-=PATH=.  Check =pilish-integration-capabilities=: =:api-version= must be 1
-and =:pimux-protocol= must be 2.  Configure and authenticate that release's
-Pi with the intended private agent directory before intentional model use;
-do not independently update the release's Pi or depend on a global CLI.
-See [[file:RUNTIME.md][RUNTIME.md]] for exact host version/hash options, public desktop APIs,
-isolated native tests and the remaining release-acceptance boundary.
+The launcher configures absolute executables through =pilish-configure-runtime=.
+Check =pilish-integration-capabilities=: =:api-version= must be 1 and
+=:pimux-protocol= must be 2; stock MELPA Pilish does not establish this contract.
+Authenticate the selected host with the intended private agent directory before
+intentional model use.  See [[file:RUNTIME.md][RUNTIME.md]] for exact host version/hash options,
+public desktop APIs and isolated verification.  No live reload or restart is
+implicit in a source change.
 
 Close agent (=q= or menu =Q=) stops it everywhere without confirmation and
 removes its views after authoritative termination.  Closing Emacs, killing a
@@ -916,8 +902,8 @@ Close/Resume operation after checking accepted and queued work.
 
 Ordinary unshared Pilish runs =pilish-executable=,
 which defaults to =("pi")=.  Detached Phimacs instead uses the absolute
-release executables supplied to =pilish-configure-runtime=; diagnose a wrong
-release before opening sessions.  If Emacs cannot find =pi=, install the
+executables supplied to =pilish-configure-runtime=; diagnose a wrong
+checkout or host identity before opening sessions.  If Emacs cannot find =pi=, install the
 CLI with the npm command from Quick Start on the host where Pi runs,
 adjust the relevant search path, or customize
 =pilish-executable=.  An example:
@@ -1794,8 +1780,8 @@ another frontend sharing the process.
 
 *** Sharing a session with other frontends
 
-Configure the absolute compiled release Pi/pimux executables through
-=pilish-configure-runtime=, as shown in Quick start.  The launcher commits
+Configure the absolute Pi and compiled pimux executables through
+=pilish-configure-runtime=; see Quick start and [[file:RUNTIME.md][RUNTIME.md]].  The launcher commits
 ownership and returns a receipt; Pilish then connects *directly* to the Unix
 socket as an ordinary peer.  Protocol 2 has no privileged creator, primary
 stdio transport or protocol-1 lifetime shim.  Input is gated until a valid
@@ -1827,8 +1813,13 @@ an agent; accepted work and waits may continue and incur usage invisibly.
 Desktop owners use =pilish-session-desktop-state= and
 =pilish-restore-session-state=: restore attaches surviving identities, retains
 unknown/unavailable identities for recovery, and returns nil for a known terminal
-identity.  Read-only receipt reconciliation never sends Stop.  Saved work is
-never auto-resubmitted.
+identity.  Workers require matching complete owning-task evidence, not just a
+stopped runtime receipt.  Failed attachment/readiness rechecks that evidence too,
+so a task completing during restoration does not leave an active recovery view.
+Uncertain workers remain visible for parent-task reconciliation, never independent
+Resume.  Only validated pending task evidence enables read-only polling; missing,
+invalid or failed evidence stops it until explicit reconciliation.  Read-only
+reconciliation never sends Stop.  Saved work is never auto-resubmitted.
 See [[file:RUNTIME.md][RUNTIME.md]] for the complete public API and isolated verification.
 
 ** Tree-sitter grammar management
@@ -2055,7 +2046,7 @@ parsing the transcript:
 ** Installation details
 
 These stock-package examples are for ordinary unshared use.  Phimacs users
-must use the selected release's pinned fork and locked dependencies as described
+must use their selected compatible fork and provisioned dependencies as described
 in Quick start and [[file:RUNTIME.md][RUNTIME.md]], not =:ensure t= on a stock package or a moving
 upstream clone.  The integration capability check deliberately rejects that copy.
 
