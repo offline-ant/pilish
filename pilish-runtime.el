@@ -185,39 +185,45 @@ CALLBACK receives nil after live, or an error string exactly once.  A missing
 or unsupported runtime stays unavailable and is never started implicitly."
   (let ((callback (pilish--runtime-once callback))
         (runtime (pilish-session-runtime buffer)))
-    (condition-case err
-        (progn
-          (unless runtime (error "This is not a detached runtime view"))
-          (unless (plist-get runtime :mux-id)
-            (error "This saved view has no runtime to reconnect; use Resume stopped conversation"))
-          (pilish--runtime-connect buffer (pilish--runtime-discovered runtime) callback))
-      (error
-       (if (equal (plist-get runtime :placement) "worker")
-           (if (not (pilish--runtime-task-same-view-p buffer runtime))
-               (funcall callback "Worker identity changed during reconnect; replacement view retained")
-             (pilish--runtime-worker-terminated buffer)
-             (if (buffer-live-p buffer)
-                 (let ((reason (or (plist-get (pilish-session-runtime buffer) :task-error)
-                                   "Worker task cleanup is pending; view retained")))
-                   (pilish--runtime-stopped-view buffer reason)
-                   (funcall callback reason))
-               (funcall callback "Worker task completed while disconnected; closed view removed")))
-         (let ((receipt (and runtime (pilish--runtime-terminal-receipt runtime))))
-           (if (and receipt (buffer-live-p buffer)
-                    (equal (plist-get runtime :mux-id)
-                           (plist-get (pilish-session-runtime buffer) :mux-id)))
-               (let (cleanup)
-                 (with-current-buffer buffer
-                   (setq pilish--runtime (plist-put pilish--runtime :state "stopped"))
-                   (setq pilish--runtime (plist-put pilish--runtime :terminal-receipt receipt))
-                   (setq cleanup (pilish--runtime-retire-view buffer)))
-                 (funcall callback (concat "Agent terminated while disconnected; closed view removed"
-                                           (when cleanup (concat "; " cleanup)))))
-             (when (and (buffer-live-p buffer) runtime
-                        (equal (plist-get runtime :mux-id)
-                               (plist-get (pilish-session-runtime buffer) :mux-id)))
-               (pilish--runtime-stopped-view buffer (error-message-string err)))
-             (funcall callback (error-message-string err)))))))))
+    (cl-labels
+        ((complete (failure)
+           (if (not failure)
+               (funcall callback nil)
+             ;; Discovery can succeed just before the owner exits.  Reconcile
+             ;; failed socket/readiness callbacks too, not only discovery errors.
+             (if (equal (plist-get runtime :placement) "worker")
+                 (if (not (pilish--runtime-task-same-view-p buffer runtime))
+                     (funcall callback "Worker identity changed during reconnect; replacement view retained")
+                   (pilish--runtime-worker-terminated buffer)
+                   (if (buffer-live-p buffer)
+                       (let ((reason (or (plist-get (pilish-session-runtime buffer) :task-error)
+                                         "Worker task cleanup is pending; view retained")))
+                         (pilish--runtime-stopped-view buffer reason)
+                         (funcall callback reason))
+                     (funcall callback "Worker task completed while disconnected; closed view removed")))
+               (let ((receipt (and runtime (pilish--runtime-terminal-receipt runtime))))
+                 (if (and receipt (buffer-live-p buffer)
+                          (equal (plist-get runtime :mux-id)
+                                 (plist-get (pilish-session-runtime buffer) :mux-id)))
+                     (let (cleanup)
+                       (with-current-buffer buffer
+                         (setq pilish--runtime (plist-put pilish--runtime :state "stopped"))
+                         (setq pilish--runtime (plist-put pilish--runtime :terminal-receipt receipt))
+                         (setq cleanup (pilish--runtime-retire-view buffer)))
+                       (funcall callback (concat "Agent terminated while disconnected; closed view removed"
+                                                 (when cleanup (concat "; " cleanup)))))
+                   (when (and (buffer-live-p buffer) runtime
+                              (equal (plist-get runtime :mux-id)
+                                     (plist-get (pilish-session-runtime buffer) :mux-id)))
+                     (pilish--runtime-stopped-view buffer failure))
+                   (funcall callback failure)))))))
+      (condition-case err
+          (progn
+            (unless runtime (error "This is not a detached runtime view"))
+            (unless (plist-get runtime :mux-id)
+              (error "This saved view has no runtime to reconnect; use Resume stopped conversation"))
+            (pilish--runtime-connect buffer (pilish--runtime-discovered runtime) #'complete))
+        (error (complete (error-message-string err)))))))
 
 (defun pilish--runtime-stopped-view (buffer reason)
   "Render BUFFER as an unavailable/stopped conversation with REASON.
@@ -236,8 +242,11 @@ still acquires the saved file's managed claim before opening it."
                        :state (if stopped "stopped" "unavailable")))
       (pilish--add-chat-notice
        (format "%s\nNo agent was started. %s; no input will be replayed."
-               reason (if stopped "Use explicit Resume stopped conversation"
-                        "Use explicit Reconnect or Resume after reconciling ownership"))
+               reason (cond
+                       ((equal (plist-get pilish--runtime :placement) "worker")
+                        "Reconcile the owning parent task; workers cannot Resume as independent agents")
+                       (stopped "Use explicit Resume stopped conversation")
+                       (t "Use explicit Reconnect or Resume after reconciling ownership")))
        'pilish-error-notice)
       (pilish--note-desktop-state))))
 
@@ -297,10 +306,8 @@ Return nil instead of resurrecting a view with authoritative terminal evidence."
                                     :leaf-id (plist-get state :leaf-id)))
           (pilish--restore-local-desktop-state state)))
       (if (and runtime (plist-get runtime :mux-id))
-          (pilish-reconnect-runtime
-           chat (lambda (error)
-                  (when (and error (buffer-live-p chat))
-                    (pilish--runtime-stopped-view chat error))))
+          ;; Reconnect owns failure reconciliation and its recovery notice.
+          (pilish-reconnect-runtime chat)
         (pilish--runtime-stopped-view chat "Saved conversation has no live runtime identity"))
       (and (buffer-live-p chat) chat))))
 

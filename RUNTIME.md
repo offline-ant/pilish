@@ -1,10 +1,9 @@
 # Detached runtime API and verification
 
-This is the privately tested Phimacs integration candidate, not a published
-release. Pilish remains a separate upstream-tracking fork. Phimacs consumers must
-acquire the exact tested fork revision and retained source archive from the
-complete immutable release; stock MELPA Pilish and a moving default branch do not
-establish the integration contract. Ordinary unshared Pilish remains supported.
+Pilish remains a separate upstream-tracking fork used directly by the Phimacs
+checkout. Consumers require the versioned public integration API, not a frontend
+source hash or archive. Stock MELPA Pilish does not establish this contract.
+Ordinary unshared Pilish remains supported.
 
 ## Configuration and capabilities
 
@@ -13,26 +12,24 @@ Lisp/native dependencies and essential grammars explicitly before reference
 startup. No normal startup download, private provider, personal configuration or
 existing home cache is a dependency.
 
-```elisp
-(require 'pilish)
-(pilish-configure-runtime
- :pi-executable "/absolute/release/node_modules/.bin/pi"
- :pimux-executable "/absolute/release/node_modules/.bin/pimux"
- :task-status-executable "/absolute/release/node_modules/.bin/phimacs-task-status"
- :protocol 2
- :pi-version "1.4.0")
-```
+[Phimacs setup](../phimacs/docs/install.md) configures its selected checkout and
+reusable assets. Other integrations call `pilish-configure-runtime` explicitly:
 
-Replace the paths with executable paths from one complete selected release.
-`:task-status-executable` configures `pilish-runtime-task-status-executable`;
-without it root sessions remain supported, but worker Close and read-only worker
-reconciliation refuse.
-The optional `:pi-sha256` is the release's lowercase entry-point SHA-256. The compiled
-owning launcher validates the exact host/version and, when supplied, its digest
-before opening a conversation. Whole-release dependency integrity remains the
-installer/manifest's responsibility. An unrelated global Pi is neither required
-nor updated. Authenticate the selected release with the intended private agent
-directory before intentional provider use; credentials are never release assets.
+| Keyword | Value |
+|---|---|
+| `:pi-executable` | Absolute selected Pi entry point |
+| `:pimux-executable` | Absolute compiled owning pimux launcher |
+| `:task-status-executable` | Absolute compiled orchestration task-status CLI |
+| `:protocol` | `2` |
+| `:pi-version` | Exact version of the selected physical Pi |
+| `:pi-sha256` | Optional lowercase entry-point SHA-256 |
+
+Without the task-status CLI, root sessions remain supported, but worker Close and
+read-only worker reconciliation refuse. The owning launcher validates Pi identity
+before opening a conversation. Phimacs' root npm graph owns its dependencies;
+an unrelated global Pi is neither required nor updated. Authenticate the selected
+host with the intended private agent directory before intentional provider use.
+Credentials are never source or reusable assets.
 
 `pilish-integration-capabilities()` returns API version 1 and pimux protocol 2,
 including implemented symmetric socket, runtime identity, desktop state, stopped
@@ -119,8 +116,8 @@ runtime available for explicit reconnect/stop.
 - `pilish-attach-runtime(runtime &optional name)` attaches an existing identity,
   reusing a local view of that mux when present; it never starts Pi.
 - `pilish-reconnect-runtime(buffer &optional callback)` reconnects only to the same
-  retained owner. On discovery failure it reads that exact identity's terminal
-  receipt (workers read final task evidence instead): known successful closure
+  retained owner. On discovery, socket or readiness failure it reads that exact
+  identity's terminal receipt (workers read final task evidence instead): known successful closure
   retires the view; absent/wrong/unreadable or failed task evidence retains it as
   unavailable/stopped recovery. Reconnecting the same worker preserves its captured
   task binding and cancellation history, never rearming ambiguous input. No Stop or replacement launch is used as a status
@@ -212,11 +209,13 @@ worker closed remotely without a local Close request. Missing, unsafe or changed
 evidence is uncertainty, not permission for another prompt or root Stop.
 
 A Close waiter times out after 45 seconds with an error. Read-only polling remains
-owned by the retained view so late matching completion can retire it without
-recalling settled callbacks. Another Close joins reconciliation and never replays
+owned by the retained view while validated task evidence is pending, so late
+matching completion can retire it without recalling settled callbacks. Missing,
+invalid or changed evidence cancels polling and clears the latest status while
+retaining the pinned binding and local work for explicit reconciliation. Another Close joins reconciliation and never replays
 a cancellation whose delivery may have succeeded. A late definitive rejection can
 rearm explicit retry without recalling a timed-out callback. Final failure or local
-view disposal cancels polling. The owning frontend must not disconnect a worker view while its public
+view disposal also cancels polling. The owning frontend must not disconnect a worker view while its public
 Close is awaiting task evidence.
 
 The interactive menu exposes Attach (`J`), Reconnect (`C`), Resume stopped (`B`)
@@ -304,6 +303,8 @@ namespaces, missing/failed/wrong/unsafe task evidence, timeout/late completion,
 reconnection without repeated cancellation, definitive-rejection retry versus uncertain
 delivery, pending-Close input gates, unsent FIFO recovery, notification failures
 and public read-only reconciliation after disconnected natural completion.
+Restoration regressions cover completion racing attachment/readiness, uncertain
+workers without independent Resume, and pending-only task polling.
 Shared/drafts/queue/
 menu/storage suites cover authoritative snapshots and recoverable input. Use
 fresh locked Lisp sources and freshly provisioned essential grammars, not home
@@ -397,7 +398,7 @@ only after final publication.
 Deck's three native tests plus
 its disposable-daemon TTY smoke passed desktop restore, stopped-view recovery,
 no shell replay and frontend restart/ordinary-exit survival with unchanged mux/Pi
-identity. These are candidate-native results, **not** packed clean-install,
-full Tau/orchestration acceptance or publication approval. Release/source retention,
-security/licensing and the complete private cross-frontend matrix remain separate
-gates; no user daemon or running service was restarted for this evidence.
+identity. These native-runtime checks do not grant publication approval or certify
+unrelated frontends. [Phimacs development](../phimacs/docs/development.md) owns
+checkout checks and the disposable cross-frontend lane. Source edits do not
+implicitly reload or restart user services.
