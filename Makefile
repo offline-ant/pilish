@@ -149,6 +149,7 @@ test: .deps-stamp
 		-l pilish-menu-detached-test \
 		-l pilish-storage-test \
 		-l pilish-runtime-test \
+		-l pilish-runtime-task-test \
 		-l pilish-style-test \
 		-l pilish-pair-test \
 		-l pilish-terminal-image-test \
@@ -207,7 +208,7 @@ test-menu-detached: .deps-stamp
 test-storage: .deps-stamp
 	@$(BATCH_TEST) -l pilish-storage-test $(ERT_RUN)
 test-runtime: .deps-stamp
-	@$(BATCH_TEST) -l pilish-runtime-test $(ERT_RUN)
+	@$(BATCH_TEST) -l pilish-runtime-test -l pilish-runtime-task-test $(ERT_RUN)
 # The caller explicitly supplies a marked synthetic claim root and candidate
 # executables/fixture. No global Pi, real provider, service or home asset fallback.
 test-runtime-native: .deps-stamp
@@ -439,7 +440,7 @@ PILISH_SOURCES = pilish-core.el pilish-jsonl.el pilish-grammars.el pilish-ui.el 
 	pilish-answer.el pilish-terminal-image.el pilish-pair.el pilish-table.el \
 	pilish-render.el pilish-snapshot.el pilish-input.el pilish-menu.el \
 	pilish-shared.el pilish-storage.el pilish-runtime-process.el \
-	pilish-runtime.el pilish-browse.el pilish-evil.el pilish.el
+	pilish-runtime-task.el pilish-runtime.el pilish-browse.el pilish-evil.el pilish.el
 CHECK_SOURCES = scripts/pilish-build.el scripts/install-deps.el \
 	scripts/install-ts-grammars.el $(PILISH_SOURCES)
 

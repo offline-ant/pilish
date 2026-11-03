@@ -60,6 +60,7 @@
 (declare-function pilish--draft-context "pilish-drafts" ())
 (declare-function pilish--quarantine-input "pilish-drafts" (origin context &rest payload))
 (defvar pilish--runtime)
+(declare-function pilish-close-session "pilish" (chat-buffer &optional callback))
 
 (defun pilish--input-ready-p (&optional chat-buffer)
   "Return non-nil when CHAT-BUFFER may accept local prompt input.
@@ -69,14 +70,17 @@ one still waiting for its hello, needs its current complete live boundary."
     (or (not (buffer-live-p chat))
         (with-current-buffer chat
           (let ((proc (pilish--get-process)))
-            (or (not (or (and (processp proc) (pilish--process-shared-p proc))
-                         (and (bound-and-true-p pilish--runtime)
-                              (equal (plist-get pilish--runtime :protocol) 2))))
-                (and (processp proc) (process-live-p proc)
-                     (pilish--shared-input-ready-p proc))))))))
+            (and (not (pilish--close-pending-p chat))
+                 (or (not (or (and (processp proc) (pilish--process-shared-p proc))
+                              (and (bound-and-true-p pilish--runtime)
+                                   (equal (plist-get pilish--runtime :protocol) 2))))
+                     (and (processp proc) (process-live-p proc)
+                          (pilish--shared-input-ready-p proc)))))))))
 
 (defun pilish--require-input-ready (&optional chat-buffer)
   "Refuse local prompt acceptance before CHAT-BUFFER's shared live boundary."
+  (when (pilish--close-pending-p (or chat-buffer (pilish--get-chat-buffer)))
+    (user-error "Agent Close is pending; draft and image kept"))
   (unless (pilish--input-ready-p chat-buffer)
     (user-error "Shared Pi view is not live; draft and image kept.  Reconnect or Resume explicitly")))
 
@@ -690,38 +694,11 @@ new shared queue or automatically resubmitting recovered input."
           (message "Pi: Aborting..."))))))
 
 (defun pilish-quit ()
-  "Close the current pi session.
-Kills both chat and input buffers, terminates the process,
-and removes the input window (merging its space with adjacent windows).
-
-If a process is running, asks for confirmation first unless
-`pilish-quit-without-confirmation' is non-nil.  If the user
-cancels, the session remains intact."
+  "Close this agent everywhere without confirmation.
+Retain the view and input until termination is authoritative.  Closing Emacs
+or losing a transport is not this operation and leaves detached Pi running."
   (interactive)
-  (let* ((chat-buf (pilish--get-chat-buffer))
-         (input-buf (pilish--get-input-buffer))
-         (proc (when (buffer-live-p chat-buf)
-                 (buffer-local-value 'pilish--process chat-buf)))
-         (proc-live (and proc (process-live-p proc)))
-         (input-windows nil))
-    (when (and (pilish--process-kill-confirmation-required-p proc)
-               (not (yes-or-no-p "Pi session has a running process; quit anyway? ")))
-      (user-error "Quit cancelled"))
-    ;; Suppress Emacs and pi buffer-kill prompts after explicit confirmation.
-    (when proc-live
-      (pilish--skip-process-kill-confirmation proc)
-      (set-process-query-on-exit-flag proc nil))
-    (when (buffer-live-p input-buf)
-      (setq input-windows (get-buffer-window-list input-buf nil t)))
-    ;; Kill chat first — its cleanup hook cascades to input buffer
-    (when (buffer-live-p chat-buf)
-      (kill-buffer chat-buf))
-    (when (buffer-live-p input-buf)
-      (kill-buffer input-buf))
-    (dolist (win input-windows)
-      (when (and (window-live-p win)
-                 (window-deletable-p win))
-        (delete-window win)))))
+  (pilish-close-session (pilish--get-chat-buffer)))
 
 ;;;; Slash Command Completion
 

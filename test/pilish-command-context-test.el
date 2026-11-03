@@ -161,15 +161,20 @@
                  (lambda (&rest _) (ert-fail "Picker rebound an old command"))))
         (should-error (pilish-run-custom-command) :type 'user-error)))))
 
-(ert-deftest pilish-command-context-test-runtime-confirmation-cannot-stop-a-replacement ()
+(ert-deftest pilish-command-context-test-close-cannot-accept-a-replacement-receipt ()
   (pilish-command-context-test--with-view
-    (let ((identity "old-runtime"))
-      (cl-letf (((symbol-function 'pilish-session-runtime)
-                 (lambda (_) (list :mux-id identity)))
-                ((symbol-function 'yes-or-no-p) (lambda (_) (setq identity "new-runtime") t))
-                ((symbol-function 'pilish-stop-runtime)
-                 (lambda (&rest _) (ert-fail "Confirmation stopped a replacement runtime"))))
-        (should-error (pilish-stop-agent) :type 'user-error)))))
+    (setq pilish--runtime '(:protocol 2 :mux-id "old-runtime" :state "live"))
+    (let (outcome)
+      (cl-letf (((symbol-function 'yes-or-no-p)
+                 (lambda (_) (ert-fail "Close yielded to a confirmation")))
+                ((symbol-function 'pilish--runtime-call)
+                 (lambda (args _directory _env callback)
+                   (should (equal args '("stop" "--json" "--id" "old-runtime")))
+                   (funcall callback '(:muxId "replacement" :state "stopped") nil))))
+        (pilish-close-session chat (lambda (error) (setq outcome error))))
+      (should (string-match-p "uncertain" outcome))
+      (should (buffer-live-p chat))
+      (should (equal (with-current-buffer input (buffer-string)) "original draft")))))
 
 (ert-deftest pilish-command-context-test-browser-rename-does-not-change-dispatch-after-prompt ()
   (pilish-command-context-test--with-view
