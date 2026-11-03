@@ -54,7 +54,9 @@ This identifies a shared transport, not a frontend-owned Pi process."
     (process-put proc 'pilish-input-context nil)
     (pilish--cancel-stream-delta-flush)
     (pilish--cancel-tool-update-flush)
-    (pilish--cancel-tool-times-state)))
+    (pilish--cancel-tool-times-state)
+    ;; The missing records may include this run's settlement.
+    (pilish--reset-run-clock)))
 
 (defun pilish--shared-handle-record (event)
   "Handle the pimux EVENT for the current chat's validated transport."

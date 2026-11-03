@@ -1964,7 +1964,10 @@ Updates buffer-local state and renders display updates."
           (guard (plist-member event :parentToolCallId)))
      (pilish--handle-nested-tool-event event boundary-time))
     ("agent_start"
-     (pilish--note-run-start boundary-time)
+     ;; A replayed start arrives long after the run started; its receipt
+     ;; would understate the duration, so a replayed run gets none.
+     (unless (pilish--shared-replaying-p)
+       (pilish--note-run-start boundary-time))
      (pilish--clear-live-details-state)
      (pilish--note-prompt-start)
      ;; Dialogs a run asks come after its start, so older ones lost their
