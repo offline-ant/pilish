@@ -568,10 +568,28 @@ An unavailable detached context is an error, never permission to bind later."
       (plist-put (copy-sequence command) :pimuxContext (copy-tree context))
     command))
 
+(defvar pilish--close-cancellation-context nil
+  "Admitted worker cancellation (PROCESS . CONTEXT), never normal input.")
+
+(defun pilish--close-pending-p (chat)
+  "Return non-nil while CHAT must keep normal input suspended for Close."
+  (when (buffer-live-p chat)
+    (with-current-buffer chat
+      (or (bound-and-true-p pilish--runtime-close-callbacks)
+          (bound-and-true-p pilish--runtime-retiring)
+          (plist-get (bound-and-true-p pilish--runtime) :task-cancel-requested)))))
+
 (defun pilish--prepare-contextual-command (process command)
   "Validate and bind PROCESS's mutating COMMAND before it crosses the socket.
 Callers with delayed actions must supply the original :pimuxContext.  This
 boundary never replaces a supplied expectation with a newer context."
+  (when (and (member (plist-get command :type) '("prompt" "steer" "follow_up"))
+             (pilish--close-pending-p (process-get process 'pilish-chat-buffer))
+             (not (and (eq process (car pilish--close-cancellation-context))
+                       (equal (plist-get command :type) "prompt")
+                       (equal (plist-get command :message) "/worker-cancel")
+                       (equal (plist-get command :pimuxContext) (cdr pilish--close-cancellation-context)))))
+    (user-error "Agent Close is pending; input retained, no prompt was sent"))
   (if (or (not (process-get process 'pilish-detached))
           (member (plist-get command :type) pilish--readonly-rpc-commands)
           (string-prefix-p "pimux_" (or (plist-get command :type) "")))

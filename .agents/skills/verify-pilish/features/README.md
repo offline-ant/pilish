@@ -48,4 +48,5 @@ Keep implementation ownership out of the map. The feature file names user paths,
 - [Work with tool blocks](./tool-blocks.md) covers tool output, bottom controls, durations, explicit tool details, native folds, child arguments, cursor stability, cooling, and survival when another session closes.
 - [Browse and resume sessions](./sessions.md) covers session and tree browser actions plus browser-based resume.
 - [Open saved conversations](./saved-conversations.md) covers recursive saved-chat trees, independent observers, completed-block inspection, recorded durations, refresh, failure retention, and observer-only quit.
+- [Close agent](./close-agent.md) covers unconfirmed global closure, authoritative remote disposal, task-owned workers, disconnect-only frontend loss and terminal desktop reconciliation.
 - [Answer extension editor prompts](./extension-dialogs.md) covers the multiline editor buffer, submission, cancellation, and draft safety.

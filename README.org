@@ -73,6 +73,7 @@ After adding that release's documented Lisp load paths:
 (pilish-configure-runtime
  :pi-executable "/absolute/release/node_modules/.bin/pi"
  :pimux-executable "/absolute/release/node_modules/.bin/pimux"
+ :task-status-executable "/absolute/release/node_modules/.bin/phimacs-task-status"
  :protocol 2)
 #+end_src
 
@@ -84,10 +85,11 @@ do not independently update the release's Pi or depend on a global CLI.
 See [[file:RUNTIME.md][RUNTIME.md]] for exact host version/hash options, public desktop APIs,
 isolated native tests and the remaining release-acceptance boundary.
 
-Closing a shared view or Emacs does *not* stop its agent.  Accepted work and
-provider waits can continue and incur usage without a visible frontend.
-Use explicit confirmed Stop agent everywhere when that is intended.
-Reconnect and desktop restore never start missing agents or replay input.
+Close agent (=q= or menu =Q=) stops it everywhere without confirmation and
+removes its views after authoritative termination.  Closing Emacs, killing a
+buffer directly or losing a connection only disconnects: accepted work and
+provider waits can continue and incur usage.  Reconnect and desktop restore
+never start missing agents or replay input.
 
 ** Requirements for ordinary unshared use
 
@@ -855,7 +857,7 @@ The main buffers:
 | =n= / =p=                 | chat         | Navigate user messages                      |
 | =i=                       | chat         | Open or focus the input window              |
 | =f=                       | chat         | Fork from the turn at point                 |
-| =q=                       | chat         | Close view; detached agent keeps running    |
+| =q=                       | chat         | Close agent everywhere; no confirmation     |
 | =C-c C-n=                 | chat         | New session                                 |
 | =C-c C-e=                 | chat         | Export session to HTML                      |
 | =C-c C-c=                 | chat         | Compact conversation context                |
@@ -903,7 +905,7 @@ in ordinary unshared mode, press =C-c C-p R= (or =M-x pilish-reload=)
 to restart Pi without losing the conversation.  Detached =pilish-reload=
 only reconnects the same runtime; it does not reload runtime code or
 restart a provider.  Any necessary agent restart is a separate explicit
-Stop/Resume operation after checking accepted and queued work.
+Close/Resume operation after checking accepted and queued work.
 
 #+html: </details>
 
@@ -1262,7 +1264,7 @@ Chat buffer (motion state):
 | =C-c ]= / =C-c [= | next or previous Pi session link        |
 | =i= / =a= | focus input (=a= goes to end of input)  |
 | =?=       | transient menu                          |
-| =q=       | close view; detached agent keeps running |
+| =q=       | close agent everywhere; no confirmation  |
 
 Input buffer (normal state):
 
@@ -1715,10 +1717,23 @@ only; it never stops/replaces Pi or starts a missing runtime.
 replacing its process by returning the reason, for a host that tracks the
 process; =pilish-reload= then reloads in place if Pi has an extension command
 =reload=, and otherwise reports the reason.
-=pilish-close-session= closes the explicitly supplied view without a
-confirmation prompt.  Detached Pi keeps running; unshared Pi retains its native
-process lifetime.  =pilish-stop-runtime= is the separate acknowledged global
-stop API, whose caller owns every-frontend confirmation, including while idle.
+=pilish-close-session= closes the explicitly supplied agent everywhere without
+confirmation, retaining the view/input until termination is authoritative.  Its
+optional callback receives nil after disposal or an error string on uncertainty.
+=pilish-stop-runtime= is the identity-bound root-stop primitive; workers close
+through task cancellation, requiring advertised =worker-cancel= and matching final
+parent-task cleanup evidence.  Runtime exit alone is insufficient; failed or
+uncertain evidence retains recovery without replaying cancellation.  The configured
+=:task-status-executable= is required for worker Close and reconciliation.
+After owning-task completion, integrations use =pilish-reconcile-worker-task=
+with the chat and captured runtime identity to retire a retained worker view from
+read-only final evidence, without Stop, reconnect or another prompt.  See
+[[file:RUNTIME.md][RUNTIME.md]] for its identity, error and return-value contract.
+Ordinary frontend/view teardown uses =pilish-disconnect-session=, which disposes
+only its local detached view; task-owned worker completion retains that view until
+final evidence can be reconciled.
+=pilish-session-closed-functions= receives the still-readable chat before
+terminal disposal so integrations can remove its layouts and sidebar entries.
 
 Integrations can register =pilish-session-environment-functions= before the
 first session starts.  Each function receives the chat buffer and directory,
@@ -1776,12 +1791,18 @@ attach without starting Pi.  =pilish-reconnect-runtime= reconnects only;
 sends no prompt.  =pilish-stop-runtime= performs acknowledged identity-bound
 stop, never signals a raw Pi PID, and refuses parent-task worker promotion.
 
-Closing buffers, the last client or Emacs disconnects without stopping the
-agent.  Already accepted work and waits may continue and incur usage invisibly.
-A runtime crash is reported, not automatically restarted.  Desktop owners use
-=pilish-session-desktop-state= and =pilish-restore-session-state=: restore
-attaches the saved live identity and adopts its current file/branch, or retains
-an unavailable view with explicit recovery.  Saved work is never auto-resubmitted.
+Agent Close stops the runtime globally without confirmation.  Authoritative
+root termination, including a crash, removes active views; unsent work and crash
+information remain in the read-only =*Pilish closed agents*= recovery buffer.
+Worker views additionally await matching successful final task cleanup; failed or
+uncertain cleanup retains their recovery view.  See [[file:RUNTIME.md][RUNTIME.md]] for that boundary.
+Direct buffer disposal, the last client disconnecting and Emacs exit do not stop
+an agent; accepted work and waits may continue and incur usage invisibly.
+Desktop owners use =pilish-session-desktop-state= and
+=pilish-restore-session-state=: restore attaches surviving identities, retains
+unknown/unavailable identities for recovery, and returns nil for a known terminal
+identity.  Read-only receipt reconciliation never sends Stop.  Saved work is
+never auto-resubmitted.
 See [[file:RUNTIME.md][RUNTIME.md]] for the complete public API and isolated verification.
 
 ** Tree-sitter grammar management
