@@ -16,6 +16,8 @@
 
 (declare-function pilish--shared-session-file "pilish-shared" (session))
 (declare-function pilish--add-chat-notice "pilish-render" (text face))
+(declare-function pilish--followup-submitted-p "pilish-queue" ())
+(declare-function pilish--take-unsubmitted-followups "pilish-queue" ())
 
 (defvar-local pilish--draft-context nil
   "Last authoritative local input context, with file and leaf identity.")
@@ -96,21 +98,35 @@ Records contain :id, :origin, :session-file, :leaf-id, :draft, :images,
   (when (buffer-live-p buffer)
     (copy-tree (buffer-local-value 'pilish--input-quarantine buffer))))
 
+(defun pilish--quarantine-record (origin context payload)
+  "Build an ORIGIN recovery record bound to CONTEXT with PAYLOAD."
+  (append (list :id (format "%s-%d" (format-time-string "%s%N")
+                           (cl-incf pilish--quarantine-counter))
+                :origin origin
+                :session-file (plist-get context :session-file)
+                :leaf-id (plist-get context :leaf-id))
+          (copy-tree payload)))
+
 (defun pilish--quarantine-input (origin context &rest payload)
   "Retain PAYLOAD as an ORIGIN recovery record bound to CONTEXT.
 PAYLOAD is a plist of :draft, :images, :followups, :uncertain and optional
 :notice-key/:truncated metadata.  Return the new record."
-  (let ((record
-         (append (list :id (format "%s-%d" (format-time-string "%s%N")
-                                  (cl-incf pilish--quarantine-counter))
-                       :origin origin
-                       :session-file (plist-get context :session-file)
-                       :leaf-id (plist-get context :leaf-id))
-                 (copy-tree payload))))
+  (let ((record (pilish--quarantine-record origin context payload)))
     (push record pilish--input-quarantine)
     (pilish--note-desktop-local-state)
     (pilish--refresh-input-preamble)
     record))
+
+(defun pilish--suspend-close-followups ()
+  "Retain unsent follow-ups for explicit recovery before any Close observer.
+The in-flight FIFO owner keeps its existing acknowledgement callback."
+  (let* ((followups (pilish--followups-in-fifo-order))
+         (unsent (if (pilish--followup-submitted-p) (cdr followups) followups)))
+    (when unsent
+      (push (pilish--quarantine-record "Agent Close" (pilish--draft-context) (list :followups unsent))
+            pilish--input-quarantine)
+      ;; Both recovery and queue state are committed before UI notifications.
+      (pilish--take-unsubmitted-followups))))
 
 (defun pilish--recovery-followups ()
   "Return genuinely unsubmitted follow-ups, excluding a pending FIFO owner."

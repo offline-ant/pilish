@@ -15,9 +15,13 @@ menu keeps explicit unshared/plain-Pi behavior separate.
   conversation. It invokes `pilish-resume-stopped-session`; it sends no prompt.
 - `pilish-attach-agent` (`J`) selects public normalized discovery entries and calls
   `pilish-attach-runtime`, never a launcher.
-- `pilish-stop-agent` (`K`) confirms stopping the agent and owned work for **every**
-  attached frontend, even while idle. It calls `pilish-stop-runtime` and preserves
-  the view/input on failure or uncertainty. Closing a view is a different action.
+- `pilish-quit` (`Q` in the menu, chat `q`) calls `pilish-close-session` without
+  confirmation. Close stops the agent for every attached frontend and disposes
+  active views only on authoritative closure. Workers use their owning task's
+  cancellation and final cleanup evidence, not runtime exit alone. Failed/uncertain
+  close retains local input and the view; see [RUNTIME.md](RUNTIME.md).
+- There is no competing Stop-everywhere or local-disconnect menu action.
+  Frontend exit/restart and transport loss still disconnect without stopping Pi.
 
 The public runtime callbacks receive nil or one error string. Runtime identity and
 actual Pi PID/start identity come from `pilish-session-runtime`, never a network
@@ -62,9 +66,12 @@ new dispatch path. Stopped mutations retain their common lease protection.
 Custom slash-command pickers refuse a changed context before calling prompt
 preparation; their preflight must preserve that same context until native RPC
 submission. Image selection and tree-label entry refuse if their draft/tree owner
-changed while the minibuffer was active. Runtime Stop/Resume confirmations also
-retain the original mux and saved-file identity rather than acting on whatever
-agent later occupies the view. A failed steering acknowledgement retains its
+changed while the minibuffer was active. Runtime Resume confirmation retains the
+original mux and saved-file identity rather than acting on whatever agent later
+occupies the view. Close has no confirmation; its root stop receipt must match
+the captured mux identity and cannot retire a replacement runtime's view. Worker
+Close additionally binds its asynchronous command discovery and task-status reads
+to the original runtime/context and immutable task identity. A failed steering acknowledgement retains its
 requester's text under its original context, not in the replacement draft.
 
 `test/pilish-command-context-test.el` covers these delayed-action races with
@@ -87,7 +94,7 @@ with a second implementation or advice.
 
 `test/pilish-menu-detached-test.el` exercises reconnect-only reload, worker refusal,
 missing-runtime safety, authoritative transitions, cancellation/send uncertainty,
-explicit stop/resume/attach, actual process identity and protected export. Run it
+unconfirmed close/resume/attach, actual process identity and protected export. Run it
 alongside `test/pilish-menu-test.el` with fresh locked Lisp/grammar inputs and an
 isolated HOME. The deterministic peers are post-validation fixtures; runtime
 socket/process validation and native reconnect need the owning integration lane.

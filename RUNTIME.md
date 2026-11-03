@@ -18,12 +18,16 @@ existing home cache is a dependency.
 (pilish-configure-runtime
  :pi-executable "/absolute/release/node_modules/.bin/pi"
  :pimux-executable "/absolute/release/node_modules/.bin/pimux"
+ :task-status-executable "/absolute/release/node_modules/.bin/phimacs-task-status"
  :protocol 2
  :pi-version "1.4.0")
 ```
 
-Replace both paths with executable paths from one complete selected release. The
-optional `:pi-sha256` is the release's lowercase entry-point SHA-256. The compiled
+Replace the paths with executable paths from one complete selected release.
+`:task-status-executable` configures `pilish-runtime-task-status-executable`;
+without it root sessions remain supported, but worker Close and read-only worker
+reconciliation refuse.
+The optional `:pi-sha256` is the release's lowercase entry-point SHA-256. The compiled
 owning launcher validates the exact host/version and, when supplied, its digest
 before opening a conversation. Whole-release dependency integrity remains the
 installer/manifest's responsibility. An unrelated global Pi is neither required
@@ -32,7 +36,8 @@ directory before intentional provider use; credentials are never release assets.
 
 `pilish-integration-capabilities()` returns API version 1 and pimux protocol 2,
 including implemented symmetric socket, runtime identity, desktop state, stopped
-view, context-bound input, managed storage and essential grammar capabilities.
+view, context-bound input, managed storage, authoritative-close and essential
+grammar capabilities.
 Check the versioned API, not the package version or existence of one function.
 
 The default mode is `unshared`. To select it explicitly before new native sessions:
@@ -81,7 +86,13 @@ are first-answer-wins and close through authoritative closure, timeout or snapsh
 reconciliation, not an unrelated run. Pi's aggregate prompt signal still cannot
 identify one abandoned dialog among several open dialogs.
 
-Closing a buffer, Emacs, the last client or a browser view disconnects only.
+Explicit Close stops the agent everywhere without confirmation, even when busy.
+Authoritative root termination retires active chat/input views in every frontend.
+Workers additionally require matching successful final task-cleanup evidence;
+runtime exit alone cannot acknowledge their Close or remove recovery.
+Close immediately suspends normal input and automatic local follow-ups while
+preserving recovery; see [DRAFTS.md](DRAFTS.md#close-suspends-local-input).
+Direct buffer disposal, Emacs exit and socket loss disconnect only.
 **Accepted work and provider waits may continue and incur usage invisibly.**
 There is no idle auto-stop, central scheduler, automatic crash restart or paid
 prompt replay. Reconnect and desktop restoration never submit `continue`, tools,
@@ -108,19 +119,64 @@ runtime available for explicit reconnect/stop.
 - `pilish-attach-runtime(runtime &optional name)` attaches an existing identity,
   reusing a local view of that mux when present; it never starts Pi.
 - `pilish-reconnect-runtime(buffer &optional callback)` reconnects only to the same
-  retained owner. Shared `pilish-reload` uses this policy, not process replacement.
+  retained owner. On discovery failure it reads that exact identity's terminal
+  receipt (workers read final task evidence instead): known successful closure
+  retires the view; absent/wrong/unreadable or failed task evidence retains it as
+  unavailable/stopped recovery. Reconnecting the same worker preserves its captured
+  task binding and cancellation history, never rearming ambiguous input. No Stop or replacement launch is used as a status
+  query. Shared `pilish-reload` uses this policy, not process replacement.
+- `pilish-reconcile-worker-task(buffer runtime)` synchronously reconciles a retained
+  worker view with read-only final task evidence, without Stop, input or reconnect.
+  It performs one read/application and starts no polling.
+  `runtime` pins the captured `:mux-id`, `:socket`, `:pi-pid`, `:pi-start-time` and
+  `:pi-boot-id`; the current view must still have worker placement. Optional
+  frontend parent/placement metadata need not be present in the captured identity.
+  The existing task reader also pins any retained parent/task/lease binding.
+  Only validated `complete` evidence retires chat/input through ordinary recovery,
+  observers and callback settlement. Missing, pending, failed or mismatched evidence
+  signals and retains the view. Pending evidence can capture binding/status; validated
+  failure records its owning error, cancels polling and settles existing Close waiters
+  with error. Retirement errors signal after cleanup and recovery retention. Success
+  or an already dead buffer returns nil; a call during existing retirement does not
+  wait for disposal. Integrations use this after parent task completion when a
+  disconnected transport cannot report exit.
 - `pilish-resume-stopped-session(buffer &optional callback)` is an explicit managed
   launch of an exact saved path with no prompt. Active/uncertain owners refuse;
   task-owned workers cannot be promoted into independent roots.
 - `pilish-stop-runtime(buffer &optional callback)` performs acknowledged,
-  identity-bound stop everywhere and reconciles its terminal receipt. The caller
-  owns confirmation, including an idle agent. It never signals a bare Pi PID.
-- `pilish-close-session(buffer)` closes a detached view, not its runtime. Unshared
-  Pi retains its native process lifetime.
+  identity-bound root stop everywhere and reconciles its terminal receipt before
+  retiring the view. It never signals a bare Pi PID or asks for confirmation.
+- `pilish-close-session(buffer &optional callback)` closes the agent everywhere,
+  using the parent-task cancellation protocol for workers. Before submitting
+  `/worker-cancel`, it requires valid pending task evidence and a fresh
+  `get_commands` response advertising that extension command, bound to the captured
+  mux/transport/input context. A missing command/binding, failed query, changed
+  context or expired Close sends no prompt and retains the view. Its callback
+  receives nil only after matching final task completion and disposal, or an error
+  string on failure/uncertainty. See Worker task completion below.
+- `pilish-disconnect-session(buffer)` disposes only this local detached view.
+  Ordinary frontend/view teardown uses this primitive, not user Close. Task-owned
+  worker completion must retain the view until final task evidence can be reconciled,
+  using `pilish-reconcile-worker-task` when necessary. Unshared Pi retains its native
+  process lifetime.
+- `pilish-session-closed-functions(chat)` runs before terminal view disposal while
+  public session/runtime/desktop accessors still work. Observers remove layouts
+  and sidebar entries; they must not dispose buffers or send another stop. One
+  observer's failure does not prevent remaining observers, buffer cleanup or
+  callback settlement. Original/cleanup errors remain in the read-only recovery
+  buffer and Close reports them. The hook does not run on socket loss, frontend
+  exit or disconnection.
+- `pilish-session-state-closed-p(state)` checks root terminal evidence or the
+  read-only `pimux receipt --json --id <muxId>` query. Workers require matching
+  complete task evidence even when saved runtime exit is known. Missing/failed
+  evidence is not successful closure; this never sends Stop.
 
-The three callback-taking control APIs invoke the callback exactly once with nil
+The callback-taking control APIs invoke the callback exactly once with nil
 on acknowledged success/readiness, or an error string on failure/uncertainty.
-A failed stop retains the view and local recovery. Runtime view state `"live"`
+An uncertain/failed stop retains the view and local recovery. Once termination
+is authoritative, observer/cleanup failure still retires the active view, retains
+all reported errors and unsent work in recovery, and settles callbacks once with
+the error rather than claiming complete success. Runtime view state `"live"`
 means the validated live boundary was reached; it is distinct from activity such
 as streaming. `"disconnected"` or `"unavailable"` does not prove Pi stopped.
 For a retained owner, only authoritative termination/stop reports `"stopped"`.
@@ -132,9 +188,41 @@ activity state; consumers must not mistake that for view readiness.
 Workers retain their parent-task/result protocol; cancellation/resume belongs to
 that owner, not a root-stop fallback.
 
+### Worker task completion
+
+`pilish-runtime-task.el` reads the configured orchestration CLI as
+`phimacs-task-status --id <muxId> --json`, with `PIMUX_DIR` set to the captured
+socket's directory, independent of the frontend's default namespace. The CLI
+validates private same-user evidence. Pilish matches the mux and actual worker
+PID/start/boot identity, captures the parent process/task/lease binding from the
+first validated record, and pins it for every later query. Read-only reconciliation
+can accept first-seen complete evidence without a prior pending read or local Close.
+Discovery's `:parent` is a frontend reference, not this task binding. The retained runtime carries `:task-binding`, latest
+`:task-status`, `:task-cancel-requested` and any `:task-error` through reconnect and
+desktop recovery.
+
+After command discovery, Pilish rechecks task evidence and the original input
+context before submitting cancellation. A definitive rejection clears the attempted
+cancellation marker; another explicit Close repeats fresh admission. Unknown replies,
+transport exit and uncertain delivery retain that marker and cannot authorize resend. A transport disconnect or
+`pimux_exit` cannot complete the wait. Only a matching `complete` record proves
+worker death plus owning-task cleanup/name release and retires the view. A
+`failed` record reports its original error and keeps recovery, including for a
+worker closed remotely without a local Close request. Missing, unsafe or changed
+evidence is uncertainty, not permission for another prompt or root Stop.
+
+A Close waiter times out after 45 seconds with an error. Read-only polling remains
+owned by the retained view so late matching completion can retire it without
+recalling settled callbacks. Another Close joins reconciliation and never replays
+a cancellation whose delivery may have succeeded. A late definitive rejection can
+rearm explicit retry without recalling a timed-out callback. Final failure or local
+view disposal cancels polling. The owning frontend must not disconnect a worker view while its public
+Close is awaiting task evidence.
+
 The interactive menu exposes Attach (`J`), Reconnect (`C`), Resume stopped (`B`)
-and Stop agent everywhere (`K`). Abort (`C-c C-k`) stops a turn, not the agent.
-See [MENU-RUNTIME.md](MENU-RUNTIME.md) for confirmations and transition ordering.
+and one Close agent (`Q`). Chat `q` uses the same unconfirmed Close.
+Abort (`C-c C-k`) stops a turn, not the agent. See
+[MENU-RUNTIME.md](MENU-RUNTIME.md) for transition ordering.
 
 ## Desktop state and input recovery
 
@@ -146,9 +234,12 @@ saved data, not paths reopened on restore. Keep desktop files private.
 
 `pilish-restore-session-state(state)` allocates a background view and attaches the
 specified compatible surviving identity, adopting its current file and branch.
-Missing/incompatible retained owners stay as unavailable views with explicit
-recovery; identity-free legacy conversations restore as stopped/resumable views,
-not failed connections. Restoration never opens their JSONL for writing or starts
+Known terminated identities return nil instead of allocating an active view;
+retained terminal receipts reconcile agents closed while this desktop was offline.
+Unsent work/abnormal exits remain in read-only `*Pilish closed agents*` recovery,
+outside the active-agent list. Missing/incompatible retained owners without
+terminal evidence stay unavailable with explicit recovery; identity-free legacy
+conversations restore as stopped/resumable views, not failed connections. Restoration never opens their JSONL for writing or starts
 a fresh Pi. Saved automatic
 follow-ups and uncertain submissions become suspended recovery, never armed work.
 
@@ -171,8 +262,8 @@ Detailed invariants and focused tests belong in [DRAFTS.md](DRAFTS.md).
 
 Deck owns layout and this local desktop state, not process lifetime. It restores
 surviving roots/workers by identity; a missing native shell/panel stays a stopped
-placeholder and does not replay its command. Its explicit Resume and confirmed
-Stop actions remain distinct from hide, disconnect and Emacs restart.
+placeholder and does not replay its command. Explicit Resume and unconfirmed
+Close remain distinct from layout hiding and Emacs restart.
 
 ## Managed storage boundary
 
@@ -207,7 +298,13 @@ Emacs-compatible recipe policy. See README.org for the exact public call.
 ## Isolated verification
 
 The deterministic `test/pilish-runtime-test.el` uses private fake Unix peers,
-validates hello/identity/readiness and refuses prelive input. Shared/drafts/queue/
+validates hello/identity/readiness and refuses prelive input.
+`test/pilish-runtime-task-test.el` adds read-only CLI boundaries for captured
+namespaces, missing/failed/wrong/unsafe task evidence, timeout/late completion,
+reconnection without repeated cancellation, definitive-rejection retry versus uncertain
+delivery, pending-Close input gates, unsent FIFO recovery, notification failures
+and public read-only reconciliation after disconnected natural completion.
+Shared/drafts/queue/
 menu/storage suites cover authoritative snapshots and recoverable input. Use
 fresh locked Lisp sources and freshly provisioned essential grammars, not home
 packages or a merely plausible old cache stamp. The Makefile exposes focused
@@ -226,6 +323,10 @@ an explicit setup action, not reference startup or clean-install evidence.
 | `PHIMACS_PI_EXECUTABLE` | Absolute exact candidate release Pi executable |
 | `PHIMACS_PIMUX_EXECUTABLE` | Absolute compiled candidate pimux executable |
 | `PHIMACS_FAUX_EXTENSION` | Absolute audited `pimux/test/fixture.ts` fixture from the selected source input |
+| `PHIMACS_TASK_STATUS_EXECUTABLE` | Absolute compiled release task-status CLI (required for managed-worker cases) |
+| `PHIMACS_ORCHESTRATION_ROOT` | Absolute candidate source root with compiled orchestration/pimux and lifecycle fixtures (managed-worker cases) |
+| `PHIMACS_NATIVE_EMACS_ENDPOINT` | Private socket under the synthetic root, only for the live-companion case |
+| `PILISH_NATIVE_SELECTOR` | `^pilish-runtime-native-test-emacs-companion-` for the live-companion runner |
 | `PILISH_TEST_ASSETS` | Fresh provisioned `emacs` directory with `provision.json` and locked Lisp sources |
 | `PILISH_TEST_GRAMMARS` | Fresh essential grammar directory |
 
@@ -261,7 +362,7 @@ owned by that test namespace, including a committed runtime whose UI failed befo
 its ready callback. Do not signal foreign PIDs or treat missing acknowledgement as
 proof of exit. Retain uncertain test-operation evidence for inspection.
 
-The candidate's five real Pi/faux tests passed: creation from Pilish and an
+The candidate's real Pi/faux tests cover creation from Pilish and an
 independent creator, equal contextual direct-socket attachment, zero-client
 survival, reconnect/desktop restore to the same actual Pi, another frontend's
 moved-session adoption/quarantine and acknowledged explicit stop. The public
@@ -270,7 +371,30 @@ startup and submits once there. The migrated identity-free view additionally
 resumes its exact persisted history without submitting a draft or any prompt. An injected renderer failure during a real
 snapshot/live sequence retains identity and recoverable input, refuses prompts,
 and recovers only through explicit reconnect without replay. The independent
-synthetic peer captures the snapshot's exact `inputContext` before its one action. Deck's three native tests plus
+synthetic peer captures the snapshot's exact `inputContext` before its one action.
+The five `pilish-runtime-native-test-managed-` cases use the real compiled
+`runEphemeralWorker`, detached faux Pi and worker-frame cancellation. The
+`test/support/managed-parent.mjs` fixture pauses native host cleanup after actual
+worker death/ended lease while name/task cleanup remains pending. Close stays
+unsettled until cleanup/name release and final publication; failed final cleanup
+retains recovery, and a missing initial binding sends no cancellation. Adversarial
+wrong final binding and an injected waiter timeout both retain recovery until real
+late completion without recalling their settled callbacks. Compile
+orchestration first with its owning `scripts/compile.mjs`. Run these cases and the
+seven remaining native cases separately with bounded native-lane timeouts.
+`pilish-runtime-native-test-emacs-companion-direct-close-awaits-task-publication`
+additionally uses the actual Emacs host companion and `emacsclient` against a
+private test-owned live editor endpoint, without an orchestration Stop waiter.
+It requires `PHIMACS_NATIVE_EMACS_ENDPOINT` and a disposable editor/frame: the
+headless batch invocation above does not provide that endpoint. With the same
+candidate load paths and asset initialization, omit `--batch`, set the two
+companion environment variables above, and load
+`test/support/emacs-companion-tests.el` instead of calling the batch ERT runner.
+That helper runs the selector and exits its own editor. For headless PGTK, launch
+it under a dedicated `xvfb-run -a env GDK_BACKEND=x11 emacs -Q ...`, never an existing
+display or user daemon. Keep task-owned views alive through host cleanup and retire
+only after final publication.
+Deck's three native tests plus
 its disposable-daemon TTY smoke passed desktop restore, stopped-view recovery,
 no shell replay and frontend restart/ordinary-exit survival with unchanged mux/Pi
 identity. These are candidate-native results, **not** packed clean-install,

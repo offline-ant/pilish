@@ -75,6 +75,19 @@ recovery rather than overwriting any draft. Per-mux notice watermarks survive
 local desktop serialization, so a replay after explicit recovery does not offer
 the same text again. Truncated notices are explicitly labelled incomplete.
 
+## Close suspends local input
+
+Close immediately gates normal prompts, steering and automatic follow-up draining,
+including the public submission API. Draft text and materialized images remain
+editable recovery. Unsubmitted local follow-ups move to explicit reuse-only
+quarantine before notifications; notification failure cannot leave them armed.
+An already-submitted FIFO owner keeps its acknowledgement callback and is not
+copied into unsent recovery. Accepted Pi-owned work is not inferred or replayed.
+Only the freshly admitted, context-bound worker cancellation crosses this input
+gate. Ambiguous cancellation keeps input suspended through waiter timeout and
+reconnect; definitive rejection permits an explicit new attempt. Task evidence
+and cancellation admission belong to [RUNTIME.md](RUNTIME.md#worker-task-completion).
+
 ## Destructive shared queue removal
 
 Pi's `clear_queue` removes the entire runtime queue, including other frontends'
