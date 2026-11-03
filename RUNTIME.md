@@ -290,7 +290,7 @@ and validates both generated libraries with **ABI 15** in a fresh subprocess at
 the requested absolute paths. It neither borrows home/system grammars nor installs
 optional languages. Its report includes API/Emacs version, exact destination,
 source URLs/revisions/subdirectories, library SHA-256 values and ABI. Retain the
-corresponding source/licenses and report with release evidence. Normal startup
+corresponding source/licenses and provisioning report with the reusable assets. Normal startup
 does not call the installer. The interactive unshared installer keeps its older
 Emacs-compatible recipe policy. See README.org for the exact public call.
 
@@ -321,10 +321,10 @@ an explicit setup action, not reference startup or clean-install evidence.
 |---|---|
 | `PHIMACS_NATIVE_PILISH` | `1` to opt in |
 | `PHIMACS_TEST_ROOT` | A private marked synthetic root created by pimux's `createClaimTestEnvironment()` |
-| `PHIMACS_PI_EXECUTABLE` | Absolute exact candidate release Pi executable |
+| `PHIMACS_PI_EXECUTABLE` | Absolute selected physical Pi executable |
 | `PHIMACS_PIMUX_EXECUTABLE` | Absolute compiled candidate pimux executable |
 | `PHIMACS_FAUX_EXTENSION` | Absolute audited `pimux/test/fixture.ts` fixture from the selected source input |
-| `PHIMACS_TASK_STATUS_EXECUTABLE` | Absolute compiled release task-status CLI (required for managed-worker cases) |
+| `PHIMACS_TASK_STATUS_EXECUTABLE` | Absolute compiled task-status CLI from the selected graph (required for managed-worker cases) |
 | `PHIMACS_ORCHESTRATION_ROOT` | Absolute candidate source root with compiled orchestration/pimux and lifecycle fixtures (managed-worker cases) |
 | `PHIMACS_NATIVE_EMACS_ENDPOINT` | Private socket under the synthetic root, only for the live-companion case |
 | `PILISH_NATIVE_SELECTOR` | `^pilish-runtime-native-test-emacs-companion-` for the live-companion runner |
