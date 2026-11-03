@@ -96,12 +96,13 @@ The setting becomes buffer-local in the session's chat buffer."
 
 (defun pilish--answer-start (marker)
   "Return the start of the first line of the final answer at MARKER, or nil.
-Nil when MARKER is nil or the final assistant message has no visible text."
+Nil when MARKER is nil or the final assistant message has no visible text
+before the end of the buffer or the run's return receipt."
   (when-let* ((start (and marker (marker-position marker))))
     (save-excursion
       (goto-char start)
       (skip-chars-forward " \t\n")
-      (unless (eobp)
+      (unless (or (eobp) (get-text-property (point) 'pilish-run-receipt))
         (line-beginning-position)))))
 
 (defun pilish--answer-visible-p (window start)
@@ -177,11 +178,12 @@ ARRIVAL means the reader came to them."
     (setq pilish--answer-target (copy-marker start)
           pilish--answer-settled nil)))
 
-(defun pilish--answer-turn-end ()
+(defun pilish--answer-turn-end (aborted)
   "Remember the final answer and land following windows when enabled.
-Do nothing when the turn was stopped or a queued follow-up starts the
-next turn at once."
-  (when (and (not pilish--aborted)
+Run when Pi returns control, after the return receipt, so the landing
+sees the run's last text.  Do nothing when the run was ABORTED or a
+queued follow-up starts the next run at once."
+  (when (and (not aborted)
              (not pilish--followup-queue))
     (when-let* ((start (pilish--answer-start pilish--message-start-marker)))
       (pilish--answer-arm start)
