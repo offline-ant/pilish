@@ -163,6 +163,44 @@ The replayed tool still gets Pi's recorded duration at completion."
         (should (pilish--recorded-tool-time-p timing))
         (should (= (pilish--recorded-tool-time-milliseconds timing) 125000))))))
 
+(defun pilish-shared-test--receipt-count (chat)
+  "Return the number of run-return receipts in CHAT."
+  (with-current-buffer chat
+    (let ((count 0) (pos (point-min)))
+      (while (setq pos (text-property-any pos (point-max) 'pilish-run-receipt t))
+        (setq count (1+ count)
+              pos (or (next-single-property-change pos 'pilish-run-receipt)
+                      (point-max))))
+      count)))
+
+(ert-deftest pilish-shared-test-replayed-run-start-paints-no-receipt ()
+  "A replayed run's settlement adds no receipt; a live run's does.
+The replayed start is not the run's start, so its duration is unknown."
+  (pilish-test-with-rpc-session (chat _input proc _commands)
+    (pilish-shared-test--hello proc)
+    (pilish-test--stdout
+     proc
+     (pilish-shared-test--snapshot 1 "resync" nil :active t :replay 1)
+     '(:type "agent_start")
+     '(:type "pimux_live" :generation 1)
+     '(:type "agent_settled"))
+    (with-current-buffer chat
+      (should (eq pilish--status 'idle))
+      (should-not pilish--run-started-at))
+    (should (= (pilish-shared-test--receipt-count chat) 0))
+    (pilish-test--stdout proc '(:type "agent_start") '(:type "agent_end" :messages [])
+                         '(:type "agent_settled"))
+    (should (= (pilish-shared-test--receipt-count chat) 1))))
+
+(ert-deftest pilish-shared-test-gap-forgets-run-start ()
+  "A gap may hide the run's settlement, so it forgets the run's start."
+  (pilish-test-with-rpc-session (chat _input proc _commands)
+    (pilish-shared-test--hello proc)
+    (pilish-test--stdout proc '(:type "agent_start"))
+    (with-current-buffer chat (should pilish--run-started-at))
+    (pilish-test--stdout proc '(:type "pimux_gap" :generation 5 :dropped 12))
+    (with-current-buffer chat (should-not pilish--run-started-at))))
+
 (ert-deftest pilish-shared-test-gap-rebuilds-and-replays-run-in-flight ()
   "After a gap the transcript is rebuilt and the run in flight continues."
   (pilish-test-with-rpc-session (chat _input proc _commands)
