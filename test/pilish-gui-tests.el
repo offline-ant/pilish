@@ -1214,6 +1214,59 @@ next to that line used to stop `line-move' and scrolling at every block."
               (should (<= (window-start) top)))))
       (kill-buffer buf))))
 
+(ert-deftest pilish-gui-test-pi-style-motion-crosses-output-footers ()
+  "Line motion and scrolling move up past `pi' style output footers.
+The footers of collapsed and timed output end a block on visible text."
+  (let* ((buf (get-buffer-create "*pi-gui-style-footers*"))
+         (pilish-chat-style 'pi)
+         (output (mapconcat #'number-to-string (number-sequence 1 40) "\n"))
+         (messages (list '(:role "user" :content "First question"
+                           :timestamp 1784817120000))))
+    (dotimes (i 4)
+      (let ((id (format "call-%d" i)))
+        (setq messages
+              (append messages
+                      (list `(:role "assistant" :timestamp 1784817121000
+                              :content [(:type "thinking" :thinking "First\n\nSecond")
+                                        (:type "text" :text ,(format "Step %d." i))
+                                        (:type "toolCall" :id ,id :name "bash"
+                                         :arguments (:command "seq 40"))])
+                            `(:role "toolResult" :toolCallId ,id :toolName "bash"
+                              :isError :false :timestamp 1784817122000
+                              :durationMs 125000
+                              :content [(:type "text" :text ,output)]))))))
+    (unwind-protect
+        (progn
+          (switch-to-buffer buf)
+          (delete-other-windows)
+          (pilish-chat-mode)
+          (pilish--display-history-messages (vconcat messages))
+          (jit-lock-fontify-now)
+          (should (save-excursion (goto-char (point-min))
+                                  (search-forward "Took 2m 5s" nil t)))
+          (let ((top (save-excursion
+                       (goto-char (point-min))
+                       (search-forward "First question")
+                       (line-beginning-position))))
+            (goto-char (point-max))
+            (redisplay)
+            (let ((last (point)))
+              (while (condition-case nil
+                         (progn (line-move -1) t)
+                       (beginning-of-buffer nil))
+                (should (< (point) last))
+                (setq last (point))
+                (redisplay))
+              (should (<= (point) top)))
+            (goto-char (point-max))
+            (recenter -1)
+            (redisplay)
+            (while (condition-case nil
+                       (progn (scroll-down 1) (redisplay) t)
+                     (beginning-of-buffer nil)))
+            (should (<= (window-start) top))))
+      (kill-buffer buf))))
+
 (ert-deftest pilish-gui-test-pi-style-motion-crosses-blocks-before-hidden-markup ()
   "Line motion and scrolling cross blocks followed by hidden markup.
 A codemode block ends in a visible line, and each kind of following text
