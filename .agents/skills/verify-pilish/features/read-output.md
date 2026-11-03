@@ -1,11 +1,12 @@
 # Read streamed output
 
-The chat renders streamed Markdown and changes thinking display without losing the reader's place. It preserves reading positions, follows the tail on request, can show a finished turn's final answer from its start, and rewraps hot tables after a resize. Completed thinking uses a margin caret and TAB. Long tool output uses bottom continuation controls. Bash and subagent footers, including resumed subagent calls, show live elapsed time, then Pi's recorded duration when available. A settled run adds a transient right-aligned return timestamp and whole-run duration. Completed replies, thinking, and tools expose literal details through explicit Help and echo-area commands. This metadata does not appear on automatic hover; other hover behavior is unchanged.
+The chat renders streamed Markdown and changes thinking display without losing the reader's place. It preserves reading positions, follows the tail on request, can show a finished turn's final answer from its start, and rewraps hot tables after a resize. Completed thinking uses a margin caret and TAB; thinking shorter than `pilish-thinking-fold-min-lines` non-blank lines stays expanded without a caret. Long tool output uses bottom continuation controls. Bash and subagent footers, including resumed subagent calls, show live elapsed time, then Pi's recorded duration when available. A settled run adds a transient right-aligned return timestamp and whole-run duration. Completed replies, thinking, and tools expose literal details through explicit Help and echo-area commands. This metadata does not appear on automatic hover; other hover behavior is unchanged.
 
 ## Sub-features
 
 - `output-stream` renders streamed write-tool content without exposing fence markers.
 - `output-thinking` changes completed thinking display in two windows and toggles one block with its caret or TAB.
+- `output-short-thinking` keeps a short thinking summary expanded and caretless in hidden display, while longer thinking collapses.
 - `output-duration` advances live bash and subagent timing, including resumed calls, then restores the same recorded duration after reload or resume.
 - `output-return-receipt` records when the current run returned control and its total observed duration, aligns the receipt in unequal windows, retains earlier receipts, and omits them after reload or resume.
 - `output-scroll` preserves a scrolled-back view while output arrives and keeps tail-following windows at the end.
@@ -42,6 +43,7 @@ Preconditions:
 
 - **Stream Markdown.** Run `./test/run-gui-tests.sh --headless pilish-gui-test-streaming-no-fences 2>&1 | tee "$RUN_DIR/stream.log"`. Record `stream.exit`. The rendered write-tool content contains no Markdown fence markers.
 - **Toggle thinking.** Run `./test/run-gui-tests.sh --headless pilish-gui-test-thinking-display-toggle-restores-each-visible-window 2>&1 | tee "$RUN_DIR/thinking.log"`. Record `thinking.exit`. The tail keeps following output while the scrolled-back window preserves its context.
+- **Keep short thinking expanded.** Run `G1_CAPTURE="$RUN_DIR/short-thinking" ./test/run-gui-tests.sh --headless pilish-gui-test-short-thinking-stays-visible-without-caret 2>&1 | tee "$RUN_DIR/short-thinking.log"`. Record `short-thinking.exit`. In hidden display a one-line summary stays readable with no margin caret, and `TAB` on it reaches the turn outline without changing the buffer, while three-line thinking collapses to a stub with a caret. Check `test -s "$RUN_DIR/short-thinking/short-thinking-hidden.png"`.
 - **Start thinking with whitespace.** Run `./test/run-gui-tests.sh --headless pilish-gui-test-thinking-initial-whitespace-keeps-point 2>&1 | tee "$RUN_DIR/thinking-initial.log"`. Record `thinking-initial.exit`. Initial whitespace and the first visible text leave point at its original position.
 - **Scroll back.** Run `./test/run-gui-tests.sh --headless pilish-gui-test-scroll-preserved-streaming 2>&1 | tee "$RUN_DIR/scroll.log"`. Record `scroll.exit`. Streaming does not pull the scrolled-back window to the tail.
 - **Follow the tail.** Run `./test/run-gui-tests.sh --headless pilish-gui-test-scroll-auto-when-at-end 2>&1 | tee "$RUN_DIR/tail.log"`. Record `tail.exit`. Consecutive turns leave window point and the viewport at the end.
