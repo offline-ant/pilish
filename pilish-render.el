@@ -1053,6 +1053,7 @@ the unpainted batch."
 (defun pilish--ready-to-drain-followups-p ()
   "Return non-nil when a queued follow-up may become the next prompt."
   (and pilish--followup-queue
+       (not (pilish--close-pending-p (current-buffer)))
        (eq pilish--status 'idle)
        (not pilish--aborted)
        (not (pilish--session-busy-p))
@@ -10824,7 +10825,7 @@ when possible."
   "Set completed-thinking display MODE for the current chat buffer.
 Completed thinking already shown in the buffer is rewritten in place so the
 whole-buffer toggle applies one mode to every finished thinking block without
-rebuilding unrelated chat content. Live thinking stays visible while the
+rebuilding unrelated chat content.  Live thinking stays visible while the
 assistant is still working, and MODE is used when that block completes."
   (let ((chat-buf (pilish--get-chat-buffer)))
     (unless chat-buf

@@ -429,15 +429,18 @@ changes in flight and queued prompts; not dialogs awaiting the user (see
                      '(nil "idle")))
         (pilish-session-queued-prompts chat-buffer))))
 
-(defun pilish-close-session (chat-buffer)
-  "Close CHAT-BUFFER and its input without confirmation.
-A shared view only disconnects; its detached agent keeps running.  Explicit
-unshared Pi retains its native process lifetime.  Use `pilish-stop-runtime'
-for a separately confirmed everywhere-stop operation."
-  (when (buffer-live-p chat-buffer)
-    (with-current-buffer chat-buffer
-      (let ((pilish-quit-without-confirmation t))
-        (pilish-quit)))))
+(defun pilish-close-session (chat-buffer &optional callback)
+  "Close CHAT-BUFFER's agent everywhere without confirmation.
+CALLBACK receives nil after authoritative termination and view removal, or
+an error string on failure/uncertainty.  Failed closes retain local input.
+Workers use their owning task's cancellation, never root-stop fallback."
+  (pilish--runtime-close-session chat-buffer callback))
+
+(defun pilish-disconnect-session (chat-buffer)
+  "Dispose CHAT-BUFFER's local view without stopping a detached agent.
+For frontend/orchestration teardown only; normal user Close stops the agent.
+Unshared Pi retains its native buffer/process lifetime."
+  (pilish--dispose-session-view chat-buffer))
 
 (defun pilish--show-session-buffers (chat-buf input-buf)
   "Show CHAT-BUF and INPUT-BUF, focusing input when both are visible.

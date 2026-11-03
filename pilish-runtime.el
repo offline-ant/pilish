@@ -10,7 +10,7 @@
 
 ;;; Code:
 
-(require 'pilish-runtime-process)
+(require 'pilish-runtime-task)
 (require 'pilish-grammars)
 
 (declare-function pilish--session-environment "pilish" (chat-buf dir))
@@ -19,19 +19,24 @@
 (declare-function pilish-session-directory "pilish" (chat-buffer))
 (declare-function pilish-session-process "pilish" (chat-buffer))
 (declare-function pilish-session-input-buffer "pilish" (chat-buffer))
+(declare-function pilish-submit-prompt "pilish-ui" (chat-buffer text callback &optional behavior input-context))
+
 
 (defun pilish-integration-capabilities ()
   "Return this fork's versioned, implemented integration capabilities."
   '(:api-version 1 :pimux-protocol 2 :symmetric-socket-client t
     :runtime-identity t :desktop-state t :stopped-view t
-    :context-bound-input t :essential-grammar-installer 1 :managed-storage t))
+    :context-bound-input t :essential-grammar-installer 1 :managed-storage t
+    :authoritative-close t))
 
 (cl-defun pilish-configure-runtime
-    (&key pi-executable pimux-executable (protocol 2) (mode 'detached)
+    (&key pi-executable pimux-executable task-status-executable (protocol 2) (mode 'detached)
           (pi-version "1.4.0") pi-sha256)
   "Configure immutable PI-EXECUTABLE and PIMUX-EXECUTABLE without starting Pi.
 PROTOCOL must be 2.  MODE is `detached' or explicit `unshared'.  PI-VERSION
-and optional PI-SHA256 are validated by the owning compiled launcher."
+and optional PI-SHA256 are validated by the owning compiled launcher.
+TASK-STATUS-EXECUTABLE names the release's read-only worker task evidence CLI;
+without it worker Close fails explicitly, without sending any input."
   (unless (memq mode '(detached unshared)) (error "Unsupported Pilish runtime mode"))
   (unless (equal protocol 2) (error "Pilish requires pimux protocol 2; no lifetime shim is supported"))
   (when (eq mode 'detached)
@@ -41,6 +46,10 @@ and optional PI-SHA256 are validated by the owning compiled launcher."
       (unless (and (stringp file) (file-name-absolute-p file)
                    (not (file-remote-p file)) (file-executable-p file))
         (error "Configure absolute executable paths from one complete release: %S" file)))
+    (when task-status-executable
+      (unless (and (stringp task-status-executable) (file-name-absolute-p task-status-executable)
+                   (not (file-remote-p task-status-executable)) (file-executable-p task-status-executable))
+        (error "Configure an absolute release task-status executable: %S" task-status-executable)))
     (unless (and (stringp pi-version) (not (string-empty-p pi-version)))
       (error "An exact release Pi version is required"))
     (when (and pi-sha256 (not (string-match-p "\\`[a-f0-9]\\{64\\}\\'" pi-sha256)))
@@ -48,6 +57,7 @@ and optional PI-SHA256 are validated by the owning compiled launcher."
   (setq pilish-runtime-mode mode
         pilish-runtime-pi-executable pi-executable
         pilish-runtime-pimux-executable pimux-executable
+        pilish-runtime-task-status-executable task-status-executable
         pilish-runtime-pi-version pi-version
         pilish-runtime-pi-sha256 pi-sha256)
   (pilish-integration-capabilities))
@@ -173,17 +183,41 @@ An existing view is reused.  No command starts Pi or submits a prompt."
   "Reconnect BUFFER to its retained runtime only, then call CALLBACK.
 CALLBACK receives nil after live, or an error string exactly once.  A missing
 or unsupported runtime stays unavailable and is never started implicitly."
-  (let ((callback (pilish--runtime-once callback)))
+  (let ((callback (pilish--runtime-once callback))
+        (runtime (pilish-session-runtime buffer)))
     (condition-case err
-        (let ((runtime (pilish-session-runtime buffer)))
+        (progn
           (unless runtime (error "This is not a detached runtime view"))
           (unless (plist-get runtime :mux-id)
             (error "This saved view has no runtime to reconnect; use Resume stopped conversation"))
           (pilish--runtime-connect buffer (pilish--runtime-discovered runtime) callback))
       (error
-       (when (and (buffer-live-p buffer) (pilish-session-runtime buffer))
-         (pilish--runtime-stopped-view buffer (error-message-string err)))
-       (funcall callback (error-message-string err))))))
+       (if (equal (plist-get runtime :placement) "worker")
+           (if (not (pilish--runtime-task-same-view-p buffer runtime))
+               (funcall callback "Worker identity changed during reconnect; replacement view retained")
+             (pilish--runtime-worker-terminated buffer)
+             (if (buffer-live-p buffer)
+                 (let ((reason (or (plist-get (pilish-session-runtime buffer) :task-error)
+                                   "Worker task cleanup is pending; view retained")))
+                   (pilish--runtime-stopped-view buffer reason)
+                   (funcall callback reason))
+               (funcall callback "Worker task completed while disconnected; closed view removed")))
+         (let ((receipt (and runtime (pilish--runtime-terminal-receipt runtime))))
+           (if (and receipt (buffer-live-p buffer)
+                    (equal (plist-get runtime :mux-id)
+                           (plist-get (pilish-session-runtime buffer) :mux-id)))
+               (let (cleanup)
+                 (with-current-buffer buffer
+                   (setq pilish--runtime (plist-put pilish--runtime :state "stopped"))
+                   (setq pilish--runtime (plist-put pilish--runtime :terminal-receipt receipt))
+                   (setq cleanup (pilish--runtime-retire-view buffer)))
+                 (funcall callback (concat "Agent terminated while disconnected; closed view removed"
+                                           (when cleanup (concat "; " cleanup)))))
+             (when (and (buffer-live-p buffer) runtime
+                        (equal (plist-get runtime :mux-id)
+                               (plist-get (pilish-session-runtime buffer) :mux-id)))
+               (pilish--runtime-stopped-view buffer (error-message-string err)))
+             (funcall callback (error-message-string err)))))))))
 
 (defun pilish--runtime-stopped-view (buffer reason)
   "Render BUFFER as an unavailable/stopped conversation with REASON.
@@ -207,28 +241,68 @@ still acquires the saved file's managed claim before opening it."
        'pilish-error-notice)
       (pilish--note-desktop-state))))
 
+(defun pilish--runtime-terminal-receipt (runtime)
+  "Read RUNTIME's exact terminal receipt without sending runtime control.
+A missing, invalid or unreadable receipt is unknown, never stopped proof."
+  (when (and (plist-get runtime :mux-id) (pilish-runtime-configured-p))
+    (condition-case nil
+        (let ((default-directory temporary-file-directory)
+              (process-environment (pilish--runtime-environment nil)))
+          (with-temp-buffer
+            (when (eq 0 (process-file pilish-runtime-pimux-executable nil t nil
+                                      "receipt" "--json" "--id" (plist-get runtime :mux-id)))
+              (let ((receipt (json-parse-string (buffer-string) :object-type 'plist)))
+                (when (and (listp receipt)
+                           (equal (plist-get receipt :muxId) (plist-get runtime :mux-id))
+                           (equal (plist-get receipt :state) "stopped"))
+                  receipt)))))
+      (error nil))))
+
+(defun pilish-session-state-closed-p (state)
+  "Return non-nil only when desktop STATE has authoritative terminal evidence.
+An unavailable socket or absent discovery record is not terminal evidence.
+The read-only receipt query never stops a runtime or launches Pi."
+  (let* ((runtime (plist-get state :runtime))
+         (id (plist-get runtime :mux-id)))
+    (and id
+         (if (equal (plist-get runtime :placement) "worker")
+             (condition-case nil
+                 (equal (plist-get (pilish--runtime-task-read runtime) :state) "complete")
+               (error nil))
+           (or (and (equal (plist-get runtime :state) "stopped")
+                    (or (plist-get runtime :exit)
+                        (let ((receipt (plist-get runtime :terminal-receipt)))
+                          (and (equal (plist-get receipt :muxId) id)
+                               (equal (plist-get receipt :state) "stopped")))))
+               (pilish--runtime-terminal-receipt runtime))))))
+
 (defun pilish-restore-session-state (state)
   "Restore desktop STATE as an attach-only background view.
 Identity-free conversations are stopped/resumable; missing retained runtimes
 remain unavailable.  No saved shell, prompt,
-queue, worker or Pi process is restarted by desktop restoration."
-  (let* ((runtime (plist-get state :runtime))
-         (existing (and (plist-get runtime :mux-id)
-                        (pilish--runtime-find-view (plist-get runtime :mux-id))))
-         (chat (or existing
-                   (pilish--runtime-new-view (plist-get state :directory) (plist-get state :name)))))
-    (unless existing
-      (with-current-buffer chat
-        (setq pilish--runtime (copy-tree runtime)
-              pilish--state (list :session-file (plist-get state :session-file)
-                                  :leaf-id (plist-get state :leaf-id)))
-        (pilish--restore-local-desktop-state state)))
-    (if (and runtime (plist-get runtime :mux-id))
-        (pilish-reconnect-runtime
-         chat (lambda (error)
-                (when error (pilish--runtime-stopped-view chat error))))
-      (pilish--runtime-stopped-view chat "Saved conversation has no live runtime identity"))
-    chat))
+queue, worker or Pi process is restarted by desktop restoration.
+Return nil instead of resurrecting a view with authoritative terminal evidence."
+  (if (pilish-session-state-closed-p state)
+      (progn (pilish--runtime-retain-closed-state state) nil)
+    (let* ((runtime (plist-get state :runtime))
+           (existing (and (plist-get runtime :mux-id)
+                          (pilish--runtime-find-view (plist-get runtime :mux-id))))
+           (chat (or existing
+                     (pilish--runtime-new-view (plist-get state :directory)
+                                               (plist-get state :name)))))
+      (unless existing
+        (with-current-buffer chat
+          (setq pilish--runtime (copy-tree runtime)
+                pilish--state (list :session-file (plist-get state :session-file)
+                                    :leaf-id (plist-get state :leaf-id)))
+          (pilish--restore-local-desktop-state state)))
+      (if (and runtime (plist-get runtime :mux-id))
+          (pilish-reconnect-runtime
+           chat (lambda (error)
+                  (when (and error (buffer-live-p chat))
+                    (pilish--runtime-stopped-view chat error))))
+        (pilish--runtime-stopped-view chat "Saved conversation has no live runtime identity"))
+      (and (buffer-live-p chat) chat))))
 
 (defun pilish-resume-stopped-session (buffer &optional callback)
   "Explicitly start BUFFER's saved conversation without replaying input.
@@ -258,13 +332,18 @@ Claims enforce live/uncertain-owner refusal before Pi opens a saved file."
                                         pilish--launch-environment callback)))
       (error (funcall callback (error-message-string err))))))
 
-(defun pilish-stop-runtime (buffer &optional callback)
+(cl-defun pilish-stop-runtime (buffer &optional callback)
   "Explicitly stop BUFFER's agent everywhere using acknowledged identity control.
 CALLBACK receives nil or an error string exactly once.  No raw PID is signalled.
-Callers own the every-frontend confirmation, including idle agents."
+No confirmation is required.  Authoritative success retires the active view."
   (let ((callback (pilish--runtime-once callback)))
+    (when (and (buffer-live-p buffer)
+               (buffer-local-value 'pilish--runtime-retiring buffer))
+      (with-current-buffer buffer (push callback pilish--runtime-close-callbacks))
+      (cl-return-from pilish-stop-runtime nil))
     (condition-case err
         (let* ((runtime (pilish-session-runtime buffer))
+               (transport (pilish-session-process buffer))
                (id (plist-get runtime :mux-id)))
           (unless (and id (equal (plist-get runtime :protocol) 2))
             (error "View has no identity-bound stoppable runtime"))
@@ -277,14 +356,182 @@ Callers own the every-frontend confirmation, including idle agents."
              (if (or error (not (and (equal (plist-get receipt :muxId) id)
                                      (equal (plist-get receipt :state) "stopped"))))
                  (funcall callback (or error "Stop outcome uncertain; retain view and reconcile receipt"))
-               (when (buffer-live-p buffer)
-                 (with-current-buffer buffer
-                   (setq pilish--runtime (plist-put pilish--runtime :state "stopped"))
-                   (setq pilish--runtime (plist-put pilish--runtime :terminal-receipt receipt))
-                   (when (process-live-p pilish--process) (delete-process pilish--process))
-                   (pilish--note-desktop-state)))
-               (funcall callback nil)))))
+               (if (and (buffer-live-p buffer)
+                        (not (equal id (plist-get (pilish-session-runtime buffer) :mux-id))))
+                   (funcall callback "Original agent stopped; view now refers to another runtime")
+                 (let ((failure
+                        (if (buffer-live-p buffer)
+                            (with-current-buffer buffer
+                              (setq pilish--runtime (plist-put pilish--runtime :state "stopped"))
+                              (setq pilish--runtime (plist-put pilish--runtime :terminal-receipt receipt))
+                              (pilish--runtime-retire-view buffer))
+                          (and (processp transport)
+                               (process-get transport 'pilish-retirement-error)))))
+                   (funcall callback failure)))))))
       (error (funcall callback (error-message-string err))))))
+
+(defun pilish--runtime-finish-close (chat error)
+  "Settle CHAT's pending Close callbacks once with ERROR or nil."
+  (when (buffer-live-p chat)
+    (with-current-buffer chat
+      (when pilish--runtime-close-timer
+        (cancel-timer pilish--runtime-close-timer)
+        (setq pilish--runtime-close-timer nil))
+      (let ((callbacks pilish--runtime-close-callbacks)
+            (state (list :runtime (copy-tree pilish--runtime))) failures)
+        (setq pilish--runtime-close-callbacks nil)
+        (dolist (callback callbacks)
+          (condition-case failure
+              (funcall callback error)
+            ((error quit) (push (error-message-string failure) failures))))
+        (when failures
+          (setq failures (append (when error (list error)) (nreverse failures)))
+          (condition-case failure
+              (pilish--runtime-retain-closed-state (plist-put state :close-errors failures))
+            ((error quit)
+             (setq failures
+                   (append failures (list (format "Diagnostic retention: %s"
+                                                   (error-message-string failure)))))))
+          (display-warning 'pilish (string-join failures "; ") :error))))))
+
+(defun pilish--dispose-session-view (chat)
+  "Dispose CHAT and its input without runtime control or confirmation.
+Run every buffer cleanup hook once even when another fails, and report all
+failures after both buffers are removed.  Frontend teardown uses this too."
+  (when (buffer-live-p chat)
+    (let* ((input (pilish-session-input-buffer chat))
+           (transport (pilish-session-process chat))
+           (windows (and (buffer-live-p input) (get-buffer-window-list input nil t)))
+           (pilish-quit-without-confirmation t)
+           failures)
+      (cl-labels ((attempt (function)
+                    (condition-case failure (funcall function)
+                      ((error quit) (push (error-message-string failure) failures)))))
+        ;; Prevent recursive pair killing: each buffer's hooks run exactly once.
+        (with-current-buffer chat (pilish--set-input-buffer nil))
+        (when (buffer-live-p input)
+          (with-current-buffer input (pilish--set-chat-buffer nil)))
+        (when (processp transport)
+          (pilish--skip-process-kill-confirmation transport)
+          (set-process-query-on-exit-flag transport nil))
+        (dolist (buffer (list chat input))
+          (when (buffer-live-p buffer)
+            (with-current-buffer buffer
+              (let* ((hooks kill-buffer-hook)
+                     (kill-buffer-query-functions nil)
+                     (kill-buffer-hook
+                      (list (lambda ()
+                              (let ((kill-buffer-hook hooks))
+                                (run-hook-wrapped
+                                 'kill-buffer-hook
+                                 (lambda (function)
+                                   (attempt function)
+                                   nil)))))))
+                (attempt (lambda () (kill-buffer buffer)))))))
+        (dolist (window windows)
+          (when (and (window-live-p window) (window-deletable-p window))
+            (attempt (lambda () (delete-window window))))))
+      (when failures (error "%s" (string-join (nreverse failures) "; "))))))
+
+(defun pilish--runtime-retain-closed-state (state)
+  "Retain STATE's unsent work and abnormal exit outside the active-agent list."
+  (let* ((runtime (plist-get state :runtime))
+         (exit (plist-get runtime :exit)))
+    (when (or (plist-get state :close-errors)
+              (cl-some (lambda (key) (plist-get state key))
+                      '(:images :followups :quarantine :submitted :editor-notices))
+              (not (string-empty-p (or (plist-get state :draft) "")))
+              (stringp (plist-get exit :signal))
+              (let ((code (plist-get exit :code)))
+                (and (numberp code) (not (zerop code))))
+              (not (string-empty-p (or (plist-get exit :stderrTail) ""))))
+      (with-current-buffer (get-buffer-create "*Pilish closed agents*")
+        (let ((inhibit-read-only t))
+          (goto-char (point-max))
+          (insert (format "Closed agent %s\n%s\n\n"
+                          (plist-get runtime :mux-id) (pp-to-string state)))
+          (special-mode))))))
+
+(defun pilish--runtime-retire-view (chat)
+  "Retire CHAT after authoritative termination, returning any cleanup error.
+Observer failure cannot prevent remaining observers, disposal or callbacks.
+Preserve original and cleanup errors with unsent work outside active views."
+  (when (and (buffer-live-p chat)
+             (not (buffer-local-value 'pilish--runtime-retiring chat)))
+    (with-current-buffer chat
+      (let ((transport pilish--process)
+            (callbacks pilish--runtime-close-callbacks)
+            (ready pilish--runtime-ready-callback)
+            (timer pilish--runtime-close-timer)
+            (state (list :runtime (copy-tree pilish--runtime))) failures result)
+        (setq pilish--runtime-retiring t
+              pilish--runtime-close-callbacks nil
+              pilish--runtime-ready-callback nil
+              pilish--runtime-close-timer nil)
+        (cl-labels ((attempt (label function)
+                      (condition-case failure (funcall function)
+                        ((error quit)
+                         (push (format "%s: %s" label (error-message-string failure)) failures)))))
+          (attempt "Desktop recovery" (lambda () (setq state (pilish-session-desktop-state chat))))
+          (attempt "Task polling cleanup" #'pilish--runtime-task-cancel-poll)
+          (when timer (attempt "Close timer cleanup" (lambda () (cancel-timer timer))))
+          (when ready
+            (attempt "Readiness callback"
+                     (lambda () (funcall ready "Agent terminated before readiness"))))
+          (run-hook-wrapped
+           'pilish-session-closed-functions
+           (lambda (function &rest args)
+             (attempt "Close observer" (lambda () (apply function args)))
+             nil)
+           chat)
+          ;; An observer may request Close reentrantly, but cannot send another
+          ;; control or strand its callback during the already-authoritative exit.
+          (setq callbacks (append callbacks pilish--runtime-close-callbacks)
+                pilish--runtime-close-callbacks nil)
+          (attempt "View disposal" (lambda () (pilish--dispose-session-view chat)))
+          (setq result (when failures (string-join (reverse failures) "; ")))
+          (dolist (callback callbacks)
+            (attempt "Close callback" (lambda () (funcall callback result))))
+          (when failures (setq state (plist-put state :close-errors (reverse failures))))
+          (attempt "Diagnostic retention" (lambda () (pilish--runtime-retain-closed-state state)))
+          (setq result (when failures (string-join (reverse failures) "; ")))
+          (when (processp transport)
+            (process-put transport 'pilish-retirement-error result))
+          (when result (display-warning 'pilish result :error))
+          result)))))
+
+(defun pilish--runtime-close-session (chat &optional callback)
+  "Close CHAT without confirmation; CALLBACK settles after actual termination."
+  (setq callback (pilish--runtime-once
+                  (or callback (lambda (error) (when error (message "Pi: %s" error))))))
+  (if (not (buffer-live-p chat))
+      (funcall callback nil)
+    (with-current-buffer chat
+      (cond
+       (pilish--runtime-retiring
+        (push callback pilish--runtime-close-callbacks))
+       ((or (null pilish--runtime)
+            (and (equal (plist-get pilish--runtime :state) "stopped")
+                 (not (plist-get pilish--runtime :mux-id))))
+        (pilish--dispose-session-view chat)
+        (funcall callback nil))
+       (pilish--runtime-close-callbacks
+        (push callback pilish--runtime-close-callbacks))
+       (t
+        (setq pilish--runtime-close-callbacks (list callback))
+        (condition-case err
+            (progn
+              ;; Preserve unsent successors as explicit recovery before any
+              ;; event can settle the run or release an automatic follow-up.
+              ;; An already-submitted FIFO owner remains with its RPC callback.
+              (pilish--suspend-close-followups)
+              (if (equal (plist-get pilish--runtime :placement) "worker")
+                  (pilish--runtime-close-worker chat callback)
+                (pilish-stop-runtime
+                 chat (lambda (error)
+                        (if error (pilish--runtime-finish-close chat error)
+                          (pilish--runtime-retire-view chat))))))
+          (error (pilish--runtime-finish-close chat (error-message-string err)))))))))
 
 (provide 'pilish-runtime)
 ;;; pilish-runtime.el ends here
