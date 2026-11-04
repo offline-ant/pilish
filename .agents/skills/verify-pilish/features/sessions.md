@@ -7,11 +7,13 @@ The session and tree browsers support native folding, searching, copying, and sc
 - `session-browser` folds, searches, copies, and scrolls saved-session rows. Opening gathers metadata only. The first valid nonblank search gathers full text asynchronously; later queries reuse it, and refreshes and scope changes keep collecting it until buffer death or mode reset.
 - `tree-browser` applies the same native actions to projected conversation nodes.
 - `session-resume` selects a saved session in the real browser, invokes its switch command, and rebuilds the chat history.
+- `desktop-reboot` reopens verified prior-boot roots idle, retaining local work without replay and respecting an existing writer.
 
 ## How to get to it (user POV)
 
 - Use the margin, `TAB`, `S-TAB`, `/`, `M-w`, and ordinary scrolling in an open session or tree browser.
 - Select a saved session and run `M-x pilish-session-browser-switch` to resume it.
+- Return to a saved detached desktop after a machine reboot; see [the restoration policy](../../../../RUNTIME.md#desktop-state-and-input-recovery).
 
 ## Driving it with Pilish harnesses
 
@@ -22,10 +24,12 @@ Preconditions:
 - **Drive both browsers.** Run `G1_CAPTURE="$RUN_DIR/browser-capture" ./test/run-gui-tests.sh --headless pilish-gui-test-large-browser-fold-and-copy 2>&1 | tee "$RUN_DIR/browsers.log"`. Record `browsers.exit`. Both browser modes preserve canonical folds, copied text, search state, and viewport behavior.
 - **Search saved text for the first time.** Run `./test/run-gui-tests.sh --headless pilish-gui-test-session-browser-first-search-from-disk 2>&1 | tee "$RUN_DIR/first-search.log"`. Record `first-search.exit`. Opening has no search corpus; `/` finds late saved text, a later missing query shows no matches, and clearing then refreshing retains full text.
 - **Resume through the browser.** Run `./bench/run-reload-resume-bench.sh --scenario smoke -c 1 --out-dir "$RUN_DIR/reload-resume" 2>&1 | tee "$RUN_DIR/resume.log"`. Record `resume.exit`. The resume lane selects the target section, calls `pilish-session-browser-switch`, and checks rebuilt history.
+- **Restore after reboot.** Run `make test-runtime` with isolated locked Lisp/grammar inputs. Require the five `pilish-runtime-test-previous-boot-` cases to pass: roots reopen idle, incomplete/unknown evidence cannot launch, workers stay parent-owned, uncertain starts do not retry, and closed identities stay closed. In the isolated real-Pi/faux invocation in [RUNTIME.md](../../../../RUNTIME.md#real-pi-faux-providers-only), select `pilish-runtime-native-test-previous-boot-restores-idle-history-without-replay`. Require persisted history, unchanged message count, suspended local work and the same single writer across subsequent restores.
 - **Check the proof.** Require zero statuses and nonempty logs. Require `.png` and `.el` files for `browser-pilish-session-browser-mode-folded`, `browser-pilish-session-browser-mode-unfolded`, `browser-pilish-tree-browser-mode-folded`, and `browser-pilish-tree-browser-mode-unfolded` under `$RUN_DIR/browser-capture`. Require at least one nonempty `result.json` under `$RUN_DIR/reload-resume`.
 
 ## Gotchas
 
+- The reboot native case synthesizes prior-boot identity evidence; it does not reboot the host or prove graphical layout rendering. Never drive this test against a production desktop or session file.
 - The large browser scenario uses 2,000 synthetic rows in each browser. It enters the modes directly with session search already enabled and does not prove first-search disk loading or resume those rows.
 - PNG capture requires `x-export-frames`. Missing PNGs make the screenshot requirement blocked even when the assertions pass.
 - The resume bench calls `pilish-session-browser-switch` directly. These recipes do not cover the `C-c C-r`, `/resume`, or `C-c C-p w` opening aliases, or `RET` key dispatch.

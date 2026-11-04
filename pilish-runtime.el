@@ -3,8 +3,9 @@
 
 ;;; Commentary:
 
-;; A view is not an agent.  Start is explicit; attach/reconnect/desktop restore
-;; never start a missing runtime or resend input.  The identity below survives
+;; A view is not an agent.  Attach/reconnect never start a missing runtime.
+;; Desktop restore reopens roots only after proven boot change, without input.
+;; The identity below survives
 ;; transport loss and identifies the actual owned Pi, not a network pseudo PID.
 ;; Ordinary unshared Pi remains an explicit supported mode.
 
@@ -285,12 +286,33 @@ The read-only receipt query never stops a runtime or launches Pi."
                                (equal (plist-get receipt :state) "stopped")))))
                (pilish--runtime-terminal-receipt runtime))))))
 
+(defun pilish--runtime-previous-boot-p (runtime)
+  "Return non-nil when RUNTIME is a root with both owners from a prior boot.
+Missing, inconsistent or unreadable identity evidence cannot authorize a start."
+  (let ((boot (plist-get (pilish--runtime-process-identity (emacs-pid)) :boot-id))
+        (previous (plist-get runtime :pi-boot-id)))
+    (and (equal (plist-get runtime :protocol) 2)
+         (member (plist-get runtime :placement) '("root" "interactive-fork"))
+         (not (equal (plist-get runtime :state) "stopped"))
+         (stringp boot) (not (string-empty-p boot))
+         (stringp previous) (not (string-empty-p previous))
+         (not (equal previous boot))
+         (equal previous (plist-get runtime :owner-boot-id))
+         (cl-every
+          (lambda (keys)
+            (let ((pid (plist-get runtime (car keys)))
+                  (start (plist-get runtime (cadr keys))))
+              (and (integerp pid) (> pid 0) (stringp start)
+                   (string-match-p "\\`[0-9]+\\'" start))))
+          '((:pid :owner-start-time) (:pi-pid :pi-start-time))))))
+
 (defun pilish-restore-session-state (state)
-  "Restore desktop STATE as an attach-only background view.
-Identity-free conversations are stopped/resumable; missing retained runtimes
-remain unavailable.  No saved shell, prompt,
-queue, worker or Pi process is restarted by desktop restoration.
-Return nil instead of resurrecting a view with authoritative terminal evidence."
+  "Restore desktop STATE as a background view, without replaying input.
+Surviving runtimes reconnect.  Roots whose recorded owners predate this boot
+reopen their exact saved conversation through managed claims, idle.  Other
+missing owners remain unavailable; identity-free views require explicit Resume.
+Workers and shell commands never restart.  Return nil for a view with
+known terminal evidence."
   (if (pilish-session-state-closed-p state)
       (progn (pilish--runtime-retain-closed-state state) nil)
     (let* ((runtime (plist-get state :runtime))
@@ -305,10 +327,20 @@ Return nil instead of resurrecting a view with authoritative terminal evidence."
                 pilish--state (list :session-file (plist-get state :session-file)
                                     :leaf-id (plist-get state :leaf-id)))
           (pilish--restore-local-desktop-state state)))
-      (if (and runtime (plist-get runtime :mux-id))
-          ;; Reconnect owns failure reconciliation and its recovery notice.
-          (pilish-reconnect-runtime chat)
-        (pilish--runtime-stopped-view chat "Saved conversation has no live runtime identity"))
+      (cond
+       ((pilish--runtime-previous-boot-p runtime)
+        (pilish-resume-stopped-session
+         chat (lambda (error)
+                (when (and error (buffer-live-p chat))
+                  (with-current-buffer chat
+                    (setq pilish--runtime (plist-put pilish--runtime :state "unavailable"))
+                    (pilish--add-chat-notice (format "Reboot restoration failed: %s" error)
+                                            'pilish-error-notice)
+                    (pilish--note-desktop-state))))))
+       ((and runtime (plist-get runtime :mux-id))
+        ;; Reconnect owns failure reconciliation and its recovery notice.
+        (pilish-reconnect-runtime chat))
+       (t (pilish--runtime-stopped-view chat "Saved conversation has no live runtime identity")))
       (and (buffer-live-p chat) chat))))
 
 (defun pilish-resume-stopped-session (buffer &optional callback)

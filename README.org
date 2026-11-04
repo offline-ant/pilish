@@ -74,8 +74,9 @@ implicit in a source change.
 Close agent (=q= or menu =Q=) stops it everywhere without confirmation and
 removes its views after authoritative termination.  Closing Emacs, killing a
 buffer directly or losing a connection only disconnects: accepted work and
-provider waits can continue and incur usage.  Reconnect and desktop restore
-never start missing agents or replay input.
+provider waits can continue and incur usage.  Reconnect never starts missing
+agents.  Desktop restore reopens verified prior-boot roots idle; neither path
+replays input.  See [[file:RUNTIME.md][RUNTIME.md]] for the boot-evidence and ownership checks.
 
 ** Requirements for ordinary unshared use
 
@@ -1783,9 +1784,9 @@ uncertain cleanup retains their recovery view.  See [[file:RUNTIME.md][RUNTIME.m
 Direct buffer disposal, the last client disconnecting and Emacs exit do not stop
 an agent; accepted work and waits may continue and incur usage invisibly.
 Desktop owners use =pilish-session-desktop-state= and
-=pilish-restore-session-state=: restore attaches surviving identities, retains
-unknown/unavailable identities for recovery, and returns nil for a known terminal
-identity.  Workers require matching complete owning-task evidence, not just a
+=pilish-restore-session-state=: restore attaches surviving identities, reopens
+verified prior-boot roots as idle managed agents, retains other unknown/unavailable
+identities for recovery, and returns nil for a known terminal identity.  Workers require matching complete owning-task evidence, not just a
 stopped runtime receipt.  Failed attachment/readiness rechecks that evidence too,
 so a task completing during restoration does not leave an active recovery view.
 Uncertain workers remain visible for parent-task reconciliation, never independent

@@ -66,7 +66,9 @@
        (setenv "PIMUX_DIR" (expand-file-name "mux" root))
        (pilish-configure-runtime :pi-executable pilish-runtime-pi-executable
                                  :pimux-executable pilish-runtime-pimux-executable
-                                 :task-status-executable pilish-runtime-task-status-executable)
+                                 :task-status-executable pilish-runtime-task-status-executable
+                                 :pi-version (getenv "PHIMACS_PI_VERSION")
+                                 :pi-sha256 (getenv "PHIMACS_PI_SHA256"))
        (unwind-protect (progn ,@body)
          (setq runtime (or runtime (and (buffer-live-p chat) (pilish-session-runtime chat))))
          (when (and (plist-get runtime :mux-id)
@@ -236,6 +238,63 @@
         (should (or (equal (plist-get desktop :draft) "not a prompt")
                     (seq-find (lambda (record) (equal (plist-get record :draft) "not a prompt"))
                               (plist-get desktop :quarantine))))))))
+
+(ert-deftest pilish-runtime-native-test-previous-boot-restores-idle-history-without-replay ()
+  "A proven reboot reopens saved roots; existing ownership still wins atomically."
+  (pilish-runtime-native-test--with-host
+    (let* ((file (expand-file-name "before-reboot.jsonl" default-directory))
+           (timestamp (format-time-string "%Y-%m-%dT%H:%M:%SZ" nil t))
+           (identity (pilish--runtime-process-identity (emacs-pid)))
+           (previous
+            (pilish-runtime-test--previous-boot
+             (list :protocol 2 :placement "root" :state "live" :socket (expand-file-name "old.sock" root)
+                   :pid (emacs-pid) :owner-start-time (plist-get identity :start-time)
+                   :pi-pid (emacs-pid) :pi-start-time (plist-get identity :start-time))))
+           (saved (list :directory default-directory :name "after-reboot" :runtime previous
+                        :session-file file :draft "reboot draft not submitted"
+                        :followups '("reboot follow-up not submitted"))))
+      (should-not (equal (plist-get previous :pi-boot-id) (plist-get identity :boot-id)))
+      (with-temp-file file
+        (insert (json-encode
+                 (list :type "session" :version 3 :id "before-reboot"
+                       :timestamp timestamp :cwd default-directory)) "\n"
+                (json-encode
+                 (list :type "message" :id "saved-before-reboot" :parentId nil
+                       :timestamp timestamp
+                       :message '(:role "user" :content "persisted reboot history" :timestamp 1))) "\n"))
+      (set-file-modes file #o600)
+      (setq chat (pilish-restore-session-state saved))
+      (pilish-runtime-native-test--wait
+       (lambda () (equal (plist-get (pilish-session-runtime chat) :state) "live")))
+      (setq runtime (pilish-session-runtime chat))
+      (should (equal (pilish-session-file chat) file))
+      (should-not (pilish-session-busy-p chat))
+      (should-not (pilish-session-queued-prompts chat))
+      (with-current-buffer chat (should (string-match-p "persisted reboot history" (buffer-string))))
+      (let ((desktop (prin1-to-string (pilish-session-desktop-state chat)))
+            (current (pilish-session-process-identity chat)))
+        (should (string-match-p "reboot draft not submitted" desktop))
+        (should (string-match-p "reboot follow-up not submitted" desktop))
+        (should (equal (plist-get current :boot-id) (plist-get identity :boot-id)))
+        (let ((state (pilish-session-desktop-state chat)))
+          (pilish-disconnect-session chat)
+          (setq chat (pilish-restore-session-state state)))
+        (pilish-runtime-native-test--wait
+         (lambda () (equal (plist-get (pilish-session-runtime chat) :state) "live")))
+        (should (equal current (pilish-session-process-identity chat)))
+        ;; A second frontend may already have reopened the file after boot.
+        ;; Restoring the old record must attach that writer, not start another.
+        (pilish-disconnect-session chat)
+        (setq chat (pilish-restore-session-state saved))
+        (pilish-runtime-native-test--wait
+         (lambda () (equal (plist-get (pilish-session-runtime chat) :state) "live")))
+        (should (equal current (pilish-session-process-identity chat)))
+        (should (= (length (pilish-list-runtimes)) 1)))
+      (let* ((reply (pilish-runtime-native-test--peer runtime '(:type "get_messages")))
+             (messages (plist-get (plist-get (plist-get reply :response) :data) :messages)))
+        (should (= (length messages) 1))
+        (should (equal (plist-get (aref messages 0) :role) "user"))
+        (should (string-match-p "persisted reboot history" (prin1-to-string messages)))))))
 
 (ert-deftest pilish-runtime-native-test-failed-render-live-stays-gated-until-reconnect ()
   "A real full boundary and live marker cannot repair a failed renderer."
