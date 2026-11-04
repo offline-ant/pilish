@@ -236,11 +236,21 @@ specified compatible surviving identity, adopting its current file and branch.
 Known terminated identities return nil instead of allocating an active view;
 retained terminal receipts reconcile agents closed while this desktop was offline.
 Unsent work/abnormal exits remain in read-only `*Pilish closed agents*` recovery,
-outside the active-agent list. Missing/incompatible retained owners without
-terminal evidence stay unavailable with explicit recovery; identity-free legacy
-conversations restore as stopped/resumable views, not failed connections. Restoration never opens their JSONL for writing or starts
-a fresh Pi. Saved automatic
-follow-ups and uncertain submissions become suspended recovery, never armed work.
+outside the active-agent list.
+
+After a verified machine reboot, saved roots and independent interactive forks
+reopen their exact conversation as idle managed agents. Both saved owners must
+have complete PID/start identities and the same nonempty boot ID, different from
+the current readable boot ID. Stopped identities and parent-task workers never
+qualify. Restoration uses the ordinary managed Resume path: common claims attach
+a compatible writer already reopened elsewhere, start one owner, or refuse.
+No prompt, tool, saved queue or shell command is replayed. Failed or uncertain
+starts retain an unavailable view and do not automatically retry.
+
+Other missing/incompatible owners remain unavailable with explicit recovery;
+identity-free legacy conversations restore as stopped/resumable views requiring
+explicit Resume. Saved automatic follow-ups and uncertain submissions become
+suspended recovery, never armed work.
 
 Text, images, local follow-ups and uncertain submissions composed for a previous
 file/branch are quarantined before context adoption. `pilish-session-quarantine`
@@ -304,7 +314,8 @@ reconnection without repeated cancellation, definitive-rejection retry versus un
 delivery, pending-Close input gates, unsent FIFO recovery, notification failures
 and public read-only reconciliation after disconnected natural completion.
 Restoration regressions cover completion racing attachment/readiness, uncertain
-workers without independent Resume, and pending-only task polling.
+workers without independent Resume, pending-only task polling, verified prior-boot
+root reopening, incomplete boot evidence and uncertain starts without retry.
 Shared/drafts/queue/
 menu/storage suites cover authoritative snapshots and recoverable input. Use
 fresh locked Lisp sources and freshly provisioned essential grammars, not home
@@ -322,6 +333,8 @@ an explicit setup action, not reference startup or clean-install evidence.
 | `PHIMACS_NATIVE_PILISH` | `1` to opt in |
 | `PHIMACS_TEST_ROOT` | A private marked synthetic root created by pimux's `createClaimTestEnvironment()` |
 | `PHIMACS_PI_EXECUTABLE` | Absolute selected physical Pi executable |
+| `PHIMACS_PI_VERSION` | Exact version of that physical Pi |
+| `PHIMACS_PI_SHA256` | Optional lowercase SHA-256 of that Pi entry point |
 | `PHIMACS_PIMUX_EXECUTABLE` | Absolute compiled candidate pimux executable |
 | `PHIMACS_FAUX_EXTENSION` | Absolute audited `pimux/test/fixture.ts` fixture from the selected source input |
 | `PHIMACS_TASK_STATUS_EXECUTABLE` | Absolute compiled task-status CLI from the selected graph (required for managed-worker cases) |
@@ -369,7 +382,13 @@ survival, reconnect/desktop restore to the same actual Pi, another frontend's
 moved-session adoption/quarantine and acknowledged explicit stop. The public
 saved-file entry point opens its exact existing conversation during asynchronous
 startup and submits once there. The migrated identity-free view additionally
-resumes its exact persisted history without submitting a draft or any prompt. An injected renderer failure during a real
+resumes its exact persisted history without submitting a draft or any prompt.
+`pilish-runtime-native-test-previous-boot-restores-idle-history-without-replay`
+uses a synthetic prior-boot identity to exercise automatic root reopening with
+real Pi: saved history loads, local work stays suspended, ordinary reconnect keeps
+the same Pi, and another restoration of the old record attaches that one writer.
+The persisted message count remains unchanged. This simulates boot evidence; it
+does not reboot the test host. An injected renderer failure during a real
 snapshot/live sequence retains identity and recoverable input, refuses prompts,
 and recovers only through explicit reconnect without replay. The independent
 synthetic peer captures the snapshot's exact `inputContext` before its one action.
@@ -382,7 +401,7 @@ retains recovery, and a missing initial binding sends no cancellation. Adversari
 wrong final binding and an injected waiter timeout both retain recovery until real
 late completion without recalling their settled callbacks. Compile
 orchestration first with its owning `scripts/compile.mjs`. Run these cases and the
-seven remaining native cases separately with bounded native-lane timeouts.
+remaining native cases separately with bounded native-lane timeouts.
 `pilish-runtime-native-test-emacs-companion-direct-close-awaits-task-publication`
 additionally uses the actual Emacs host companion and `emacsclient` against a
 private test-owned live editor endpoint, without an orchestration Stop waiter.
