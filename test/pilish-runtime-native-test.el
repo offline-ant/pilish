@@ -66,9 +66,7 @@
        (setenv "PIMUX_DIR" (expand-file-name "mux" root))
        (pilish-configure-runtime :pi-executable pilish-runtime-pi-executable
                                  :pimux-executable pilish-runtime-pimux-executable
-                                 :task-status-executable pilish-runtime-task-status-executable
-                                 :pi-version (getenv "PHIMACS_PI_VERSION")
-                                 :pi-sha256 (getenv "PHIMACS_PI_SHA256"))
+                                 :task-status-executable pilish-runtime-task-status-executable)
        (unwind-protect (progn ,@body)
          (setq runtime (or runtime (and (buffer-live-p chat) (pilish-session-runtime chat))))
          (when (and (plist-get runtime :mux-id)

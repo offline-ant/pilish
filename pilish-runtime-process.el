@@ -18,10 +18,6 @@
   "Absolute compiled pimux executable of the configured immutable release.")
 (defvar pilish-runtime-task-status-executable nil
   "Absolute read-only task-status executable of the configured release.")
-(defvar pilish-runtime-pi-version "1.4.0"
-  "Exact host version passed to the managed launcher.")
-(defvar pilish-runtime-pi-sha256 nil
-  "Optional release entry-point digest passed to the managed launcher.")
 (defvar pilish-runtime-mode 'unshared
   "Selected launch mode: `unshared' or `detached'.")
 (defvar-local pilish--runtime nil
@@ -123,9 +119,6 @@ Unreadable metadata is not proof of termination.  This function never signals."
   "Return launcher environment with explicit per-session ENVIRONMENT."
   (let ((process-environment (copy-sequence process-environment)))
     (dolist (entry (reverse environment)) (setenv (car entry) (cdr entry)))
-    (setenv "PHIMACS_PI_VERSION" pilish-runtime-pi-version)
-    (when pilish-runtime-pi-sha256
-      (setenv "PHIMACS_PI_SHA256" pilish-runtime-pi-sha256))
     process-environment))
 
 (defun pilish--runtime-call (arguments directory environment callback)
