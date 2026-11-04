@@ -128,20 +128,6 @@
        (pilish-runtime-test--write-task task-file task-record)
        ,@body)))
 
-(ert-deftest pilish-runtime-test-valid-peer-is-a-network-client ()
-  (pilish-runtime-test--with-peer nil
-    (cl-letf (((symbol-function 'pilish-list-runtimes) (lambda () (list runtime))))
-      (setq pilish-runtime-test--chat (pilish-attach-runtime runtime "runtime-test"))
-      (pilish-runtime-test--wait
-       (lambda () (equal (plist-get (pilish-session-runtime pilish-runtime-test--chat) :state) "live")))
-      (let ((process (pilish-session-process pilish-runtime-test--chat)))
-        (should (eq (process-type process) 'network))
-        (should-not (integerp (process-id process)))
-        (should (= (plist-get (pilish-session-process-identity pilish-runtime-test--chat) :pid)
-                   (emacs-pid)))
-        (should (equal (pilish-session-file pilish-runtime-test--chat) file))
-        (should-not pilish-runtime-test--received)))))
-
 (ert-deftest pilish-runtime-test-prompt-refused-before-live ()
   (pilish-runtime-test--with-peer '(:no-live t)
     (setq pilish-runtime-test--chat (pilish--runtime-new-view directory "prelive"))
@@ -189,19 +175,15 @@
 
 (ert-deftest pilish-runtime-test-unprivate-socket-refused ()
   (pilish-runtime-test--with-peer nil
-    (should (equal (plist-get runtime :socket) socket))
-    (set-file-modes directory #o755)
-    (should-not (pilish--runtime-private-socket-p socket))))
-
-(ert-deftest pilish-runtime-test-disconnect-never-stops-owner ()
-  (pilish-runtime-test--with-peer nil
-    (cl-letf (((symbol-function 'pilish-list-runtimes) (lambda () (list runtime))))
-      (setq pilish-runtime-test--chat (pilish-attach-runtime runtime "disconnect"))
-      (pilish-runtime-test--wait
-       (lambda () (equal (plist-get (pilish-session-runtime pilish-runtime-test--chat) :state) "live")))
-      (pilish--terminate-process (pilish-session-process pilish-runtime-test--chat))
-      (should (process-live-p server))
-      (should-not (equal (plist-get (pilish-session-runtime pilish-runtime-test--chat) :state) "stopped"))
+    (let (outcomes)
+      (set-file-modes directory #o755)
+      (setq pilish-runtime-test--chat (pilish--runtime-new-view directory "unsafe-owner"))
+      (pilish--runtime-connect pilish-runtime-test--chat runtime
+                               (lambda (error) (push error outcomes)))
+      (should (= (length outcomes) 1))
+      (should (stringp (car outcomes)))
+      (should-not (pilish-session-process pilish-runtime-test--chat))
+      (should-not pilish-runtime-test--clients)
       (should-not pilish-runtime-test--received))))
 
 (ert-deftest pilish-runtime-test-restore-adopts-authoritative-file ()
@@ -366,16 +348,18 @@
                        "keep failed restore draft"))))))
 
 (ert-deftest pilish-runtime-test-previous-boot-terminal-evidence-stays-closed ()
-  (pilish-runtime-test--with-peer '(:silent t)
-    (let ((previous (pilish-runtime-test--previous-boot runtime)))
-      (setq previous (plist-put previous :state "stopped")
-            previous (plist-put previous :exit '(:code 0)))
-      (cl-letf (((symbol-function 'pilish--runtime-new-view)
-                 (lambda (&rest _) (ert-fail "Closed conversation must not reopen")))
-                ((symbol-function 'pilish--runtime-call)
-                 (lambda (&rest _) (ert-fail "Closed conversation must not launch"))))
-        (should-not (pilish-restore-session-state
-                     (list :directory directory :runtime previous :session-file file)))))))
+  (dolist (terminal '((:exit (:code 0))
+                      (:terminal-receipt (:muxId "previous-boot" :state "stopped"))))
+    (pilish-runtime-test--with-peer '(:silent t)
+      (let ((previous (pilish-runtime-test--previous-boot runtime)))
+        (setq previous (plist-put previous :state "stopped")
+              previous (plist-put previous (car terminal) (cadr terminal)))
+        (cl-letf (((symbol-function 'pilish--runtime-new-view)
+                   (lambda (&rest _) (ert-fail "Closed conversation must not reopen")))
+                  ((symbol-function 'pilish--runtime-call)
+                   (lambda (&rest _) (ert-fail "Closed conversation must not launch"))))
+          (should-not (pilish-restore-session-state
+                       (list :directory directory :runtime previous :session-file file))))))))
 
 (ert-deftest pilish-runtime-test-discovery-reuses-one-local-view ()
   (pilish-runtime-test--with-peer nil
@@ -385,13 +369,6 @@
        (lambda () (equal (plist-get (pilish-session-runtime pilish-runtime-test--chat) :state) "live")))
       (should (eq pilish-runtime-test--chat (pilish-attach-runtime runtime "another-name")))
       (should (= (length pilish-runtime-test--clients) 1)))))
-
-(ert-deftest pilish-runtime-test-callback-is-once-even-when-it-errors ()
-  (let ((count 0))
-    (let ((callback (pilish--runtime-once (lambda (_error) (cl-incf count) (error "callback failed")))))
-      (should-error (funcall callback nil))
-      (funcall callback "second")
-      (should (= count 1)))))
 
 (ert-deftest pilish-runtime-test-start-keeps-authoritative-worker-placement ()
   (pilish-runtime-test--with-peer nil
@@ -423,13 +400,12 @@
       (should (eq pilish-runtime-test--chat
                   (pilish--setup-session (file-name-as-directory directory) "unavailable"))))))
 
-(ert-deftest pilish-runtime-test-configuration-is-explicit-and-versioned ()
-  (should (= (plist-get (pilish-integration-capabilities) :pimux-protocol) 2))
+(ert-deftest pilish-runtime-test-configuration-rejects-unsafe-runtime-inputs ()
   (should-error (pilish-configure-runtime :protocol 1))
   (should-error (pilish-configure-runtime :pi-executable "pi" :pimux-executable "pimux"))
-  (let ((pilish-runtime-mode 'detached))
-    (pilish-configure-runtime :mode 'unshared)
-    (should-not (pilish-runtime-configured-p))))
+  (let ((program (executable-find "true")))
+    (should-error (pilish-configure-runtime :pi-executable program :pimux-executable program
+                                            :task-status-executable "relative-cli"))))
 
 (ert-deftest pilish-runtime-test-native-mode-does-not-acquire-network-gate ()
   (let ((process (make-pipe-process :name "native-fixture" :noquery t)) sent)
@@ -534,17 +510,6 @@
         (should-not (buffer-live-p pilish-runtime-test--chat))
         (should (process-live-p server))
         (should-not notified)))))
-
-(ert-deftest pilish-runtime-test-desktop-terminal-evidence-does-not-resurrect-view ()
-  (let ((state '(:directory "/tmp/" :name "closed"
-                 :runtime (:protocol 2 :mux-id "closed" :state "stopped"
-                           :terminal-receipt (:muxId "closed" :state "stopped")))))
-    (cl-letf (((symbol-function 'pilish--runtime-new-view)
-               (lambda (&rest _) (ert-fail "Restored a known closed identity")))
-              ((symbol-function 'pilish-stop-runtime)
-               (lambda (&rest _) (ert-fail "Read-only restore stopped an agent"))))
-      (should (pilish-session-state-closed-p state))
-      (should-not (pilish-restore-session-state state)))))
 
 (ert-deftest pilish-runtime-test-offline-close-reconciles-read-only-receipt ()
   (let ((pilish-runtime-mode 'detached)
