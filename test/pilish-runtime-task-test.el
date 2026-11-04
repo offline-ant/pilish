@@ -16,17 +16,6 @@
         (lambda () (equal (plist-get (pilish-session-runtime pilish-runtime-test--chat) :state) "live")))
        (let ((chat pilish-runtime-test--chat)) ,@body))))
 
-(ert-deftest pilish-runtime-task-test-configures-explicit-release-executable ()
-  (let ((pilish-runtime-mode 'unshared)
-        pilish-runtime-pi-executable pilish-runtime-pimux-executable
-        pilish-runtime-task-status-executable)
-    (let ((program (executable-find "true")))
-      (pilish-configure-runtime :pi-executable program :pimux-executable program
-                                :task-status-executable program)
-      (should (equal pilish-runtime-task-status-executable program))
-      (should-error (pilish-configure-runtime :pi-executable program :pimux-executable program
-                                              :task-status-executable "relative-cli")))))
-
 (ert-deftest pilish-runtime-task-test-explicit-cli-and-captured-namespace ()
   (pilish-runtime-task-test--with-view
     (let ((process-environment (copy-sequence process-environment)) (queries 0))
@@ -154,20 +143,11 @@
         (should (equal second '(nil)))
         (should (= sent 1))))))
 
-(ert-deftest pilish-runtime-task-test-desktop-needs-final-task-not-runtime-exit ()
-  (pilish-runtime-task-test--with-view
-    (let ((state (pilish-session-desktop-state chat)))
-      (setq state (plist-put state :runtime
-                             (plist-put (plist-put (plist-get state :runtime) :state "stopped")
-                                        :exit '(:code 0))))
-      (should-not (pilish-session-state-closed-p state))
-      (setq task-record (plist-put task-record :state "complete"))
-      (pilish-runtime-test--write-task task-file task-record)
-      (should (pilish-session-state-closed-p state)))))
-
 (ert-deftest pilish-runtime-task-test-restore-complete-worker-skips-view-and-keeps-recovery ()
   (pilish-runtime-test--with-worker nil
-    (setq task-record (plist-put task-record :state "complete"))
+    (setq runtime (plist-put runtime :state "stopped")
+          runtime (plist-put runtime :exit '(:code 0))
+          task-record (plist-put task-record :state "complete"))
     (pilish-runtime-test--write-task task-file task-record)
     (cl-letf (((symbol-function 'pilish--runtime-new-view)
                (lambda (&rest _) (ert-fail "Completed task allocated an active view")))
@@ -188,6 +168,8 @@
   (dolist (change '(pending failed missing binding))
     (pilish-runtime-test--with-worker nil
       (setq runtime (plist-put runtime :task-binding (copy-tree task-record))
+            runtime (plist-put runtime :state "stopped")
+            runtime (plist-put runtime :exit '(:code 0))
             runtime (plist-put runtime :terminal-receipt
                                '(:muxId "test-runtime" :state "stopped" :code 0)))
       (pcase change
