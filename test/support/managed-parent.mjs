@@ -26,7 +26,7 @@ Object.assign(process.env, {
   PI_CODING_AGENT_DIR: path.join(directory, 'agent'),
   // The actual companion discovers in the test frontend's initial namespace.
   PIMUX_DIR: endpoint ? process.env.PIMUX_DIR : path.join(directory, 'mux'),
-  PHIMACS_PI: process.env.PHIMACS_PI_EXECUTABLE, PHIMACS_PI_VERSION: '1.4.0', PHIMACS_PI_SHA256: '',
+  PHIMACS_PI: process.env.PHIMACS_PI_EXECUTABLE,
   PI_ORCHESTRATION_HOST: 'emacs', PI_ORCHESTRATION_ENDPOINT: endpoint || path.join(directory, 'ui.sock'),
   PI_ORCHESTRATION_TARGET: 'native-parent',
 });

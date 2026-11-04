@@ -31,11 +31,9 @@
     :authoritative-close t))
 
 (cl-defun pilish-configure-runtime
-    (&key pi-executable pimux-executable task-status-executable (protocol 2) (mode 'detached)
-          (pi-version "1.4.0") pi-sha256)
-  "Configure immutable PI-EXECUTABLE and PIMUX-EXECUTABLE without starting Pi.
-PROTOCOL must be 2.  MODE is `detached' or explicit `unshared'.  PI-VERSION
-and optional PI-SHA256 are validated by the owning compiled launcher.
+    (&key pi-executable pimux-executable task-status-executable (protocol 2) (mode 'detached))
+  "Configure absolute PI-EXECUTABLE and PIMUX-EXECUTABLE without starting Pi.
+PROTOCOL must be 2.  MODE is `detached' or explicit `unshared'.
 TASK-STATUS-EXECUTABLE names the release's read-only worker task evidence CLI;
 without it worker Close fails explicitly, without sending any input."
   (unless (memq mode '(detached unshared)) (error "Unsupported Pilish runtime mode"))
@@ -50,17 +48,11 @@ without it worker Close fails explicitly, without sending any input."
     (when task-status-executable
       (unless (and (stringp task-status-executable) (file-name-absolute-p task-status-executable)
                    (not (file-remote-p task-status-executable)) (file-executable-p task-status-executable))
-        (error "Configure an absolute release task-status executable: %S" task-status-executable)))
-    (unless (and (stringp pi-version) (not (string-empty-p pi-version)))
-      (error "An exact release Pi version is required"))
-    (when (and pi-sha256 (not (string-match-p "\\`[a-f0-9]\\{64\\}\\'" pi-sha256)))
-      (error "Invalid release Pi entry-point SHA-256")))
+        (error "Configure an absolute release task-status executable: %S" task-status-executable))))
   (setq pilish-runtime-mode mode
         pilish-runtime-pi-executable pi-executable
         pilish-runtime-pimux-executable pimux-executable
-        pilish-runtime-task-status-executable task-status-executable
-        pilish-runtime-pi-version pi-version
-        pilish-runtime-pi-sha256 pi-sha256)
+        pilish-runtime-task-status-executable task-status-executable)
   (pilish-integration-capabilities))
 
 (defun pilish--runtime-definitely-dead-p (runtime)
