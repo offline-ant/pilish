@@ -11,9 +11,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { storageRuntime, mutateSession } from '../scripts/pilish-storage.mjs';
 
 const PIMUX = process.env.PILISH_TEST_PIMUX;
-assert.ok(PIMUX && path.isAbsolute(PIMUX), 'Set PILISH_TEST_PIMUX to the explicit compiled release pimux executable');
+assert.ok(PIMUX && path.isAbsolute(PIMUX), 'Set PILISH_TEST_PIMUX to the explicit compiled pimux executable');
 const PI = process.env.PILISH_TEST_PI;
-assert.ok(PI && path.isAbsolute(PI), 'Set PILISH_TEST_PI to the exact candidate release Pi executable');
+assert.ok(PI && path.isAbsolute(PI), 'Set PILISH_TEST_PI to the absolute Pi executable');
 const runtime = storageRuntime(PIMUX);
 const require = createRequire(fs.realpathSync(PIMUX));
 const { createClaimTestEnvironment, acquireClaim, releaseClaim, lookupClaim } = runtime.ownership;
