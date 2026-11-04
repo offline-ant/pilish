@@ -395,7 +395,8 @@ unsettled until cleanup/name release and final publication; failed final cleanup
 retains recovery, and a missing initial binding sends no cancellation. Adversarial
 wrong final binding and an injected waiter timeout both retain recovery until real
 late completion without recalling their settled callbacks. Compile
-orchestration first with its owning `scripts/compile.mjs`. Run these cases and the
+orchestration first with `npm run compile --workspace=@phimacs/orchestration`
+from Phimacs. Run these cases and the
 remaining native cases separately with bounded native-lane timeouts.
 `pilish-runtime-native-test-emacs-companion-direct-close-awaits-task-publication`
 additionally uses the actual Emacs host companion and `emacsclient` against a
