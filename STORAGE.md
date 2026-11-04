@@ -39,7 +39,7 @@ Supported requests are deliberately narrow:
   modes and commits by rename under the claim. Old/new inode indexes reconcile
   before releasing the lease. The browser takes the digest before deriving its
   navigation bytes, not after them.
-- `export`: the explicit absolute release Pi and a **new** `.html` output. The
+- `export`: the explicit absolute Pi and a **new** `.html` output. The
   helper invokes the configured `pimux tui` managed launcher, which claims before
   Pi's repair-capable open and waits for actual exit. It never invokes raw Pi.
   Existing output files/aliases are not overwritten. Empty owned reservations
