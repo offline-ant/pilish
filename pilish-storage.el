@@ -52,7 +52,7 @@ personal caches nor source-checkout relative package imports are consulted."
                (stringp pilish-runtime-pimux-executable)
                (file-name-absolute-p pilish-runtime-pimux-executable)
                (not (file-remote-p pilish-runtime-pimux-executable)))
-    (user-error "Configure an absolute release pimux before managed storage operations"))
+    (user-error "Configure an absolute pimux before managed storage operations"))
   (dolist (key '(:file :output :piExecutable))
     (when-let* ((file (plist-get request key)))
       (unless (and (stringp file) (file-name-absolute-p file)

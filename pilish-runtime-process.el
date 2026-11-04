@@ -129,7 +129,7 @@ protocol owns cleanup; a committed runtime is left available for attachment."
   (unless (and (stringp pilish-runtime-pimux-executable)
                (file-name-absolute-p pilish-runtime-pimux-executable)
                (file-executable-p pilish-runtime-pimux-executable))
-    (error "Configure an absolute compiled release pimux executable first"))
+    (error "Configure an absolute compiled pimux executable first"))
   (let* ((default-directory directory)
          (process-environment (pilish--runtime-environment environment))
          (output "") (stderr (generate-new-buffer " *pilish-runtime-diagnostic*"))

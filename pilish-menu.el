@@ -1422,7 +1422,7 @@ including the gap after compaction_end while extension failure hooks run."
                (source-file nil source-supplied-p))
   "Export the conversation to HTML at optional OUTPUT-PATH.
 Live sessions use their owner's RPC.  A stopped managed view uses the exact
-release launcher and stopped-file protection; it never opens raw parallel Pi.
+managed launcher and stopped-file protection; it never opens raw parallel Pi.
 INPUT-CONTEXT and SOURCE-FILE retain an interactive request's original owner."
   (interactive
    (let* ((context (pilish--capture-input-context (pilish--get-process)))
@@ -1458,7 +1458,7 @@ INPUT-CONTEXT and SOURCE-FILE retain an interactive request's original owner."
           (unless file (user-error "Stopped view has no saved conversation to export"))
           (unless (and (boundp 'pilish-runtime-pi-executable)
                        (stringp pilish-runtime-pi-executable))
-            (user-error "Configure the exact release Pi before exporting"))
+            (user-error "Configure the absolute Pi before exporting"))
           (pilish-storage-export-session file output pilish-runtime-pi-executable)
           (message "Pi: Exported stopped conversation to %s" output))
       (when proc

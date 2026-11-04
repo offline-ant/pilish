@@ -35,7 +35,7 @@ A retained :task-binding also pins the lease and both process identities."
                (file-name-absolute-p pilish-runtime-task-status-executable)
                (not (file-remote-p pilish-runtime-task-status-executable))
                (file-executable-p pilish-runtime-task-status-executable))
-    (error "Configure an absolute release task-status executable before closing workers"))
+    (error "Configure an absolute task-status executable before closing workers"))
   (let* ((socket (plist-get runtime :socket))
          (binding (plist-get runtime :task-binding))
          (worker (list :pid (plist-get runtime :pi-pid)
