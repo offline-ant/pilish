@@ -21,14 +21,11 @@ reusable assets. Other integrations call `pilish-configure-runtime` explicitly:
 | `:pimux-executable` | Absolute compiled owning pimux launcher |
 | `:task-status-executable` | Absolute compiled orchestration task-status CLI |
 | `:protocol` | `2` |
-| `:pi-version` | Exact version of the selected physical Pi |
-| `:pi-sha256` | Optional lowercase entry-point SHA-256 |
 
 Without the task-status CLI, root sessions remain supported, but worker Close and
-read-only worker reconciliation refuse. The owning launcher validates Pi identity
-before opening a conversation. Phimacs' root npm graph owns its dependencies;
-an unrelated global Pi is neither required nor updated. Authenticate the selected
-host with the intended private agent directory before intentional provider use.
+read-only worker reconciliation refuse. Phimacs selects the global `pi` on
+`PATH` as its host. Authenticate that host with the intended agent directory
+before intentional provider use.
 Credentials are never source or reusable assets.
 
 `pilish-integration-capabilities()` returns API version 1 and pimux protocol 2,
@@ -333,8 +330,6 @@ an explicit setup action, not reference startup or clean-install evidence.
 | `PHIMACS_NATIVE_PILISH` | `1` to opt in |
 | `PHIMACS_TEST_ROOT` | A private marked synthetic root created by pimux's `createClaimTestEnvironment()` |
 | `PHIMACS_PI_EXECUTABLE` | Absolute selected physical Pi executable |
-| `PHIMACS_PI_VERSION` | Exact version of that physical Pi |
-| `PHIMACS_PI_SHA256` | Optional lowercase SHA-256 of that Pi entry point |
 | `PHIMACS_PIMUX_EXECUTABLE` | Absolute compiled candidate pimux executable |
 | `PHIMACS_FAUX_EXTENSION` | Absolute audited `pimux/test/fixture.ts` fixture from the selected source input |
 | `PHIMACS_TASK_STATUS_EXECUTABLE` | Absolute compiled task-status CLI from the selected graph (required for managed-worker cases) |
