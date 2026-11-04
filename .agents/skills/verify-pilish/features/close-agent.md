@@ -12,7 +12,9 @@ remain in read-only `*Pilish closed agents*`, not a stopped active-agent placeho
 
 Emacs exit, direct buffer disposal and transport loss only disconnect. They never
 implicitly stop, restart or replay a detached agent. Desktop restoration returns
-nil for authoritative terminal identities; absent evidence remains unavailable.
+nil for authoritative terminal identities; other missing owners remain recoverable.
+Verified prior-boot roots may reopen idle under [the desktop policy](../../../../RUNTIME.md#desktop-state-and-input-recovery),
+without replaying input; this is not an automatic crash restart.
 Workers require complete task evidence even when a stopped runtime receipt exists.
 Failed attachment/readiness reconciles that evidence too. Unknown workers remain
 parent-task-owned, without independent Resume; only validated pending evidence
