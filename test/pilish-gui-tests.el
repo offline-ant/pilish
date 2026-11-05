@@ -1103,13 +1103,14 @@ and sending with \\`C-c C-c' returns it to one line."
                           (should-not (eq observer-window parent-window))
                           (should (eq (window-buffer parent-window) chat))
                           (should (string-match-p "Saved API answer" (buffer-string))))
-                        (should-not (eq snapshot first))
+                        ;; Viewing the file again reuses its observer.
+                        (should (eq snapshot first))
                         (should (equal (with-temp-buffer
                                          (insert-file-contents-literally child) (buffer-string))
                                        saved-bytes))
                         (pilish-gui-test--large-evidence
                          "view-session-file-observer"
-                         (list :independent-observers (length (delete-dups (copy-sequence snapshots)))
+                         (list :observers (length (delete-dups (copy-sequence snapshots)))
                                :selected-mode major-mode :read-only buffer-read-only
                                :parent-live (process-live-p process)
                                :draft-hash (with-current-buffer input (secure-hash 'sha256 (buffer-string)))
@@ -1126,16 +1127,13 @@ and sending with \\`C-c C-c' returns it to one line."
                         (push snapshot snapshots)
                         (should (eq (current-buffer) snapshot))
                         (should (string-match-p "Refreshed API answer" (buffer-string)))
-                        (should (with-current-buffer first
-                                  (not (string-match-p "Refreshed API answer" (buffer-string)))))
                         (pilish-gui-test--large-evidence
                          "view-session-file-refreshed"
                          (list :selected-mode major-mode :read-only buffer-read-only
                                :content (buffer-substring-no-properties (point-min) (point-max))
-                               :first-observer-unchanged t :commands commands))
+                               :commands commands))
                         (execute-kbd-macro (kbd "q"))
                         (should-not (buffer-live-p snapshot))
-                        (should (buffer-live-p first))
                         (should-not commands))
                       (should (process-live-p process))
                       (should (eq (buffer-local-value 'pilish--process chat) process))

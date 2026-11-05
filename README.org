@@ -375,7 +375,8 @@ To open a Pi-v3 JSONL file directly without starting or resuming Pi, run:
 M-x pilish-view-session-file
 #+end_src
 
-This also creates an independent read-only observer.  A selected symlink
+This also creates a read-only observer.  Viewing a file that already has
+an observer refreshes and shows that observer.  A selected symlink
 whose target lies outside its own directory is refused.
 
 Snapshots do not update automatically.  Press =g= or run
@@ -1554,7 +1555,8 @@ the right margin for scanning.
 #+html: <a id="saved-observers"></a>
 ** Saved-conversation observers
 
-Each open creates an independent observer, even for the same link.
+Opening a saved conversation that already has a snapshot refreshes and
+shows that snapshot instead of creating another.
 Refresh rereads that observer's captured file association and
 revalidates the exact session header, branch, and role rules.  An
 unchanged read keeps the buffer, folds, and view exactly.  A changed
@@ -2145,6 +2147,7 @@ output for inspection; use a new empty destination rather than overwriting it.
 On Emacs 29/30 the existing interactive =pilish-install-grammars= continues to
 use its ABI-compatible recipes; the essential-only provisioning API requires
 Emacs 31.1 rather than silently ignoring its immutable commit constraint.
+
 
 #+html: <a id="migrate-pi-coding-agent"></a>
 ** Migrate from pi-coding-agent

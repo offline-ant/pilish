@@ -67,8 +67,9 @@ still mock the RPC boundary, so the process is never used for I/O."
    (pilish-test-backend-spec 'bogus "prompt-lifecycle")))
 
 
-(ert-deftest pilish-test-view-session-file-creates-independent-observers ()
-  "Public file viewing is read-only, process-free and refreshes captured identity."
+(ert-deftest pilish-test-view-session-file-reuses-and-refreshes-its-observer ()
+  "Public file viewing is read-only, process-free and refreshes captured identity.
+Viewing the same file again refreshes and shows its existing observer."
   (let* ((directory (pilish-test--make-temp-directory "pilish-view-file-"))
          (file (expand-file-name "saved.jsonl" directory))
          (write-save
@@ -86,7 +87,7 @@ still mock the RPC boundary, so the process is never used for I/O."
                      (lambda (&rest _) (ert-fail "Read-only viewing started Pi"))))
             (setq first (pilish-view-session-file file)
                   second (pilish-view-session-file file))
-            (should-not (eq first second))
+            (should (eq first second))
             (should (eq (window-buffer (selected-window)) second))
             (with-current-buffer first
               (should (derived-mode-p 'pilish-snapshot-mode))
@@ -96,12 +97,12 @@ still mock the RPC boundary, so the process is never used for I/O."
               (should-not pilish--process)
               (should (string-match-p "Saved answer" (buffer-string))))
             (funcall write-save "Changed answer")
+            (setq second (pilish-view-session-file file))
+            (should (eq (window-buffer (selected-window)) second))
+            ;; A changed read replaces the observer buffer; none remains beside it.
+            (should (or (eq first second) (not (buffer-live-p first))))
             (with-current-buffer second
-              (setq second (pilish-snapshot-refresh)))
-            (with-current-buffer second
-              (should (string-match-p "Changed answer" (buffer-string))))
-            (with-current-buffer first
-              (should (string-match-p "Saved answer" (buffer-string))))))
+              (should (string-match-p "Changed answer" (buffer-string))))))
       (pilish-test--kill-live-buffers first second)
       (delete-directory directory t))))
 
