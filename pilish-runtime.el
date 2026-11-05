@@ -541,11 +541,14 @@ Preserve original and cleanup errors with unsent work outside active views."
       (cond
        (pilish--runtime-retiring
         (push callback pilish--runtime-close-callbacks))
-       ((or (null pilish--runtime)
-            (and (equal (plist-get pilish--runtime :state) "stopped")
-                 (not (plist-get pilish--runtime :mux-id))))
+       ((null pilish--runtime)
         (pilish--dispose-session-view chat)
         (funcall callback nil))
+       ;; An identity-free stopped view has no agent to stop.  Retire it like a
+       ;; terminated one: closed observers run and unsent work is retained.
+       ((and (equal (plist-get pilish--runtime :state) "stopped")
+             (not (plist-get pilish--runtime :mux-id)))
+        (funcall callback (pilish--runtime-retire-view chat)))
        (pilish--runtime-close-callbacks
         (push callback pilish--runtime-close-callbacks))
        (t
