@@ -291,7 +291,7 @@
   "Cancelling destructive shared clear sends nothing and changes no local queue."
   (pilish-drafts-test--session
     (with-current-buffer chat (pilish--push-followup "local"))
-    (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) nil)))
+    (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) nil)))
       (with-current-buffer input (pilish-clear-queued-messages)))
     (should-not commands)
     (with-current-buffer chat (should (equal pilish--followup-queue '("local"))))
@@ -303,7 +303,7 @@
     (pilish-test--stdout proc '(:type "queue_update" :steering ["already delivered"] :followUp []))
     (with-current-buffer input (insert "current draft"))
     (with-current-buffer chat (pilish--push-followup "local"))
-    (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+    (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
       (with-current-buffer input (pilish-restore-queued-messages)))
     (should (equal (mapcar (lambda (command) (plist-get command :type)) commands) '("clear_queue")))
     (pilish-test--stdout
@@ -325,7 +325,7 @@
   "A failed or lost acknowledgment keeps local recovery and an uncertainty note."
   (pilish-drafts-test--session
     (with-current-buffer chat (pilish--push-followup "known local"))
-    (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+    (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
       (with-current-buffer input (pilish-clear-queued-messages)))
     (pilish-test--stdout
      proc (list :type "response" :command "clear_queue" :success :false
@@ -342,7 +342,7 @@
 (ert-deftest pilish-drafts-test-late-shared-clear-remembers-authorized-context ()
   "A delayed response is labelled with the context at clear, not at its arrival."
   (pilish-drafts-test--session
-    (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+    (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
       (with-current-buffer input (pilish-clear-queued-messages)))
     (let ((request (car commands)))
       (pilish-drafts-test--deliver proc (pilish-drafts-test--snapshot :file "/synthetic/two.jsonl"))
@@ -358,11 +358,11 @@
   (pilish-drafts-test--session
     (with-current-buffer chat
       (pilish--push-followup "local")
-      (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) nil)))
+      (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) nil)))
         (should-not (pilish--abort-shared-turn)))
       (should-not pilish--aborted)
       (should (equal pilish--followup-queue '("local")))
-      (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+      (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
         (should (pilish--abort-shared-turn))))
     (should (equal (reverse (mapcar (lambda (command) (plist-get command :type)) commands))
                    '("clear_queue" "abort")))
