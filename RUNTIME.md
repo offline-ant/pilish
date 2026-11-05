@@ -177,7 +177,9 @@ For a retained owner, only authoritative termination/stop reports `"stopped"`.
 An identity-free saved conversation is also a stopped view: there is no runtime
 to reconnect. Reconnect refuses it without discovery or launch; explicit Resume
 still acquires the exact file's managed claim, attaching an existing compatible
-owner or refusing conflicting ownership. Discovery also carries its advertised
+owner or refusing conflicting ownership. Close has nothing to stop: it retires
+the view through `pilish-session-closed-functions` and keeps unsent work in
+recovery. Discovery also carries its advertised
 activity state; consumers must not mistake that for view readiness.
 Workers retain their parent-task/result protocol; cancellation/resume belongs to
 that owner, not a root-stop fallback.
