@@ -23,7 +23,7 @@
 (defvar-local pilish--runtime nil
   "Retained runtime identity, independent of its current transport.")
 (defvar-local pilish--runtime-launcher nil
-  "This view's uncommitted launcher process, if any.")
+  "This view's pending launch or post-commit discovery process, if any.")
 (defvar-local pilish--runtime-ready-callback nil
   "Callback awaiting this view's authoritative live boundary.")
 (defvar pilish-session-closed-functions nil
@@ -38,10 +38,14 @@ remaining observers and teardown still run, and Close reports the errors.")
   "Bounded wait for a dispatched worker cancellation.")
 (defvar-local pilish--runtime-task-timer nil
   "Read-only polling of this view's captured worker task evidence.")
+(defvar-local pilish--runtime-recovery-timer nil
+  "One pending service reconnection, never a prompt retry.")
 (defvar-local pilish--runtime-retiring nil
   "Non-nil while authoritative retirement owns this view's teardown.")
 
 (declare-function pilish--runtime-retire-view "pilish-runtime" (chat))
+(declare-function pilish--runtime-service-root-p "pilish-runtime" (runtime))
+(declare-function pilish-reconnect-runtime "pilish-runtime" (buffer &optional callback))
 (declare-function pilish--runtime-finish-close "pilish-runtime" (chat error))
 (declare-function pilish--runtime-worker-terminated "pilish-runtime-task" (chat))
 (declare-function pilish--runtime-task-cancel-poll "pilish-runtime-task" ())
@@ -49,7 +53,6 @@ remaining observers and teardown still run, and Close reports the errors.")
 (declare-function pilish-session-process "pilish" (chat-buffer))
 (declare-function pilish-session-directory "pilish" (chat-buffer))
 (declare-function pilish-session-name "pilish" (chat-buffer))
-(declare-function pilish-list-runtimes "pilish-runtime" ())
 
 (defun pilish--runtime-once (callback)
   "Return a CALLBACK wrapper accepting one error argument at most once."
@@ -101,6 +104,7 @@ Unreadable metadata is not proof of termination.  This function never signals."
     (list :protocol (plist-get record :protocol)
           :owner-start-time (or (plist-get owner :startTime) (plist-get owner-observed :start-time))
           :owner-boot-id (or (plist-get owner :bootId) (plist-get owner-observed :boot-id))
+          :service (plist-get record :service)
           :mux-id (plist-get record :muxId) :socket (plist-get record :socket)
           :pid (plist-get record :pid) :pi-pid pid
           :pi-start-time (plist-get identity :start-time)
@@ -259,6 +263,7 @@ protocol owns cleanup; a committed runtime is left available for attachment."
   (when-let* ((chat (process-get process 'pilish-chat-buffer))
               ((buffer-live-p chat)))
     (with-current-buffer chat
+      (process-put process 'pilish-was-live t)
       (setq pilish--runtime (plist-put pilish--runtime :state "live"))
       (when-let* ((timer (process-get process 'pilish-runtime-ready-timer)))
         (cancel-timer timer)
@@ -281,11 +286,17 @@ protocol owns cleanup; a committed runtime is left available for attachment."
               ((buffer-live-p chat)))
     (with-current-buffer chat
       (when (eq process pilish--process)
-        (setq pilish--runtime (plist-put pilish--runtime :state "stopped"))
         (setq pilish--runtime (plist-put pilish--runtime :exit event))
-        (if (equal (plist-get pilish--runtime :placement) "worker")
-            (pilish--runtime-worker-terminated chat)
-          (pilish--runtime-retire-view chat))))))
+        (cond
+         ((and (pilish--runtime-service-root-p pilish--runtime)
+               (not pilish--runtime-close-callbacks))
+          (setq pilish--runtime (plist-put pilish--runtime :state "disconnected"))
+          (pilish--runtime-schedule-reconnect process))
+         (t
+          (setq pilish--runtime (plist-put pilish--runtime :state "stopped"))
+          (if (equal (plist-get pilish--runtime :placement) "worker")
+              (pilish--runtime-worker-terminated chat)
+            (pilish--runtime-retire-view chat))))))))
 
 (defun pilish--runtime-transport-exit (process)
   "Preserve runtime identity when PROCESS's frontend transport disappears."
@@ -304,7 +315,29 @@ protocol owns cleanup; a committed runtime is left available for attachment."
           (unless (and (equal (plist-get pilish--runtime :placement) "worker")
                        (plist-get pilish--runtime :task-cancel-requested))
             (pilish--runtime-finish-close chat "Close outcome uncertain after disconnection; reconnect or reconcile the retained identity"))
-          (pilish--runtime-complete-ready chat "Disconnected before readiness; reconnect explicitly"))))))
+          (pilish--runtime-complete-ready chat "Disconnected before readiness; reconnect explicitly")
+          (when (process-get process 'pilish-was-live)
+            (pilish--runtime-schedule-reconnect process)))))))
+
+(defun pilish--runtime-schedule-reconnect (process)
+  "Reconnect PROCESS's root through its service without sending any input."
+  (when (and (pilish--runtime-service-root-p pilish--runtime)
+             (not pilish--runtime-recovery-timer)
+             (not pilish--runtime-retiring)
+             (not pilish--runtime-close-callbacks))
+    (let ((chat (current-buffer)))
+      (setq pilish--runtime-recovery-timer
+            (run-at-time
+             0 nil
+             (lambda ()
+               (when (buffer-live-p chat)
+                 (with-current-buffer chat
+                   (setq pilish--runtime-recovery-timer nil)
+                   (when (and (eq process pilish--process)
+                              (not pilish--runtime-retiring)
+                              (not (process-live-p pilish--runtime-launcher)))
+                     (pilish-reconnect-runtime
+                      chat (lambda (error) (when error (message "Pi: %s" error)))))))))))))
 
 (defun pilish--runtime-register-socket (process chat runtime)
   "Associate PROCESS with CHAT and expected RUNTIME before accepting records."
@@ -371,6 +404,47 @@ protocol owns cleanup; a committed runtime is left available for attachment."
        (pilish--runtime-complete-ready chat (error-message-string err))
        nil))))
 
+(defun pilish--runtime-connect-committed (chat receipt directory environment callback)
+  "Discover RECEIPT asynchronously in DIRECTORY/ENVIRONMENT, then connect CHAT.
+CALLBACK settles only after connection readiness or discovery failure."
+  ;; Commitment survives frontend exit even before placement is discovered.
+  (setq pilish--runtime (pilish--runtime-normalize
+                         (plist-put (copy-sequence receipt) :placement "unknown"))
+        pilish--runtime (plist-put pilish--runtime :state "starting"))
+  (pilish--note-desktop-state)
+  (cl-labels
+      ((failed (reason)
+         (with-current-buffer chat
+           (setq pilish--runtime-launcher nil
+                 pilish--runtime (plist-put pilish--runtime :state "unavailable"))
+           (pilish--note-desktop-state)
+           (funcall callback reason))))
+    (condition-case failure
+        (setq pilish--runtime-launcher
+              (pilish--runtime-call
+               '("list" "--json") directory environment
+               (lambda (records error)
+                 (when (buffer-live-p chat)
+                   (with-current-buffer chat
+                     (setq pilish--runtime-launcher nil)
+                     (condition-case failure
+                         (progn
+                           (when error (error "%s" error))
+                           (unless (vectorp records) (error "Invalid runtime discovery response"))
+                           (let* ((record (seq-find
+                                           (lambda (item)
+                                             (equal (plist-get item :muxId) (plist-get receipt :muxId)))
+                                           records))
+                                  (runtime (and record (pilish--runtime-normalize record))))
+                             (unless (and runtime
+                                          (equal (plist-get runtime :pi-pid) (plist-get receipt :piPid))
+                                          (equal (plist-get runtime :socket) (plist-get receipt :socket)))
+                               (error "Committed runtime discovery unavailable; inspect its retained receipt"))
+                             ;; Discovery, not the receipt, owns task/host placement.
+                             (pilish--runtime-connect chat runtime callback)))
+                       (error (failed (error-message-string failure)))))))))
+      (error (failed (error-message-string failure))))))
+
 (defun pilish--runtime-start-view (chat directory args environment callback)
   "Explicitly launch a runtime for CHAT in DIRECTORY with ARGS/ENVIRONMENT.
 CALLBACK takes nil/error once.  No initial prompt or inferred recovery is sent."
@@ -401,28 +475,16 @@ CALLBACK takes nil/error once.  No initial prompt or inferred recovery is sent."
                           (or error "Invalid runtime commitment receipt; inspect discovery") 'pilish-error-notice)
                          (pilish--note-desktop-state)
                          (when callback (funcall callback (or error "Invalid runtime commitment receipt"))))
-                     (condition-case failure
-                         (let ((runtime (seq-find
-                                         (lambda (item)
-                                           (equal (plist-get item :mux-id) (plist-get receipt :muxId)))
-                                         (pilish-list-runtimes))))
-                           (unless (and runtime
-                                        (equal (plist-get runtime :pi-pid) (plist-get receipt :piPid))
-                                        (equal (plist-get runtime :socket) (plist-get receipt :socket)))
-                             (error "Committed runtime discovery unavailable; inspect its retained receipt"))
-                           ;; Preserve authoritative task/host placement.  The
-                           ;; launch receipt alone must not promote a worker to root.
-                           (pilish--runtime-connect chat runtime callback))
-                       (error
-                        (setq pilish--runtime (pilish--runtime-normalize receipt))
-                        (setq pilish--runtime (plist-put pilish--runtime :state "unavailable"))
-                        (pilish--note-desktop-state)
-                        (when callback (funcall callback (error-message-string failure))))))))))))
+                     (pilish--runtime-connect-committed
+                      chat receipt directory environment callback))))))))
     (pilish--note-desktop-state)))
 
 (defun pilish--runtime-kill-view ()
-  "Disconnect this view; cancel only its own uncommitted launcher, if any."
+  "Disconnect this view and cancel its pending launch or discovery process."
   (pilish--runtime-task-cancel-poll)
+  (when pilish--runtime-recovery-timer
+    (cancel-timer pilish--runtime-recovery-timer)
+    (setq pilish--runtime-recovery-timer nil))
   (when pilish--runtime-close-timer
     (cancel-timer pilish--runtime-close-timer)
     (setq pilish--runtime-close-timer nil))
