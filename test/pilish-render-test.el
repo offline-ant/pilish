@@ -10594,8 +10594,12 @@ Tests dispatch the captured callback rather than calling a paint directly."
        ,@body)))
 
 (defun pilish-test--dispatch-tool-clock (timer)
-  "Dispatch TIMER's captured callback, including its original identity."
-  (apply (timer--function timer) (timer--args timer)))
+  "Dispatch TIMER's captured callback, including its original identity.
+The current chat is shown meanwhile: a hidden chat's tick changes no text."
+  (save-current-buffer
+    (save-window-excursion
+      (set-window-buffer (selected-window) (current-buffer))
+      (apply (timer--function timer) (timer--args timer)))))
 
 (defun pilish-test--tool-duration-text (block)
   "Return just BLOCK's owned duration text, or nil without a suffix."
@@ -10723,6 +10727,30 @@ Tests dispatch the captured callback rather than calling a paint directly."
           (pilish-test--dispatch-tool-clock timer)
           (should (equal-including-properties before (buffer-string))))))))
 
+(ert-deftest pilish-test-tool-duration-live-hidden-chat-paints-when-shown ()
+  "A hidden chat's tick keeps the clock but edits no text; showing it repaints."
+  (pilish-test--with-tool-clock
+    (let ((chat (generate-new-buffer " *clock-hidden*")))
+      (unwind-protect
+          (with-current-buffer chat
+            (pilish-chat-mode)
+            (pilish-test--hover-tool-start "A")
+            (let ((block (pilish--tool-block-get "A"))
+                  (tick (buffer-chars-modified-tick)))
+              (setq now 109)
+              (apply (timer--function pilish--tool-time-timer)
+                     (timer--args pilish--tool-time-timer))
+              (should (= tick (buffer-chars-modified-tick)))
+              (should (equal (pilish-test--tool-duration-text block) "Elapsed 0s"))
+              (should (timerp pilish--tool-time-timer))
+              (should (equal pilish--running-tool-blocks (list block)))
+              (save-window-excursion
+                (set-window-buffer (selected-window) chat)
+                (pilish--paint-held-tool-state (selected-window)))
+              (should (equal (pilish-test--tool-duration-text block) "Elapsed 9s"))
+              (pilish--cancel-tool-times)))
+        (kill-buffer chat)))))
+
 (ert-deftest pilish-test-tool-duration-live-buffer-local-clock-ownership ()
   "Cancelling one transcript cannot retire another transcript's live owner."
   (pilish-test--with-tool-clock
@@ -10742,8 +10770,8 @@ Tests dispatch the captured callback rather than calling a paint directly."
             (with-current-buffer first (pilish--cancel-tool-times))
             (setq now 104)
             (pilish-test--dispatch-tool-clock first-timer)
-            (pilish-test--dispatch-tool-clock second-timer)
             (with-current-buffer second
+              (pilish-test--dispatch-tool-clock second-timer)
               (should (equal (pilish-test--tool-duration-text (pilish--tool-block-get "same-id")) "Elapsed 4s"))
               (should (= (length pilish--running-tool-blocks) 1))))
         (kill-buffer first)
@@ -21985,7 +22013,7 @@ not render synchronously."
             (should (= 1 (length pilish--pending-tool-updates))))
           (save-window-excursion
             (set-window-buffer (selected-window) chat)
-            (pilish--flush-tool-updates-on-display (selected-window))
+            (pilish--paint-held-tool-state (selected-window))
             (let ((timer pilish--tool-update-flush-timer))
               (should (timerp timer))
               (cancel-timer timer)
