@@ -25496,6 +25496,33 @@ invisible, or markdown face properties."
             (should (equal (get-text-property image-start 'display) image))
             (should (get-text-property image-start 'pilish-image-preview))))))))
 
+(ert-deftest pilish-test-restore-tool-properties-narrowed-jit-lock ()
+  "Jit-lock repairs a partial tool block without changing the restriction."
+  ;; Regression of #363: #372 removed its restriction clamp and regression.
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (pilish--display-tool-start
+     "bash" '(:command "echo \"**first**\"\necho \"__second__\"\necho \"**third**\""))
+    (goto-char (point-min))
+    (search-forward "__second__")
+    (let* ((start (match-beginning 0))
+           (end (match-end 0))
+           (overlay (car (pilish--tool-block-overlays-in-region start end))))
+      (should (< (overlay-start overlay) start))
+      (should (> (overlay-end overlay) end))
+      (jit-lock-mode t)
+      (font-lock-flush)
+      (save-restriction
+        (narrow-to-region start end)
+        ;; Exercise the registered fontifier and restoration callback, as
+        ;; vertical-motion does while counting screen lines under narrowing.
+        (jit-lock-function start)
+        (should (= (point-min) start))
+        (should (= (point-max) end))
+        (should-not (text-property-not-all start end 'fontified t))
+        (should-not (text-property-not-all start end 'face 'pilish-tool-command))
+        (should-not (text-property-not-all start end 'invisible nil))))))
+
 (ert-deftest pilish-test-restore-tool-properties-restores-all-live-tool-headers ()
   "restore-tool-properties repairs every overlapping live tool header."
   (with-temp-buffer
