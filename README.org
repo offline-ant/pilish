@@ -423,7 +423,8 @@ Press =q= to close only that snapshot.
 #+html: <details>
 #+html: <summary><strong>Saved conversation reference</strong></summary>
 
-Each open creates an independent observer, even for the same link.
+Opening a saved conversation that already has a snapshot refreshes and
+shows that snapshot instead of creating another.
 Refresh rereads that observer's captured file association and
 revalidates the exact session header, branch, and role rules.  An
 unchanged read keeps the buffer, folds, and view exactly.  A changed
