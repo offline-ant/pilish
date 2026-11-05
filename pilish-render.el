@@ -6272,7 +6272,7 @@ It fires after DELAY seconds, by default the render interval."
 (defun pilish--flush-shown-tool-updates (buffer)
   "Flush BUFFER's pending tool previews if a window on any frame shows it.
 Timer callback for `pilish--tool-update-flush-timer'.  A hidden chat keeps
-its previews pending without a timer; `pilish--flush-tool-updates-on-display'
+its previews pending without a timer; `pilish--paint-held-tool-state'
 schedules their paint when a window shows the chat again."
   (when (buffer-live-p buffer)
     (if (get-buffer-window buffer t)
@@ -6280,18 +6280,19 @@ schedules their paint when a window shows the chat again."
       (with-current-buffer buffer
         (setq pilish--tool-update-flush-timer nil)))))
 
-(defun pilish--flush-tool-updates-on-display (window)
-  "Schedule an immediate paint of previews held while WINDOW's chat was hidden.
-Buffer-local `window-buffer-change-functions' entry of chat buffers."
+(defun pilish--paint-held-tool-state (window)
+  "Paint what WINDOW's chat held back while hidden: previews and elapsed times.
+Buffer-local `window-buffer-change-functions' entry of chat buffers.
+Previews paint from an immediate flush; elapsed times refresh at once."
   (with-current-buffer (window-buffer window)
     (when (and pilish--pending-tool-updates
                (not pilish--tool-update-flush-timer))
-      (pilish--schedule-tool-update-flush 0))))
+      (pilish--schedule-tool-update-flush 0))
+    (mapc #'pilish--refresh-tool-duration-safely pilish--running-tool-blocks)))
 
 (defun pilish--setup-tool-update-display ()
-  "Paint previews held while the current chat was hidden once it is shown."
-  (add-hook 'window-buffer-change-functions
-            #'pilish--flush-tool-updates-on-display nil t))
+  "Paint tool state held while the current chat was hidden once it is shown."
+  (add-hook 'window-buffer-change-functions #'pilish--paint-held-tool-state nil t))
 
 (add-hook 'pilish-chat-mode-hook #'pilish--setup-tool-update-display)
 
@@ -7022,8 +7023,10 @@ local seconds and never supply a missing final measurement."
 Prune detached and terminal roots, then rearm only for eligible running roots.
 A root whose footer refresh fails is quarantined: its estimate retires
 quietly, one warning reports the failure, and healthy roots keep ticking.
-Duration footers always refresh.  Structured subagent previews repaint
-their ages only when the user is not typing; typing wins here too.
+Duration footers refresh while a window on any frame shows the chat;
+a hidden chat changes no text, and `pilish--paint-held-tool-state'
+refreshes its footers once it is shown.  Structured subagent previews
+repaint their ages only when the user is not typing; typing wins here too.
 Other output selection, images, and cooling are not part of a tick."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
@@ -7031,7 +7034,7 @@ Other output selection, images, and cooling are not part of a tick."
         (setq pilish--tool-time-timer nil)
         (let ((blocks pilish--running-tool-blocks))
           (setq pilish--running-tool-blocks (seq-filter #'pilish--running-tool-clock-p blocks))
-          (dolist (block blocks)
+          (dolist (block (and (get-buffer-window buffer t) blocks))
             (condition-case-unless-debug err
                 (progn
                   (pilish--refresh-tool-duration block)
