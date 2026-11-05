@@ -2766,6 +2766,19 @@ larger window when the selected one cannot be split."
 ;;
 ;; During streaming, windows "following" output (window-point at buffer end)
 ;; scroll to show new content. Windows where the user scrolled up stay put.
+;; After a command that moves a chat window's start, its point is settled
+;; before the next command.  A command that scrolls a following window back
+;; while the end stays visible leaves point at the end, so point moves off
+;; the end and the window reads instead of following.  Emacs scrolling can
+;; also leave point outside the view (`vertical-motion' and the display
+;; disagree about rows with overlay strings), and the next scroll command
+;; then restarts near point; point moves back into the view, as redisplay
+;; would, but before a quickly following scroll can see it.
+
+(defvar pilish--command-chat-views nil
+  "List of (WINDOW START FOLLOWING) for chat windows when a command began.
+START is a marker at WINDOW's start then, and FOLLOWING whether WINDOW
+followed the output.")
 
 (defun pilish--window-following-p (window)
   "Return non-nil if WINDOW is following output (point at end of buffer)."
@@ -2836,8 +2849,73 @@ Return nil."
                      body-height))
             (set-window-start window start t)
           (recenter -1))))
-    (set-window-point window end))
+    (set-window-point window end)
+    ;; Positioning the tail during a command is not the reader scrolling.
+    (when-let* ((view (assq window pilish--command-chat-views)))
+      (set-marker (nth 1 view) (window-start window))))
   nil)
+
+(defun pilish--release-command-chat-views ()
+  "Forget `pilish--command-chat-views' and detach its markers."
+  (dolist (view pilish--command-chat-views)
+    (set-marker (nth 1 view) nil))
+  (setq pilish--command-chat-views nil))
+
+(defun pilish--record-command-chat-views ()
+  "Remember the starts of chat windows and whether they follow the output."
+  (pilish--release-command-chat-views)
+  (walk-windows
+   (lambda (window)
+     (with-current-buffer (window-buffer window)
+       (when (derived-mode-p 'pilish-chat-mode)
+         (push (list window (copy-marker (window-start window))
+                     (pilish--window-following-p window))
+               pilish--command-chat-views))))
+   'no-minibuf t))
+
+(defun pilish--move-point-into-view (window)
+  "Move WINDOW's point into its view when the view does not show it.
+A point below the view moves to the last visible position.  The current
+buffer must be WINDOW's buffer."
+  (let ((start (window-start window))
+        (point (window-point window)))
+    (cond ((< point start) (set-window-point window start))
+          ((not (pos-visible-in-window-p point window))
+           (set-window-point
+            window
+            (save-excursion
+              (goto-char (max start (1- (window-end window t))))
+              (while (and (> (point) start)
+                          (not (pos-visible-in-window-p (point) window)))
+                (goto-char (max start (if (bolp)
+                                          (1- (point))
+                                        (line-beginning-position)))))
+              (point)))))))
+
+(defun pilish--settle-command-chat-views ()
+  "Settle the points of chat windows whose start the command moved.
+A follower scrolled back reads from the start of the last nonblank line,
+or the window start when that line starts above it.  Every moved window
+then gets a point inside its view."
+  (pcase-dolist (`(,window ,start ,following) pilish--command-chat-views)
+    (when (and (window-live-p window)
+               (eq (window-buffer window) (marker-buffer start))
+               (/= (window-start window) start))
+      (with-current-buffer (window-buffer window)
+        (when (and following
+                   (< (window-start window) start)
+                   (pilish--window-following-p window))
+          (set-window-point
+           window
+           (save-excursion
+             (goto-char (point-max))
+             (skip-chars-backward " \t\n")
+             (max (line-beginning-position) (window-start window)))))
+        (pilish--move-point-into-view window))))
+  (pilish--release-command-chat-views))
+
+(add-hook 'pre-command-hook #'pilish--record-command-chat-views)
+(add-hook 'post-command-hook #'pilish--settle-command-chat-views)
 
 (defvar pilish--viewport-construction-buffers nil
   "Buffers whose intermediate viewport updates are deferred in this stack.

@@ -2072,6 +2072,94 @@ Buffer is read-only with `inhibit-read-only' used for insertion.
               (should (= (window-point tail) (point-max))))))
       (kill-buffer chat))))
 
+(ert-deftest pilish-test-scroll-back-command-stops-following ()
+  "Scrolling a follower back with its end in view makes it a reader.
+Positioning the tail during a command keeps it following."
+  (let ((chat (generate-new-buffer " *pilish-scroll-back*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer chat)
+          (pilish-chat-mode)
+          (let ((inhibit-read-only t)
+                (window (selected-window))
+                (line (lambda (n)
+                        (save-excursion
+                          (goto-char (point-min))
+                          (forward-line (1- n))
+                          (point)))))
+            (dotimes (i 100) (insert (format "line %d\n" (1+ i))))
+            (set-window-point window (point-max))
+            (set-window-start window (funcall line 98))
+            (should (pilish--window-following-p window))
+            ;; A scroll command moves the start back; point stays at the end.
+            (pilish--record-command-chat-views)
+            (set-window-start window (funcall line 97))
+            (cl-letf (((symbol-function 'pos-visible-in-window-p)
+                       (lambda (&rest _) t)))
+              (pilish--settle-command-chat-views))
+            (should-not pilish--command-chat-views)
+            (should-not (pilish--window-following-p window))
+            (should (= (window-point window) (funcall line 100)))
+            (should (= (window-start window) (funcall line 97)))
+            (pilish--append-to-chat "streamed output\n")
+            (should (= (window-start window) (funcall line 97)))
+            (should (= (window-point window) (funcall line 100)))
+            ;; A command that restores a follower's tail is no scroll back.
+            (set-window-point window (point-max))
+            (set-window-start window (funcall line 60))
+            (pilish--record-command-chat-views)
+            (cl-letf (((symbol-function 'recenter)
+                       (lambda (&rest _)
+                         (set-window-start window (funcall line 50)))))
+              (pilish--restore-tail-window window (funcall line 40)))
+            (cl-letf (((symbol-function 'pos-visible-in-window-p)
+                       (lambda (&rest _) t)))
+              (pilish--settle-command-chat-views))
+            (should (= (window-start window) (funcall line 50)))
+            (should (pilish--window-following-p window))))
+      (kill-buffer chat))))
+
+(ert-deftest pilish-test-scroll-command-keeps-point-in-view ()
+  "A scroll that leaves a reader's point below the view moves it into view.
+The next scroll then starts from the view instead of from point."
+  (let ((chat (generate-new-buffer " *pilish-scroll-point-in-view*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer chat)
+          (pilish-chat-mode)
+          (let ((inhibit-read-only t)
+                (window (selected-window))
+                (line (lambda (n)
+                        (save-excursion
+                          (goto-char (point-min))
+                          (forward-line (1- n))
+                          (point)))))
+            (dotimes (i 100) (insert (format "line %d\n" (1+ i))))
+            (set-window-start window (funcall line 60))
+            (set-window-point window (funcall line 60))
+            (pilish--record-command-chat-views)
+            ;; Emacs scrolling left point just past the view.
+            (set-window-start window (funcall line 59))
+            (set-window-point window (funcall line 90))
+            (cl-letf (((symbol-function 'window-end)
+                       (lambda (&rest _) (funcall line 70)))
+                      ((symbol-function 'pos-visible-in-window-p)
+                       (lambda (pos &rest _)
+                         (and (>= pos (funcall line 59))
+                              (< pos (funcall line 70))))))
+              (pilish--settle-command-chat-views))
+            (should (= (window-start window) (funcall line 59)))
+            (should (= (window-point window) (1- (funcall line 70))))
+            ;; A point above the view moves to its start.
+            (pilish--record-command-chat-views)
+            (set-window-start window (funcall line 65))
+            (set-window-point window (funcall line 10))
+            (pilish--settle-command-chat-views)
+            (should (= (window-point window) (funcall line 65)))))
+      (kill-buffer chat))))
+
 (ert-deftest pilish-test-scroll-preservation-keeps-point-after-contraction ()
   "A deletion before point keeps a nonselected reader on the same text."
   (let ((chat (generate-new-buffer " *pilish-scroll-contraction*"))
