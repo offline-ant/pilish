@@ -135,11 +135,12 @@
 
 ;;;###autoload
 (defun pilish-view-session-file (file)
-  "Open Pi v3 session FILE in a new read-only saved observer and return it.
+  "Open Pi v3 session FILE in a read-only saved observer and return it.
 Like a saved-conversation link, select the observer in another window.
 This never starts or resumes Pi and never changes any live session or
-draft.  Each call creates an independent observer; \`g' rereads its captured
-file identity.  Invalid or unreadable files signal an error before display.
+draft.  Viewing a file that already has an observer refreshes and shows
+that observer; \`g' rereads its captured file identity.  Invalid or
+unreadable files signal an error before display.
 A symlink whose target resolves outside FILE's own directory is refused.
 Reads and rendering are synchronous, including for remote files."
   (interactive (list (pilish--read-session-file-name)))

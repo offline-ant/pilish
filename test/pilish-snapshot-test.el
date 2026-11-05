@@ -367,10 +367,9 @@
                   (should (eq (buffer-local-value 'pilish--canonical-messages parent) canonical))
                   (should (equal (with-current-buffer input (buffer-string)) "Unsent parent draft"))
                   (setq second (pilish-open-subagent-snapshot target))
-                  (should-not (eq second snapshot))
+                  (should (eq second snapshot))
                   (pilish-snapshot-quit)
-                  (should-not (buffer-live-p second))
-                  (should (buffer-live-p snapshot))
+                  (should-not (buffer-live-p snapshot))
                   (should (buffer-live-p parent))
                   (should (buffer-live-p input)))))
           (pilish-test--kill-live-buffers snapshot second))))))
@@ -858,21 +857,26 @@
             (should-not (buffer-live-p nested)))
         (pilish-test--kill-live-buffers nested snapshot parent)))))
 
-(ert-deftest pilish-test-snapshot-does-not-update-until-another-open ()
+(ert-deftest pilish-test-snapshot-reopen-refreshes-the-one-observer ()
   (pilish-test--with-snapshot-files
     (pilish-test--snapshot-write child (list header (pilish-test--snapshot-message "first" nil "First saved text")))
     (save-window-excursion
-      (let (first second)
+      (let (first second third)
         (unwind-protect
             (progn
               (setq first (pilish-open-subagent-snapshot target))
+              (should (eq (pilish-open-subagent-snapshot target) first))
               (pilish-test--snapshot-write child (list header (pilish-test--snapshot-message "second" nil "New saved text")))
               (setq second (pilish-open-subagent-snapshot target))
+              (should (eq (current-buffer) second))
               (should (string-match-p "New saved text" (buffer-string)))
-              (should (with-current-buffer first
-                        (and (string-match-p "First saved text" (buffer-string))
-                             (not (string-match-p "New saved text" (buffer-string)))))))
-          (pilish-test--kill-live-buffers first second))))))
+              (should (= 1 (seq-count (lambda (buffer)
+                                        (buffer-local-value 'pilish--snapshot-observer buffer))
+                                      (buffer-list))))
+              (setq third (pilish-open-subagent-snapshot target))
+              (should (eq third second))
+              (should (= 1 (length (get-buffer-window-list second nil t)))))
+          (pilish-test--kill-live-buffers first second third))))))
 
 (defun pilish-test--snapshot-check-native-summary-opener (tool arguments)
   (pilish-test--with-snapshot-files
@@ -2127,34 +2131,6 @@
                         (should (string-match-p "New saved text" (buffer-string)))))
                   (pilish-test--kill-live-buffers replacement))))
           (pilish-test--kill-live-buffers snapshot))))))
-
-(ert-deftest pilish-test-snapshot-refresh-observers-stay-independent ()
-  (pilish-test--with-snapshot-files
-    (pilish-test--snapshot-write child (list header (pilish-test--snapshot-message "leaf" nil "First saved text")))
-    (save-window-excursion
-      (let (first second first-replacement)
-        (unwind-protect
-            (progn
-              (setq first (pilish-open-subagent-snapshot target))
-              (setq second (pilish-open-subagent-snapshot target))
-              (should-not (eq first second))
-              (pilish-test--snapshot-write child (list header (pilish-test--snapshot-message "leaf" nil "New saved text")))
-              (setq first-replacement (with-current-buffer first
-                                        (pilish-test--snapshot-refresh "Saved conversation updated")))
-              (should-not (eq first-replacement first))
-              (should-not (buffer-live-p first))
-              (with-current-buffer first-replacement
-                (should (string-match-p "New saved text" (buffer-string))))
-              (should (buffer-live-p second))
-              (with-current-buffer second
-                (should (string-match-p "First saved text" (buffer-string)))
-                (should-not (string-match-p "New saved text" (buffer-string))))
-              (setq second (with-current-buffer second
-                             (pilish-test--snapshot-refresh "Saved conversation updated")))
-              (with-current-buffer second
-                (should (string-match-p "New saved text" (buffer-string)))
-                (should-not (string-match-p "First saved text" (buffer-string)))))
-          (pilish-test--kill-live-buffers first-replacement first second))))))
 
 (ert-deftest pilish-test-snapshot-refresh-switches-every-window-showing-the-observer ()
   (pilish-test--with-snapshot-files
