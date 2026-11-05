@@ -209,10 +209,14 @@ follow-ups leave at once, so they cannot start while Pi answers."
 
 (defun pilish--confirm-shared-queue-clear ()
   "Ask permission to remove the runtime's global shared input queue.
-Confirmation applies to one intentional action, never a later automatic retry."
-  (yes-or-no-p
-   (concat "Clear queued input for EVERY attached frontend? ALL acknowledged recovered text "
-           "goes only to this requester; some input may already have been delivered. ")))
+Confirmation applies to one intentional action, never a later automatic retry.
+A single y or n answers; RET answers yes."
+  (let ((y-or-n-p-map (define-keymap :parent y-or-n-p-map "RET" #'y-or-n-p-insert-y))
+        (query-replace-map (define-keymap :parent query-replace-map "RET" 'act)))
+    (y-or-n-p
+     (concat "Clear queued input for EVERY attached frontend? ALL acknowledged recovered text "
+             "goes only to this requester; some input may already have been delivered. "
+             "(default y)"))))
 
 (defun pilish--retain-shared-queue-response (response context)
   "Retain only acknowledged shared queue text from RESPONSE, bound to CONTEXT."
