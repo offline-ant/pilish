@@ -727,5 +727,67 @@
         (should (string-search "retirement failure recovery" (buffer-string)))
         (should (string-search "Injected retirement observer failure" (buffer-string)))))))
 
+(defmacro pilish-runtime-task-test--with-ended-worker (dead receipt &rest body)
+  "Run BODY with failed task evidence, DEAD processes and terminal RECEIPT."
+  (declare (indent 2))
+  `(pilish-runtime-task-test--with-view
+     (with-current-buffer chat
+       (setq pilish--runtime (plist-put pilish--runtime :operation-id "test-operation")))
+     (setq task-record (plist-put task-record :state "failed")
+           task-record (plist-put task-record :error "Emacs view close timed out"))
+     (pilish-runtime-test--write-task task-file task-record)
+     (cl-letf (((symbol-function 'pilish--runtime-definitely-dead-p)
+                (lambda (checked)
+                  (should (equal (plist-get checked :pi-pid) (emacs-pid)))
+                  ,dead))
+               ((symbol-function 'pilish--runtime-terminal-receipt)
+                (lambda (checked)
+                  (should (equal (plist-get checked :mux-id) "test-runtime"))
+                  ,receipt))
+               ((symbol-function 'pilish-submit-prompt)
+                (lambda (&rest _) (ert-fail "Ended worker Close submitted input")))
+               ((symbol-function 'pilish--rpc-async)
+                (lambda (&rest _) (ert-fail "Ended worker Close sent a command"))))
+       ,@body)))
+
+(ert-deftest pilish-runtime-task-test-close-retires-failed-worker-pimux-proves-ended ()
+  "Failed evidence plus pimux's exact terminal receipt lets Close remove the view."
+  (pilish-runtime-task-test--with-ended-worker t
+      '(:muxId "test-runtime" :operationId "test-operation" :state "stopped")
+    (let ((input (pilish-session-input-buffer chat)) outcomes (closed 0))
+      (with-current-buffer input (insert "ended worker draft"))
+      (cl-letf (((symbol-function 'display-warning)
+                 (lambda (&rest _) (ert-fail "Reported task failure raised a cleanup warning"))))
+        (let ((pilish-session-closed-functions (list (lambda (_) (cl-incf closed)))))
+          (pilish-close-session chat (lambda (error) (push error outcomes)))))
+      (should (= closed 1))
+      (should-not (buffer-live-p chat))
+      (should-not (buffer-live-p input))
+      (should (= (length outcomes) 1))
+      (should (string-match-p "Worker task cleanup failed: Emacs view close timed out" (car outcomes)))
+      (with-current-buffer "*Pilish closed agents*"
+        (should (string-search "ended worker draft" (buffer-string)))
+        (should (string-search "Emacs view close timed out" (buffer-string)))))))
+
+(ert-deftest pilish-runtime-task-test-close-retains-failed-worker-without-termination-proof ()
+  "Missing evidence, live processes or a foreign or absent receipt keep the refusal."
+  (dolist (change '(alive no-receipt other-operation no-operation missing-evidence))
+    (pilish-runtime-task-test--with-ended-worker (not (eq change 'alive))
+        (unless (eq change 'no-receipt)
+          (list :muxId "test-runtime" :state "stopped"
+                :operationId (if (eq change 'other-operation) "other-operation" "test-operation")))
+      (pcase change
+        ('no-operation
+         (with-current-buffer chat
+           (setq pilish--runtime (plist-put pilish--runtime :operation-id nil))))
+        ('missing-evidence (pilish-runtime-test--write-task task-file :null)))
+      (let (outcomes
+            (pilish-session-closed-functions
+             (list (lambda (_) (ert-fail "Unproven worker termination retired the view")))))
+        (pilish-close-session chat (lambda (error) (push error outcomes)))
+        (should (buffer-live-p chat))
+        (should (= (length outcomes) 1))
+        (should (stringp (car outcomes)))))))
+
 (provide 'pilish-runtime-task-test)
 ;;; pilish-runtime-task-test.el ends here

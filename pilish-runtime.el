@@ -526,10 +526,12 @@ failures after both buffers are removed.  Frontend teardown uses this too."
                           (plist-get runtime :mux-id) (pp-to-string state)))
           (special-mode))))))
 
-(defun pilish--runtime-retire-view (chat)
-  "Retire CHAT after authoritative termination, returning any cleanup error.
+(defun pilish--runtime-retire-view (chat &optional original)
+  "Retire CHAT after authoritative termination, returning any error.
 Observer failure cannot prevent remaining observers, disposal or callbacks.
-Preserve original and cleanup errors with unsent work outside active views."
+Preserve ORIGINAL, an error that preceded retirement, and cleanup errors with
+unsent work outside active views; callbacks and the result report both.
+Only cleanup errors raise a warning: callers already report ORIGINAL."
   (when (and (buffer-live-p chat)
              (not (buffer-local-value 'pilish--runtime-retiring chat)))
     (with-current-buffer chat
@@ -537,7 +539,8 @@ Preserve original and cleanup errors with unsent work outside active views."
             (callbacks pilish--runtime-close-callbacks)
             (ready pilish--runtime-ready-callback)
             (timer pilish--runtime-close-timer)
-            (state (list :runtime (copy-tree pilish--runtime))) failures result)
+            (state (list :runtime (copy-tree pilish--runtime)))
+            (failures (and original (list original))) result)
         (setq pilish--runtime-retiring t
               pilish--runtime-close-callbacks nil
               pilish--runtime-ready-callback nil
@@ -571,7 +574,8 @@ Preserve original and cleanup errors with unsent work outside active views."
           (setq result (when failures (string-join (reverse failures) "; ")))
           (when (processp transport)
             (process-put transport 'pilish-retirement-error result))
-          (when result (display-warning 'pilish result :error))
+          (when (> (length failures) (if original 1 0))
+            (display-warning 'pilish result :error))
           result)))))
 
 (defun pilish--runtime-close-session (chat &optional callback)
