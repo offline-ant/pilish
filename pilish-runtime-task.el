@@ -13,7 +13,9 @@
 (require 'pilish-runtime-process)
 
 (declare-function pilish-session-runtime "pilish-runtime" (buffer))
-(declare-function pilish--runtime-retire-view "pilish-runtime" (chat))
+(declare-function pilish--runtime-retire-view "pilish-runtime" (chat &optional original))
+(declare-function pilish--runtime-definitely-dead-p "pilish-runtime" (runtime))
+(declare-function pilish--runtime-terminal-receipt "pilish-runtime" (runtime))
 (declare-function pilish--runtime-finish-close "pilish-runtime" (chat error))
 (declare-function pilish-submit-prompt "pilish-ui" (chat-buffer text callback &optional behavior input-context))
 
@@ -201,14 +203,32 @@ Socket exit, unknown replies and uncertain delivery cannot rearm input."
                 (equal (plist-get reply :command) "prompt")
                 (not (plist-member reply :delivery))))))
 
+(defun pilish--runtime-worker-ended-p (runtime)
+  "Return non-nil when pimux and dead processes prove RUNTIME ended.
+Pimux's terminal receipt must name RUNTIME's exact mux and launch operation."
+  (and (stringp (plist-get runtime :operation-id))
+       (pilish--runtime-definitely-dead-p runtime)
+       (equal (plist-get (pilish--runtime-terminal-receipt runtime) :operationId)
+              (plist-get runtime :operation-id))))
+
 (defun pilish--runtime-close-worker (chat callback)
-  "Close worker CHAT through its owning task; CALLBACK identifies this request."
+  "Close worker CHAT through its owning task; CALLBACK identifies this request.
+Failed final evidence for a worker that pimux proves ended retires the view,
+settling CALLBACK with that failure: nothing else can finish its cleanup."
   (with-current-buffer chat
     (let* ((runtime (pilish-session-runtime chat))
            (record (pilish--runtime-task-read runtime)))
       (unless (pilish--runtime-task-same-view-p chat runtime)
         (error "Worker identity changed while reading task evidence; nothing sent"))
-      (pilish--runtime-task-apply chat record)
+      (if (and (equal (plist-get record :state) "failed")
+               (pilish--runtime-worker-ended-p runtime))
+          (progn
+            (pilish--runtime-task-cancel-poll)
+            (setq pilish--runtime (plist-put pilish--runtime :state "stopped")
+                  pilish--runtime (plist-put pilish--runtime :task-status record))
+            (pilish--runtime-retire-view
+             chat (format "Worker task cleanup failed: %s" (plist-get record :error))))
+        (pilish--runtime-task-apply chat record))
       (when (and (buffer-live-p chat) (equal (plist-get record :state) "pending"))
         (setq pilish--runtime-close-timer
               (run-at-time 45 nil
