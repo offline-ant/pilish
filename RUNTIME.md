@@ -48,10 +48,15 @@ configuration and protocol-1 lifetime semantics are unsupported, not translated.
 ## Start, readiness and lifetime
 
 A new managed `pilish-start-session` or interactive session invokes the configured
-compiled CLI as `pimux start --json -- <absolute Pi> --mode rpc ...`. The launcher
-claims the exact session before Pi opens it, commits the detached owner and returns
-an identity receipt. It is short-lived, not an stdio bridge. Pilish then connects
-directly to the socket as an ordinary peer; the creator has no privileged lifetime.
+compiled CLI as `pimux start --json -- <absolute Pi> --mode rpc ...`. It requests
+the independently supervised foreground pimux service, which claims the exact
+session before Pi opens it and returns the committed identity receipt. Pilish
+never starts a daemon. Requests wait up to ten seconds for service readiness,
+then report ``pimux unavailable; run `sv up pimux` and retry``. It is short-lived, not an stdio bridge. Pilish immediately
+publishes the committed identity for desktop recovery, with placement unknown
+until discovery succeeds. It asynchronously reads discovery, validates it against
+the receipt and retains its task/host placement before connecting directly to the
+socket as an ordinary peer. The creator has no privileged lifetime.
 
 Before user input is accepted, Pilish validates the private same-user socket and
 parent directory, protocol/capabilities, mux and exact actual Pi PID/start/boot
@@ -88,9 +93,12 @@ Close immediately suspends normal input and automatic local follow-ups while
 preserving recovery; see [DRAFTS.md](DRAFTS.md#close-suspends-local-input).
 Direct buffer disposal, Emacs exit and socket loss disconnect only.
 **Accepted work and provider waits may continue and incur usage invisibly.**
-There is no idle auto-stop, central scheduler, automatic crash restart or paid
-prompt replay. Reconnect and desktop restoration never submit `continue`, tools,
-queued work or inferred retries. A pre-commit launcher cancellation belongs to its
+The service, not Emacs, owns every managed RPC agent and worker. Its restart
+ends old agents and recreates roots idle with fresh extensions; workers and
+interrupted execution are not restored. Individual agent failure does not cause
+an automatic replacement. There is no idle auto-stop or paid prompt replay.
+Reconnect and desktop restoration never submit `continue`, tools, queued work or
+inferred retries. See the owning [service lifecycle](../phimacs/docs/lifecycle.md). A pre-commit launcher cancellation belongs to its
 provisional ownership protocol; post-commit attachment failure leaves an existing
 runtime available for explicit reconnect/stop.
 
@@ -139,7 +147,11 @@ runtime available for explicit reconnect/stop.
   task-owned workers cannot be promoted into independent roots.
 - `pilish-stop-runtime(buffer &optional callback)` performs acknowledged,
   identity-bound root stop everywhere and reconciles its terminal receipt before
-  retiring the view. It never signals a bare Pi PID or asks for confirmation.
+  retiring the view. It permits confirmed `root` and independent
+  `interactive-fork` placements; pending or failed discovery leaves placement
+  unknown, so Stop/Close refuses without runtime
+  control and retains the identity. It never signals a bare Pi PID or asks for
+  confirmation.
 - `pilish-close-session(buffer &optional callback)` closes the agent everywhere,
   using the parent-task cancellation protocol for workers. Before submitting
   `/worker-cancel`, it requires valid pending task evidence and a fresh
@@ -231,20 +243,22 @@ value rather than selecting only text and runtime ID. Materialized images are
 saved data, not paths reopened on restore. Keep desktop files private.
 
 `pilish-restore-session-state(state)` allocates a background view and attaches the
-specified compatible surviving identity, adopting its current file and branch.
-Known terminated identities return nil instead of allocating an active view;
-retained terminal receipts reconcile agents closed while this desktop was offline.
+specified compatible surviving identity or resolves its service-recorded root
+successor, adopting its current file and branch. Durable explicit root Close
+returns nil instead of allocating an active view. Other root process receipts
+require service resolution before retirement: no successor plus terminal evidence
+removes the view asynchronously. Service absence retains an unavailable view and
+local input, even if its old process has stopped.
 Unsent work/abnormal exits remain in read-only `*Pilish closed agents*` recovery,
 outside the active-agent list.
 
-After a verified machine reboot, saved roots and independent interactive forks
-reopen their exact conversation as idle managed agents. Both saved owners must
-have complete PID/start identities and the same nonempty boot ID, different from
-the current readable boot ID. Stopped identities and parent-task workers never
-qualify. Restoration uses the ordinary managed Resume path: common claims attach
-a compatible writer already reopened elsewhere, start one owner, or refuse.
-No prompt, tool, saved queue or shell command is replayed. Failed or uncertain
-starts retain an unavailable view and do not automatically retry.
+Root restoration after service restart or reboot belongs only to the service's
+durable root journal, never to saved frontend state. It proves both old writers
+dead before starting a new identity. Pilish uses read-only `pimux resolve` and a
+fresh snapshot/live boundary; a previously-live root also attempts this recovery
+automatically after transport loss. Desktop restoration never launches a Pi.
+Unmanaged prior-boot views remain unavailable for explicit recovery. Workers are
+never restored, and no prompt, tool, saved queue or shell command is replayed.
 
 Other missing/incompatible owners remain unavailable with explicit recovery;
 identity-free legacy conversations restore as stopped/resumable views requiring
@@ -333,7 +347,7 @@ an explicit setup action, not reference startup or clean-install evidence.
 | `PHIMACS_TEST_ROOT` | A private marked synthetic root created by pimux's `createClaimTestEnvironment()` |
 | `PHIMACS_PI_EXECUTABLE` | Absolute selected physical Pi executable |
 | `PHIMACS_PIMUX_EXECUTABLE` | Absolute compiled candidate pimux executable |
-| `PHIMACS_FAUX_EXTENSION` | Absolute audited `pimux/test/fixture.ts` fixture from the selected source input |
+| `PHIMACS_FAUX_EXTENSION` | Absolute audited `test/support/faux.ts` fixture from the selected source input |
 | `PHIMACS_TASK_STATUS_EXECUTABLE` | Absolute compiled task-status CLI from the selected graph (required for managed-worker cases) |
 | `PHIMACS_ORCHESTRATION_ROOT` | Absolute candidate source root with compiled orchestration/pimux and lifecycle fixtures (managed-worker cases) |
 | `PHIMACS_NATIVE_EMACS_ENDPOINT` | Private socket under the synthetic root, only for the live-companion case |
@@ -380,12 +394,12 @@ moved-session adoption/quarantine and acknowledged explicit stop. The public
 saved-file entry point opens its exact existing conversation during asynchronous
 startup and submits once there. The migrated identity-free view additionally
 resumes its exact persisted history without submitting a draft or any prompt.
-`pilish-runtime-native-test-previous-boot-restores-idle-history-without-replay`
-uses a synthetic prior-boot identity to exercise automatic root reopening with
-real Pi: saved history loads, local work stays suspended, ordinary reconnect keeps
-the same Pi, and another restoration of the old record attaches that one writer.
-The persisted message count remains unchanged. This simulates boot evidence; it
-does not reboot the test host. An injected renderer failure during a real
+`pilish-runtime-native-test-service-restores-idle-history-without-replay`
+restarts its explicit isolated foreground service: history loads idle in a fresh
+Pi, local work stays suspended, and restoring the old saved identity again attaches
+that one successor without another writer or prompt. The fixture owns and stops
+its own service; it never starts or restarts a user service. Cross-frontend service
+restart coverage also lives in Phimacs's sharing integration lane. An injected renderer failure during a real
 snapshot/live sequence retains identity and recoverable input, refuses prompts,
 and recovers only through explicit reconnect without replay. The independent
 synthetic peer captures the snapshot's exact `inputContext` before its one action.

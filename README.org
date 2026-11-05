@@ -69,8 +69,12 @@ Close agent (=q= or menu =Q=) stops it everywhere without confirmation and
 removes its views after authoritative termination.  Closing Emacs, killing a
 buffer directly or losing a connection only disconnects: accepted work and
 provider waits can continue and incur usage.  Reconnect never starts missing
-agents.  Desktop restore reopens verified prior-boot roots idle; neither path
-replays input.  See [[file:RUNTIME.md][RUNTIME.md]] for the boot-evidence and ownership checks.
+agents.  The separate foreground pimux service owns managed agents and workers;
+its restart restores roots idle with fresh extensions, never workers or interrupted
+execution.  Pilish never starts the service; an unavailable service reports how to
+bring it up after a ten-second readiness wait.  Desktop restore only resolves
+existing service successors and never launches Pi or replays input.
+See [[file:RUNTIME.md][RUNTIME.md]] for ownership and recovery checks.
 
 ** Requirements for ordinary unshared use
 
@@ -1685,8 +1689,8 @@ another frontend sharing the process.
 *** Sharing a session with other frontends
 
 Configure the absolute Pi and compiled pimux executables through
-=pilish-configure-runtime=; see Quick start and [[file:RUNTIME.md][RUNTIME.md]].  The launcher commits
-ownership and returns a receipt; Pilish then connects *directly* to the Unix
+=pilish-configure-runtime=; see Quick start and [[file:RUNTIME.md][RUNTIME.md]].  The launcher requests
+the independently supervised pimux service and returns its identity receipt; Pilish then connects *directly* to the Unix
 socket as an ordinary peer.  Protocol 2 has no privileged creator, primary
 stdio transport or protocol-1 lifetime shim.  Input is gated until a valid
 hello, runtime/Pi identity and authoritative snapshot/replay/live boundary.
@@ -1708,16 +1712,18 @@ sends no prompt.  =pilish-stop-runtime= performs acknowledged identity-bound
 stop, never signals a raw Pi PID, and refuses parent-task worker promotion.
 
 Agent Close stops the runtime globally without confirmation.  Authoritative
-root termination, including a crash, removes active views; unsent work and crash
+root Close removes active views; an ended root process first requires service
+successor resolution because the service may be restoring that conversation; unsent work and crash
 information remain in the read-only =*Pilish closed agents*= recovery buffer.
 Worker views additionally await matching successful final task cleanup; failed or
 uncertain cleanup retains their recovery view.  See [[file:RUNTIME.md][RUNTIME.md]] for that boundary.
 Direct buffer disposal, the last client disconnecting and Emacs exit do not stop
 an agent; accepted work and waits may continue and incur usage invisibly.
 Desktop owners use =pilish-session-desktop-state= and
-=pilish-restore-session-state=: restore attaches surviving identities, reopens
-verified prior-boot roots as idle managed agents, retains other unknown/unavailable
-identities for recovery, and returns nil for a known terminal identity.  Workers require matching complete owning-task evidence, not just a
+=pilish-restore-session-state=: restore attaches surviving identities or their
+service-recorded successors, retains unavailable identities for recovery, and
+returns nil for durable explicit root Close.  Other terminal roots retire only
+after read-only service resolution confirms no successor.  Workers require matching complete owning-task evidence, not just a
 stopped runtime receipt.  Failed attachment/readiness rechecks that evidence too,
 so a task completing during restoration does not leave an active recovery view.
 Uncertain workers remain visible for parent-task reconciliation, never independent

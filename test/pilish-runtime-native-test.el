@@ -38,6 +38,28 @@
         (error "Independent peer failed: %s" (buffer-string)))
       (json-parse-string (buffer-string) :object-type 'plist))))
 
+(defun pilish-runtime-native-test--start-service (output)
+  "Start the fixture's explicit foreground service, logging to OUTPUT."
+  (make-process :name "pilish-test-pimux-service" :buffer output :stderr output
+                :noquery t :connection-type 'pipe
+                :command (list pilish-runtime-pimux-executable "serve")))
+
+(defun pilish-runtime-native-test--service-ready (service output)
+  "Wait for fixture SERVICE readiness, retaining OUTPUT on failure."
+  (pilish-runtime-native-test--wait
+   (lambda ()
+     (unless (process-live-p service)
+       (ert-fail (with-current-buffer output (buffer-string))))
+     (with-current-buffer output
+       (string-match-p "pimux service ready" (buffer-string))))))
+
+(defun pilish-runtime-native-test--stop-service (service)
+  "Stop only the fixture's SERVICE and await its actual exit."
+  (when (process-live-p service)
+    (signal-process service 'SIGTERM)
+    (pilish-runtime-native-test--wait (lambda () (not (process-live-p service)))))
+  (should (zerop (process-exit-status service))))
+
 (defmacro pilish-runtime-native-test--with-host (&rest body)
   "Run BODY with explicitly selected candidate/faux host and synthetic namespace."
   (declare (indent 0))
@@ -55,8 +77,9 @@
             (pilish-extra-args
              (list "--no-extensions" "--no-skills" "--no-prompt-templates"
                    "--no-context-files" "--extension" (getenv "PHIMACS_FAUX_EXTENSION")
-                   "--provider" "pimux-fx" "--model" "one" "--thinking" "off"))
-            chat runtime)
+                   "--provider" "fx" "--model" "one" "--thinking" "off"))
+            (service-output (generate-new-buffer " *pilish-test-pimux-service*"))
+            chat runtime service)
        (setq process-environment
              (seq-remove (lambda (entry)
                            (string-match-p "\\`\\(?:PI_ORCHESTRATION_\\|PI_WORKER_\\|PHIMACS_PARENT_\\|PHIMACS_MANAGED_CLAIM=\\|PI_REMOTE=\\)" entry))
@@ -67,7 +90,11 @@
        (pilish-configure-runtime :pi-executable pilish-runtime-pi-executable
                                  :pimux-executable pilish-runtime-pimux-executable
                                  :task-status-executable pilish-runtime-task-status-executable)
-       (unwind-protect (progn ,@body)
+       (unwind-protect
+           (progn
+             (setq service (pilish-runtime-native-test--start-service service-output))
+             (pilish-runtime-native-test--service-ready service service-output)
+             ,@body)
          (setq runtime (or runtime (and (buffer-live-p chat) (pilish-session-runtime chat))))
          (when (and (plist-get runtime :mux-id)
                     (not (equal (plist-get runtime :state) "stopped")))
@@ -78,7 +105,9 @@
            (let ((input (pilish-session-input-buffer chat))
                  (pilish-quit-without-confirmation t))
              (kill-buffer chat)
-             (when (buffer-live-p input) (kill-buffer input))))))))
+             (when (buffer-live-p input) (kill-buffer input))))
+         (when service (pilish-runtime-native-test--stop-service service))
+         (kill-buffer service-output)))))
 
 (ert-deftest pilish-runtime-native-test-creates-detaches-restores-and-stops ()
   (pilish-runtime-native-test--with-host
@@ -237,62 +266,52 @@
                     (seq-find (lambda (record) (equal (plist-get record :draft) "not a prompt"))
                               (plist-get desktop :quarantine))))))))
 
-(ert-deftest pilish-runtime-native-test-previous-boot-restores-idle-history-without-replay ()
-  "A proven reboot reopens saved roots; existing ownership still wins atomically."
+(ert-deftest pilish-runtime-native-test-service-restores-idle-history-without-replay ()
+  "Only the service replaces roots; desktop restoration resolves its successor."
   (pilish-runtime-native-test--with-host
-    (let* ((file (expand-file-name "before-reboot.jsonl" default-directory))
-           (timestamp (format-time-string "%Y-%m-%dT%H:%M:%SZ" nil t))
-           (identity (pilish--runtime-process-identity (emacs-pid)))
-           (previous
-            (pilish-runtime-test--previous-boot
-             (list :protocol 2 :placement "root" :state "live" :socket (expand-file-name "old.sock" root)
-                   :pid (emacs-pid) :owner-start-time (plist-get identity :start-time)
-                   :pi-pid (emacs-pid) :pi-start-time (plist-get identity :start-time))))
-           (saved (list :directory default-directory :name "after-reboot" :runtime previous
-                        :session-file file :draft "reboot draft not submitted"
-                        :followups '("reboot follow-up not submitted"))))
-      (should-not (equal (plist-get previous :pi-boot-id) (plist-get identity :boot-id)))
+    (let ((file (expand-file-name "service-history.jsonl" default-directory))
+          (timestamp (format-time-string "%Y-%m-%dT%H:%M:%SZ" nil t)))
       (with-temp-file file
         (insert (json-encode
-                 (list :type "session" :version 3 :id "before-reboot"
+                 (list :type "session" :version 3 :id "service-history"
                        :timestamp timestamp :cwd default-directory)) "\n"
                 (json-encode
-                 (list :type "message" :id "saved-before-reboot" :parentId nil
-                       :timestamp timestamp
-                       :message '(:role "user" :content "persisted reboot history" :timestamp 1))) "\n"))
+                 (list :type "message" :id "saved-history" :parentId nil :timestamp timestamp
+                       :message '(:role "user" :content "persisted service history" :timestamp 1))) "\n"))
       (set-file-modes file #o600)
-      (setq chat (pilish-restore-session-state saved))
+      (setq chat (pilish-open-session-file file))
       (pilish-runtime-native-test--wait
        (lambda () (equal (plist-get (pilish-session-runtime chat) :state) "live")))
-      (setq runtime (pilish-session-runtime chat))
-      (should (equal (pilish-session-file chat) file))
-      (should-not (pilish-session-busy-p chat))
-      (should-not (pilish-session-queued-prompts chat))
-      (with-current-buffer chat (should (string-match-p "persisted reboot history" (buffer-string))))
-      (let ((desktop (prin1-to-string (pilish-session-desktop-state chat)))
-            (current (pilish-session-process-identity chat)))
-        (should (string-match-p "reboot draft not submitted" desktop))
-        (should (string-match-p "reboot follow-up not submitted" desktop))
-        (should (equal (plist-get current :boot-id) (plist-get identity :boot-id)))
-        (let ((state (pilish-session-desktop-state chat)))
-          (pilish-disconnect-session chat)
-          (setq chat (pilish-restore-session-state state)))
-        (pilish-runtime-native-test--wait
-         (lambda () (equal (plist-get (pilish-session-runtime chat) :state) "live")))
-        (should (equal current (pilish-session-process-identity chat)))
-        ;; A second frontend may already have reopened the file after boot.
-        ;; Restoring the old record must attach that writer, not start another.
+      (with-current-buffer (pilish-session-input-buffer chat) (insert "draft not submitted"))
+      (let* ((identity (pilish-session-process-identity chat))
+             (saved (plist-put (pilish-session-desktop-state chat) :followups '("follow-up not submitted"))))
         (pilish-disconnect-session chat)
+        (pilish-runtime-native-test--stop-service service)
+        (with-current-buffer service-output (erase-buffer))
+        (setq service (pilish-runtime-native-test--start-service service-output))
+        (pilish-runtime-native-test--service-ready service service-output)
         (setq chat (pilish-restore-session-state saved))
         (pilish-runtime-native-test--wait
          (lambda () (equal (plist-get (pilish-session-runtime chat) :state) "live")))
-        (should (equal current (pilish-session-process-identity chat)))
-        (should (= (length (pilish-list-runtimes)) 1)))
+        (setq runtime (pilish-session-runtime chat))
+        (should-not (equal identity (pilish-session-process-identity chat)))
+        (should (equal (pilish-session-file chat) file))
+        (should-not (pilish-session-busy-p chat))
+        (should-not (pilish-session-queued-prompts chat))
+        (let ((desktop (prin1-to-string (pilish-session-desktop-state chat))))
+          (should (string-match-p "draft not submitted" desktop))
+          (should (string-match-p "follow-up not submitted" desktop)))
+        (let ((current (pilish-session-process-identity chat)))
+          (pilish-disconnect-session chat)
+          (setq chat (pilish-restore-session-state saved))
+          (pilish-runtime-native-test--wait
+           (lambda () (equal (plist-get (pilish-session-runtime chat) :state) "live")))
+          (should (equal current (pilish-session-process-identity chat)))
+          (should (= (length (pilish-list-runtimes)) 1))))
       (let* ((reply (pilish-runtime-native-test--peer runtime '(:type "get_messages")))
              (messages (plist-get (plist-get (plist-get reply :response) :data) :messages)))
         (should (= (length messages) 1))
-        (should (equal (plist-get (aref messages 0) :role) "user"))
-        (should (string-match-p "persisted reboot history" (prin1-to-string messages)))))))
+        (should (string-match-p "persisted service history" (prin1-to-string messages)))))))
 
 (ert-deftest pilish-runtime-native-test-failed-render-live-stays-gated-until-reconnect ()
   "A real full boundary and live marker cannot repair a failed renderer."
@@ -381,6 +400,7 @@
         (cl-letf (((symbol-function 'pilish-stop-runtime)
                    (lambda (&rest _) (ert-fail "Reconnect sent a destructive status query"))))
           (pilish-reconnect-runtime chat (lambda (error) (setq outcome error))))
+        (pilish-runtime-native-test--wait (lambda () outcome))
         (should (string-match-p "closed view removed" outcome))
         (should-not (buffer-live-p chat))
         (should-not (buffer-live-p input))

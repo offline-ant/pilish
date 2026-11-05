@@ -4,7 +4,7 @@
 ;;; Commentary:
 
 ;; A view is not an agent.  Attach/reconnect never start a missing runtime.
-;; Desktop restore reopens roots only after proven boot change, without input.
+;; The supervising service restores roots idle; desktop restore only reconnects.
 ;; The identity below survives
 ;; transport loss and identifies the actual owned Pi, not a network pseudo PID.
 ;; Ordinary unshared Pi remains an explicit supported mode.
@@ -172,12 +172,75 @@ An existing view is reused.  No command starts Pi or submits a prompt."
                       (when error (message "Pi: %s" error)))))
     chat))
 
-(defun pilish-reconnect-runtime (buffer &optional callback)
+(defun pilish--runtime-service-root-p (runtime)
+  "Return non-nil when RUNTIME is a root owned by the shared service."
+  (let ((service (plist-get runtime :service)))
+    (and (equal (plist-get runtime :protocol) 2)
+         (listp service) (integerp (plist-get service :pid))
+         (stringp (plist-get service :startTime))
+         (stringp (plist-get service :bootId))
+         (member (plist-get runtime :placement) '("root" "interactive-fork")))))
+
+(defun pilish--runtime-reconnect-service (buffer runtime callback)
+  "Resolve RUNTIME's existing service successor and connect BUFFER.
+Never start an agent or replay input.  Service absence retains the view even
+when the old process has a terminal receipt: it may be awaiting restoration."
+  (let ((id (plist-get runtime :mux-id)))
+    (with-current-buffer buffer
+      (setq pilish--runtime (plist-put pilish--runtime :state "synchronizing"))
+      (setq pilish--runtime-launcher
+            (pilish--runtime-call
+             (list "resolve" "--json" "--id" id)
+             (pilish-session-directory buffer)
+             (list (cons "PIMUX_DIR" (file-name-directory (plist-get runtime :socket))))
+             (lambda (receipt error)
+               (cond
+                ((not (buffer-live-p buffer))
+                 (funcall callback "View was disposed during service reconnection"))
+                ((not (equal id (plist-get (pilish-session-runtime buffer) :mux-id)))
+                 (funcall callback "View identity changed during service reconnection"))
+                (t
+                 (with-current-buffer buffer
+                   (setq pilish--runtime-launcher nil)
+                   (cond
+                    (error
+                     (pilish--runtime-stopped-view buffer error)
+                     (funcall callback error))
+                    ((or (null receipt) (eq receipt :null))
+                     (let ((terminal (pilish--runtime-terminal-receipt runtime)))
+                       (if (or terminal (plist-get runtime :exit))
+                           (progn
+                             (setq pilish--runtime (plist-put pilish--runtime :state "stopped"))
+                             (when terminal
+                               (setq pilish--runtime (plist-put pilish--runtime :terminal-receipt terminal)))
+                             (let ((cleanup (pilish--runtime-retire-view buffer)))
+                               (funcall callback
+                                        (concat "Agent terminated while disconnected; closed view removed"
+                                                (when cleanup (concat "; " cleanup))))))
+                         (let ((reason "Service has no root successor or terminal evidence; view retained"))
+                           (pilish--runtime-stopped-view buffer reason)
+                           (funcall callback reason)))))
+                    ((not (and (equal (plist-get receipt :protocol) 2)
+                               (equal (plist-get receipt :state) "committed")))
+                     (pilish--runtime-stopped-view buffer "Invalid service successor receipt")
+                     (funcall callback "Invalid service successor receipt"))
+                    (t
+                     (pilish--runtime-connect-committed
+                      buffer receipt (pilish-session-directory buffer)
+                      (list (cons "PIMUX_DIR" (file-name-directory (plist-get runtime :socket))))
+                      callback))))))))))))
+
+(cl-defun pilish-reconnect-runtime (buffer &optional callback)
   "Reconnect BUFFER to its retained runtime only, then call CALLBACK.
 CALLBACK receives nil after live, or an error string exactly once.  A missing
 or unsupported runtime stays unavailable and is never started implicitly."
   (let ((callback (pilish--runtime-once callback))
         (runtime (pilish-session-runtime buffer)))
+    (when (pilish--runtime-service-root-p runtime)
+      (condition-case err
+          (pilish--runtime-reconnect-service buffer runtime callback)
+        (error (funcall callback (error-message-string err))))
+      (cl-return-from pilish-reconnect-runtime nil))
     (cl-labels
         ((complete (failure)
            (if (not failure)
@@ -267,6 +330,11 @@ The read-only receipt query never stops a runtime or launches Pi."
   (let* ((runtime (plist-get state :runtime))
          (id (plist-get runtime :mux-id)))
     (and id
+         ;; An ended process does not close a service-restored root.
+         ;; Only durable explicit root Close can bypass successor resolution.
+         (or (not (pilish--runtime-service-root-p runtime))
+             (let ((receipt (pilish--runtime-terminal-receipt runtime)))
+               (and receipt (eq (plist-get receipt :rootClosed) t))))
          (if (equal (plist-get runtime :placement) "worker")
              (condition-case nil
                  (equal (plist-get (pilish--runtime-task-read runtime) :state) "complete")
@@ -278,31 +346,11 @@ The read-only receipt query never stops a runtime or launches Pi."
                                (equal (plist-get receipt :state) "stopped")))))
                (pilish--runtime-terminal-receipt runtime))))))
 
-(defun pilish--runtime-previous-boot-p (runtime)
-  "Return non-nil when RUNTIME is a root with both owners from a prior boot.
-Missing, inconsistent or unreadable identity evidence cannot authorize a start."
-  (let ((boot (plist-get (pilish--runtime-process-identity (emacs-pid)) :boot-id))
-        (previous (plist-get runtime :pi-boot-id)))
-    (and (equal (plist-get runtime :protocol) 2)
-         (member (plist-get runtime :placement) '("root" "interactive-fork"))
-         (not (equal (plist-get runtime :state) "stopped"))
-         (stringp boot) (not (string-empty-p boot))
-         (stringp previous) (not (string-empty-p previous))
-         (not (equal previous boot))
-         (equal previous (plist-get runtime :owner-boot-id))
-         (cl-every
-          (lambda (keys)
-            (let ((pid (plist-get runtime (car keys)))
-                  (start (plist-get runtime (cadr keys))))
-              (and (integerp pid) (> pid 0) (stringp start)
-                   (string-match-p "\\`[0-9]+\\'" start))))
-          '((:pid :owner-start-time) (:pi-pid :pi-start-time))))))
-
 (defun pilish-restore-session-state (state)
   "Restore desktop STATE as a background view, without replaying input.
-Surviving runtimes reconnect.  Roots whose recorded owners predate this boot
-reopen their exact saved conversation through managed claims, idle.  Other
-missing owners remain unavailable; identity-free views require explicit Resume.
+Surviving runtimes and service-restored roots reconnect.  The service alone
+reopens root conversations after restart; this frontend never launches them
+as a restoration fallback.  Identity-free views require explicit Resume.
 Workers and shell commands never restart.  Return nil for a view with
 known terminal evidence."
   (if (pilish-session-state-closed-p state)
@@ -320,15 +368,6 @@ known terminal evidence."
                                     :leaf-id (plist-get state :leaf-id)))
           (pilish--restore-local-desktop-state state)))
       (cond
-       ((pilish--runtime-previous-boot-p runtime)
-        (pilish-resume-stopped-session
-         chat (lambda (error)
-                (when (and error (buffer-live-p chat))
-                  (with-current-buffer chat
-                    (setq pilish--runtime (plist-put pilish--runtime :state "unavailable"))
-                    (pilish--add-chat-notice (format "Reboot restoration failed: %s" error)
-                                            'pilish-error-notice)
-                    (pilish--note-desktop-state))))))
        ((and runtime (plist-get runtime :mux-id))
         ;; Reconnect owns failure reconciliation and its recovery notice.
         (pilish-reconnect-runtime chat))
@@ -366,7 +405,9 @@ Claims enforce live/uncertain-owner refusal before Pi opens a saved file."
 (cl-defun pilish-stop-runtime (buffer &optional callback)
   "Explicitly stop BUFFER's agent everywhere using acknowledged identity control.
 CALLBACK receives nil or an error string exactly once.  No raw PID is signalled.
-No confirmation is required.  Authoritative success retires the active view."
+Only confirmed root or interactive-fork placement permits Stop.
+No confirmation is required.
+Authoritative success retires the active view."
   (let ((callback (pilish--runtime-once callback)))
     (when (and (buffer-live-p buffer)
                (buffer-local-value 'pilish--runtime-retiring buffer))
@@ -380,6 +421,8 @@ No confirmation is required.  Authoritative success retires the active view."
             (error "View has no identity-bound stoppable runtime"))
           (when (equal (plist-get runtime :placement) "worker")
             (error "Cancel this worker through its parent's result protocol"))
+          (unless (member (plist-get runtime :placement) '("root" "interactive-fork"))
+            (error "Runtime placement is not confirmed root or interactive-fork; complete discovery before stopping"))
           (pilish--runtime-call
            (list "stop" "--json" "--id" id)
            (pilish-session-directory buffer) nil
