@@ -13,6 +13,18 @@
 (defvar pilish-runtime-test--received nil)
 (defvar pilish-runtime-test--chat nil)
 
+(defun pilish-runtime-test--discovery (runtime)
+  "Return a raw discovery record for the normalized test RUNTIME."
+  (list :protocol (plist-get runtime :protocol)
+        :muxId (plist-get runtime :mux-id) :socket (plist-get runtime :socket)
+        :pid (plist-get runtime :pid) :piPid (plist-get runtime :pi-pid)
+        :piIdentity (list :startTime (plist-get runtime :pi-start-time)
+                          :bootId (plist-get runtime :pi-boot-id))
+        :sessionFile (plist-get runtime :session-file) :cwd (plist-get runtime :directory)
+        :service (plist-get runtime :service)
+        :placement (plist-get runtime :placement) :parent (plist-get runtime :parent)
+        :orchestration (plist-get runtime :orchestration)))
+
 (defun pilish-runtime-test--previous-boot (runtime)
   "Copy RUNTIME with complete owner identities from a synthetic previous boot."
   (let ((previous (copy-tree runtime))
@@ -241,19 +253,6 @@
                      (plist-get before :draft)))
       (should-not (pilish-session-process pilish-runtime-test--chat)))))
 
-(ert-deftest pilish-runtime-test-missing-restore-retains-draft-never-spawns ()
-  (pilish-runtime-test--with-peer '(:silent t)
-    (cl-letf (((symbol-function 'pilish-list-runtimes) (lambda () nil))
-              ((symbol-function 'pilish--runtime-call) (lambda (&rest _) (ert-fail "Unexpected launch"))))
-      (setq pilish-runtime-test--chat
-            (pilish-restore-session-state
-             (list :directory directory :name "missing" :runtime runtime :session-file file
-                   :draft "kept" :followups '("suspended not sent"))))
-      (should (equal (plist-get (pilish-session-runtime pilish-runtime-test--chat) :state) "unavailable"))
-      (should-not (pilish-session-process pilish-runtime-test--chat))
-      (should (equal (plist-get (pilish-session-desktop-state pilish-runtime-test--chat) :draft) "kept"))
-      (should (pilish-session-quarantine pilish-runtime-test--chat)))))
-
 (ert-deftest pilish-runtime-test-identity-free-close-retires-view-and-retains-draft ()
   (pilish-runtime-test--with-peer '(:silent t)
     (cl-letf (((symbol-function 'pilish-list-runtimes)
@@ -281,112 +280,96 @@
         (with-current-buffer "*Pilish closed agents*"
           (should (string-match-p "identity-free close keeps this draft" (buffer-string))))))))
 
-(ert-deftest pilish-runtime-test-previous-boot-restores-idle-root-through-managed-start ()
-  (dolist (placement '("root" "interactive-fork"))
-    (pilish-runtime-test--with-peer nil
-      (let* ((previous (pilish-runtime-test--previous-boot runtime))
-             (pilish-runtime-pi-executable "/fixture/pi")
-             calls)
-        (setq previous (plist-put previous :placement placement))
-        (cl-letf (((symbol-function 'pilish-list-runtimes) (lambda () (list runtime)))
-                  ((symbol-function 'pilish--runtime-call)
-                   (lambda (args cwd _environment callback)
-                     (push args calls)
-                     (should (equal cwd (file-name-as-directory directory)))
-                     (should (equal (seq-take args 6)
-                                    '("start" "--json" "--" "/fixture/pi" "--mode" "rpc")))
-                     (should (equal (member "--session" args) (list "--session" file)))
-                     (funcall callback
-                              (list :protocol 2 :state "committed" :outcome "attached"
-                                    :muxId "test-runtime" :pid (emacs-pid) :piPid (emacs-pid)
-                                    :socket socket :sessionFile file) nil)
-                     nil)))
-          (setq pilish-runtime-test--chat
-                (pilish-restore-session-state
-                 (list :directory directory :name "reboot" :runtime previous :session-file file
-                       :draft "recovered draft" :followups '("suspended follow-up")))))
-        (pilish-runtime-test--wait
-         (lambda () (equal (plist-get (pilish-session-runtime pilish-runtime-test--chat) :state) "live")))
-        (should (= (length calls) 1))
-        (should (equal (pilish-session-file pilish-runtime-test--chat) file))
-        (should (equal (plist-get (pilish-session-runtime pilish-runtime-test--chat) :mux-id) "test-runtime"))
-        (should-not (pilish-session-queued-prompts pilish-runtime-test--chat))
-        (let ((desktop (prin1-to-string (pilish-session-desktop-state pilish-runtime-test--chat))))
-          (should (string-match-p "recovered draft" desktop))
-          (should (string-match-p "suspended follow-up" desktop)))
-        (should-not (string-match-p "\\\"type\\\":\\\"prompt\\\""
-                                    (mapconcat #'identity pilish-runtime-test--received "")))))))
-
-(ert-deftest pilish-runtime-test-previous-boot-requires-complete-consistent-root-evidence ()
-  (dolist (changes '((:owner-boot-id nil) (:pi-boot-id nil) (:pid nil) (:pi-pid nil)
-                     (:owner-start-time "unknown") (:pi-start-time nil)
-                     (:owner-boot-id "different-previous-boot") (:placement "worker")
-                     (:placement "unknown") (:state "stopped") (:protocol 1)))
-    (pilish-runtime-test--with-peer '(:silent t)
-      (let ((previous (pilish-runtime-test--previous-boot runtime)))
-        (while changes
-          (setq previous (plist-put previous (pop changes) (pop changes))))
-        (cl-letf (((symbol-function 'pilish-list-runtimes) (lambda () nil))
-                  ((symbol-function 'pilish--runtime-call)
-                   (lambda (&rest _) (ert-fail "Unproven reboot must not launch"))))
-          (setq pilish-runtime-test--chat
-                (pilish-restore-session-state
-                 (list :directory directory :name "not-rebootable" :runtime previous
-                       :session-file file :draft "retain uncertain work"))))
-        (should (buffer-live-p pilish-runtime-test--chat))
-        (should-not (pilish-session-process pilish-runtime-test--chat))
-        (should (equal (pilish-session-file pilish-runtime-test--chat) file))
-        (should (string-match-p "retain uncertain work"
-                                (prin1-to-string (pilish-session-desktop-state pilish-runtime-test--chat))))))))
-
-(ert-deftest pilish-runtime-test-previous-boot-unknown-current-boot-does-not-launch ()
+(ert-deftest pilish-runtime-test-missing-restore-retains-draft-never-spawns ()
   (pilish-runtime-test--with-peer '(:silent t)
-    (let ((previous (pilish-runtime-test--previous-boot runtime)))
-      (cl-letf (((symbol-function 'pilish--runtime-process-identity) (lambda (_) nil))
-                ((symbol-function 'pilish-list-runtimes) (lambda () nil))
-                ((symbol-function 'pilish--runtime-call)
-                 (lambda (&rest _) (ert-fail "Unreadable boot evidence must not launch"))))
-        (setq pilish-runtime-test--chat
-              (pilish-restore-session-state
-               (list :directory directory :name "unknown-boot" :runtime previous :session-file file))))
+    (cl-letf (((symbol-function 'pilish-list-runtimes) (lambda () nil))
+              ((symbol-function 'pilish--runtime-call) (lambda (&rest _) (ert-fail "Unexpected launch"))))
+      (setq pilish-runtime-test--chat
+            (pilish-restore-session-state
+             (list :directory directory :name "missing" :runtime runtime :session-file file
+                   :draft "kept" :followups '("suspended not sent"))))
       (should (equal (plist-get (pilish-session-runtime pilish-runtime-test--chat) :state) "unavailable"))
-      (should (equal (pilish-session-file pilish-runtime-test--chat) file)))))
+      (should-not (pilish-session-process pilish-runtime-test--chat))
+      (should (equal (plist-get (pilish-session-desktop-state pilish-runtime-test--chat) :draft) "kept"))
+      (should (pilish-session-quarantine pilish-runtime-test--chat)))))
 
-(ert-deftest pilish-runtime-test-previous-boot-launch-failure-is-retained-without-retry ()
-  (pilish-runtime-test--with-peer '(:silent t)
-    (let ((previous (pilish-runtime-test--previous-boot runtime)) (calls 0))
-      (cl-letf (((symbol-function 'pilish-list-runtimes) (lambda () nil))
-                ((symbol-function 'pilish--runtime-call)
-                 (lambda (_args _directory _environment callback)
-                   (cl-incf calls) (funcall callback nil "Start outcome uncertain") nil)))
+(ert-deftest pilish-runtime-test-service-restoration-resolves-successor-without-launch-or-input ()
+  (pilish-runtime-test--with-peer nil
+    (setq runtime (plist-put runtime :service
+                             (list :pid (emacs-pid) :startTime "service-start" :bootId "service-boot")))
+    (let ((previous (pilish-runtime-test--previous-boot runtime)) calls)
+      (cl-letf (((symbol-function 'pilish--runtime-call)
+                 (lambda (args _cwd _environment callback)
+                   (push (car args) calls)
+                   (pcase (car args)
+                     ("resolve"
+                      (should (equal args '("resolve" "--json" "--id" "previous-boot")))
+                      (funcall callback
+                               (list :protocol 2 :state "committed" :outcome "attached"
+                                     :muxId "test-runtime" :pid (emacs-pid) :piPid (emacs-pid)
+                                     :service (plist-get runtime :service) :socket socket :sessionFile file) nil))
+                     ("list" (funcall callback (vector (pilish-runtime-test--discovery runtime)) nil))
+                     (_ (ert-fail "Frontend attempted a restoration launch")))
+                   nil)))
         (setq pilish-runtime-test--chat
               (pilish-restore-session-state
-               (list :directory directory :name "failed-reboot" :runtime previous :session-file file
-                     :draft "keep failed restore draft")))
-        (should (= calls 1))
-        (should (equal (plist-get (pilish-session-runtime pilish-runtime-test--chat) :state) "unavailable"))
-        (with-current-buffer pilish-runtime-test--chat
-          (should (string-match-p "Start outcome uncertain" (buffer-string))))
-        (let ((state (pilish-session-desktop-state pilish-runtime-test--chat)))
-          (pilish-disconnect-session pilish-runtime-test--chat)
-          (setq pilish-runtime-test--chat (pilish-restore-session-state state)))
-        (should (= calls 1))
-        (should (equal (plist-get (pilish-session-desktop-state pilish-runtime-test--chat) :draft)
-                       "keep failed restore draft"))))))
+               (list :directory directory :name "service-recovery" :runtime previous
+                     :session-file file :draft "retained draft" :followups '("suspended follow-up")))))
+      (pilish-runtime-test--wait
+       (lambda () (equal (plist-get (pilish-session-runtime pilish-runtime-test--chat) :state) "live")))
+      (should (equal (reverse calls) '("resolve" "list")))
+      (should (equal (plist-get (pilish-session-runtime pilish-runtime-test--chat) :mux-id) "test-runtime"))
+      (should-not (pilish-session-queued-prompts pilish-runtime-test--chat))
+      (should (string-match-p "retained draft"
+                              (prin1-to-string (pilish-session-desktop-state pilish-runtime-test--chat))))
+      (should-not (string-match-p "\\\"type\\\":\\\"prompt\\\""
+                                  (mapconcat #'identity pilish-runtime-test--received ""))))))
 
-(ert-deftest pilish-runtime-test-previous-boot-terminal-evidence-stays-closed ()
-  (dolist (terminal '((:exit (:code 0))
-                      (:terminal-receipt (:muxId "previous-boot" :state "stopped"))))
-    (pilish-runtime-test--with-peer '(:silent t)
-      (let ((previous (pilish-runtime-test--previous-boot runtime)))
-        (setq previous (plist-put previous :state "stopped")
-              previous (plist-put previous (car terminal) (cadr terminal)))
-        (cl-letf (((symbol-function 'pilish--runtime-new-view)
-                   (lambda (&rest _) (ert-fail "Closed conversation must not reopen")))
-                  ((symbol-function 'pilish--runtime-call)
-                   (lambda (&rest _) (ert-fail "Closed conversation must not launch"))))
-          (should-not (pilish-restore-session-state
-                       (list :directory directory :runtime previous :session-file file))))))))
+(ert-deftest pilish-runtime-test-service-unavailable-keeps-view-despite-old-terminal-receipt ()
+  (pilish-runtime-test--with-peer '(:silent t)
+    (setq runtime (plist-put runtime :service '(:pid 1 :startTime "service" :bootId "boot"))
+          runtime (plist-put runtime :exit '(:code 0)))
+    (cl-letf (((symbol-function 'pilish--runtime-call)
+               (lambda (args _cwd _environment callback)
+                 (should (equal (car args) "resolve"))
+                 (funcall callback nil "pimux unavailable; run `sv up pimux` and retry") nil))
+              ((symbol-function 'pilish--runtime-terminal-receipt)
+               (lambda (_) '(:muxId "test-runtime" :state "stopped" :rootClosed :false))))
+      (setq pilish-runtime-test--chat
+            (pilish-restore-session-state
+             (list :directory directory :runtime runtime :session-file file :draft "keep work"))))
+    (should (buffer-live-p pilish-runtime-test--chat))
+    (should (equal (plist-get (pilish-session-runtime pilish-runtime-test--chat) :state) "unavailable"))
+    (should (equal (plist-get (pilish-session-desktop-state pilish-runtime-test--chat) :draft) "keep work"))))
+
+(ert-deftest pilish-runtime-test-service-close-retires-only-after-no-successor-and-terminal-evidence ()
+  (pilish-runtime-test--with-peer '(:silent t)
+    (setq runtime (plist-put runtime :service '(:pid 1 :startTime "service" :bootId "boot")))
+    (setq pilish-runtime-test--chat (pilish--runtime-new-view directory "closed-service"))
+    (with-current-buffer pilish-runtime-test--chat (setq pilish--runtime runtime))
+    (let (outcomes)
+      (cl-letf (((symbol-function 'pilish--runtime-call)
+                 (lambda (args _cwd _environment callback)
+                   (should (equal (car args) "resolve"))
+                   (funcall callback :null nil) nil))
+                ((symbol-function 'pilish--runtime-terminal-receipt)
+                 (lambda (_) '(:muxId "test-runtime" :state "stopped"))))
+        (pilish-reconnect-runtime pilish-runtime-test--chat (lambda (error) (push error outcomes))))
+      (should (= (length outcomes) 1))
+      (should (string-match-p "closed view removed" (car outcomes)))
+      (should-not (buffer-live-p pilish-runtime-test--chat)))))
+
+(ert-deftest pilish-runtime-test-prior-boot-unmanaged-root-is-not-launched-by-desktop ()
+  (pilish-runtime-test--with-peer '(:silent t)
+    (cl-letf (((symbol-function 'pilish-list-runtimes) (lambda () nil))
+              ((symbol-function 'pilish--runtime-call)
+               (lambda (&rest _) (ert-fail "Desktop must not launch an unmanaged root"))))
+      (setq pilish-runtime-test--chat
+            (pilish-restore-session-state
+             (list :directory directory :runtime (pilish-runtime-test--previous-boot runtime)
+                   :session-file file :draft "keep unmanaged history"))))
+    (should (equal (pilish-session-file pilish-runtime-test--chat) file))
+    (should (equal (plist-get (pilish-session-runtime pilish-runtime-test--chat) :state) "unavailable"))))
 
 (ert-deftest pilish-runtime-test-discovery-reuses-one-local-view ()
   (pilish-runtime-test--with-peer nil
@@ -397,25 +380,162 @@
       (should (eq pilish-runtime-test--chat (pilish-attach-runtime runtime "another-name")))
       (should (= (length pilish-runtime-test--clients) 1)))))
 
-(ert-deftest pilish-runtime-test-start-keeps-authoritative-worker-placement ()
+(ert-deftest pilish-runtime-test-start-discovers-asynchronously-and-keeps-worker-placement ()
   (pilish-runtime-test--with-peer nil
-    (setq runtime (plist-put runtime :placement "worker"))
+    (setq runtime (plist-put runtime :placement "worker")
+          runtime (plist-put runtime :parent '(:host "emacs" :id "parent"))
+          runtime (plist-put runtime :orchestration '(:taskId "task-one")))
     (setq pilish-runtime-test--chat (pilish--runtime-new-view directory "task-view"))
-    (cl-letf (((symbol-function 'pilish-list-runtimes) (lambda () (list runtime)))
-              ((symbol-function 'pilish--runtime-call)
-               (lambda (_args _directory _environment callback)
-                 (funcall callback
-                          (list :protocol 2 :state "committed" :outcome "started"
-                                :muxId "test-runtime" :pid (emacs-pid) :piPid (emacs-pid)
-                                :socket socket :sessionFile file) nil)
-                 nil)))
-      (pilish--runtime-start-view pilish-runtime-test--chat directory nil nil #'ignore)
-      (pilish-runtime-test--wait
-       (lambda () (equal (plist-get (pilish-session-runtime pilish-runtime-test--chat) :state) "live")))
-      (should (equal (plist-get (pilish-session-runtime pilish-runtime-test--chat) :placement) "worker"))
-      (let (failure)
-        (pilish-stop-runtime pilish-runtime-test--chat (lambda (error) (setq failure error)))
-        (should (string-match-p "parent" failure))))))
+    (let* (launch discovery outcomes calls desktop
+           (pilish-session-desktop-state-functions
+            (list (lambda (chat) (setq desktop (pilish-session-desktop-state chat))))))
+      (cl-letf (((symbol-function 'pilish-list-runtimes)
+                 (lambda () (ert-fail "Launch blocked on synchronous discovery")))
+                ((symbol-function 'pilish--runtime-call)
+                 (lambda (args cwd environment callback)
+                   (should (equal cwd directory))
+                   (should (equal environment '(("PIMUX_DIR" . "/fixture/mux"))))
+                   (push (car args) calls)
+                   (if (equal args '("list" "--json"))
+                       (progn
+                         (should (equal (plist-get (plist-get desktop :runtime) :mux-id)
+                                        "test-runtime"))
+                         (setq discovery callback))
+                     (setq launch callback))
+                   nil)))
+        (pilish--runtime-start-view pilish-runtime-test--chat directory nil
+                                    '(("PIMUX_DIR" . "/fixture/mux"))
+                                    (lambda (error) (push error outcomes)))
+        (should-not discovery)
+        (funcall launch
+                 (list :protocol 2 :state "committed" :outcome "started"
+                       :muxId "test-runtime" :pid (emacs-pid) :piPid (emacs-pid)
+                       :socket socket :sessionFile file) nil)
+        (should discovery)
+        (should-not outcomes)
+        (should-not (pilish-session-process pilish-runtime-test--chat))
+        (let ((pending (pilish-session-runtime pilish-runtime-test--chat)))
+          (should (equal pending (plist-get desktop :runtime)))
+          (should (equal (plist-get pending :state) "starting"))
+          (should (equal (plist-get pending :placement) "unknown"))
+          (dolist (key '(:mux-id :socket :pid :pi-pid :pi-start-time :pi-boot-id :session-file))
+            (should (equal (plist-get pending key) (plist-get runtime key)))))
+        (funcall discovery (vector (pilish-runtime-test--discovery runtime)) nil)
+        (pilish-runtime-test--wait (lambda () outcomes))
+        (should (equal outcomes '(nil)))
+        (should (equal calls '("list" "start")))
+        (let ((adopted (pilish-session-runtime pilish-runtime-test--chat)))
+          (should (equal (plist-get adopted :state) "live"))
+          (dolist (key '(:placement :parent :orchestration))
+            (should (equal (plist-get adopted key) (plist-get runtime key)))))
+        (let (failure)
+          (pilish-stop-runtime pilish-runtime-test--chat (lambda (error) (setq failure error)))
+          (should (string-match-p "parent" failure)))))))
+
+(ert-deftest pilish-runtime-test-start-discovery-failure-retains-committed-identity-once ()
+  (dolist (failure '(transport malformed missing mux pid socket dispatch))
+    (pilish-runtime-test--with-peer nil
+      (setq pilish-runtime-test--chat (pilish--runtime-new-view directory "failed-discovery"))
+      (let (launch discovery outcomes)
+        (cl-letf (((symbol-function 'pilish-list-runtimes)
+                   (lambda () (ert-fail "Unexpected synchronous discovery")))
+                  ((symbol-function 'pilish--runtime-call)
+                   (lambda (args _directory _environment callback)
+                     (if (equal args '("list" "--json"))
+                         (if (eq failure 'dispatch) (error "Cannot dispatch discovery")
+                           (setq discovery callback))
+                       (setq launch callback))
+                     nil)))
+          (pilish--runtime-start-view pilish-runtime-test--chat directory nil nil
+                                      (lambda (error) (push error outcomes)))
+          (funcall launch
+                   (list :protocol 2 :state "committed" :outcome "started"
+                         :muxId "test-runtime" :pid (emacs-pid) :piPid (emacs-pid)
+                         :socket socket :sessionFile file) nil)
+          (unless (eq failure 'dispatch)
+            (let* ((record (pilish-runtime-test--discovery runtime))
+                   (records
+                    (pcase failure
+                      ('malformed '(:not "an array"))
+                      ('missing [])
+                      ('mux (vector (plist-put record :muxId "another-runtime")))
+                      ('pid (vector (plist-put record :piPid 1)))
+                      ('socket (vector (plist-put record :socket "/another.sock")))
+                      (_ (vector record)))))
+              (funcall discovery records (and (eq failure 'transport) "Discovery failed"))
+              (funcall discovery records (and (eq failure 'transport) "Discovery failed"))))
+          (should (= (length outcomes) 1))
+          (should (stringp (car outcomes)))
+          (should-not (pilish-session-process pilish-runtime-test--chat))
+          (let ((retained (pilish-session-runtime pilish-runtime-test--chat)))
+            (should (equal (plist-get retained :state) "unavailable"))
+            (should (equal (plist-get retained :placement) "unknown"))
+            (should (equal (plist-get retained :mux-id) "test-runtime"))
+            (should (equal (plist-get retained :socket) socket))))))))
+
+(ert-deftest pilish-runtime-test-stop-and-close-refuse-unconfirmed-placement ()
+  (pilish-runtime-test--with-peer nil
+    (setq pilish-runtime-test--chat (pilish--runtime-new-view directory "pending-stop"))
+    (let (launch discovery calls startup-outcomes)
+      (cl-letf (((symbol-function 'pilish--runtime-call)
+                 (lambda (args _directory _environment callback)
+                   (push (car args) calls)
+                   (pcase (car args)
+                     ("start" (setq launch callback))
+                     ("list" (setq discovery callback))
+                     (_ (ert-fail "Unconfirmed placement dispatched runtime control")))
+                   nil)))
+        (pilish--runtime-start-view pilish-runtime-test--chat directory nil nil
+                                    (lambda (error) (push error startup-outcomes)))
+        (funcall launch
+                 (list :protocol 2 :state "committed" :outcome "started"
+                       :muxId "test-runtime" :pid (emacs-pid) :piPid (emacs-pid)
+                       :socket socket :sessionFile file) nil)
+        (dolist (stage '(pending failed))
+          (when (eq stage 'failed) (funcall discovery nil "Discovery failed"))
+          (let ((retained (pilish-session-runtime pilish-runtime-test--chat)))
+            (dolist (action '(pilish-stop-runtime pilish-close-session))
+              (let (outcomes)
+                (funcall action pilish-runtime-test--chat (lambda (error) (push error outcomes)))
+                (should (= (length outcomes) 1))
+                (should (string-match-p "not confirmed root" (car outcomes)))
+                (should (buffer-live-p pilish-runtime-test--chat))
+                (should (equal retained (pilish-session-runtime pilish-runtime-test--chat))))))
+          (should (equal (plist-get (pilish-session-runtime pilish-runtime-test--chat) :mux-id)
+                         "test-runtime"))
+          (should (equal (plist-get (pilish-session-runtime pilish-runtime-test--chat) :placement)
+                         "unknown")))
+        (should (equal startup-outcomes '("Discovery failed")))
+        (should (equal calls '("list" "start")))))))
+
+(ert-deftest pilish-runtime-test-disconnect-cancels-pending-post-commit-discovery ()
+  (pilish-runtime-test--with-peer nil
+    (setq pilish-runtime-test--chat (pilish--runtime-new-view directory "cancel-discovery"))
+    (let (launch discovery-process outcomes)
+      (cl-letf (((symbol-function 'pilish--runtime-call)
+                 (lambda (args _directory _environment callback)
+                   (if (equal args '("list" "--json"))
+                       (setq discovery-process
+                             (make-pipe-process
+                              :name "pilish-discovery-fixture" :noquery t
+                              :sentinel (lambda (_process _event)
+                                          (funcall callback nil "Discovery cancelled"))))
+                     (setq launch callback)
+                     nil))))
+        (pilish--runtime-start-view pilish-runtime-test--chat directory nil nil
+                                    (lambda (error) (push error outcomes)))
+        (funcall launch
+                 (list :protocol 2 :state "committed" :outcome "started"
+                       :muxId "test-runtime" :pid (emacs-pid) :piPid (emacs-pid)
+                       :socket socket :sessionFile file) nil)
+        (should (process-live-p discovery-process))
+        (with-current-buffer pilish-runtime-test--chat
+          (should (eq pilish--runtime-launcher discovery-process))
+          (pilish--runtime-kill-view))
+        (should-not (process-live-p discovery-process))
+        (should (equal outcomes '("Discovery cancelled")))
+        (should-not (pilish-session-process pilish-runtime-test--chat))
+        (should (process-live-p server))))))
 
 (ert-deftest pilish-runtime-test-unavailable-view-is-never-implicitly-started ()
   (pilish-runtime-test--with-peer '(:silent t)
@@ -442,33 +562,37 @@
           (should (string-match-p "ordinary" sent)))
       (delete-process process))))
 
-(ert-deftest pilish-runtime-test-close-waits-for-receipt-and-notifies-before-disposal ()
-  (pilish-runtime-test--with-peer nil
-    (setq pilish-runtime-test--chat (pilish--runtime-new-view directory "close"))
-    (let* ((chat pilish-runtime-test--chat)
-           (input (pilish-session-input-buffer chat))
-           (pilish-session-closed-functions
-            (list (lambda (buffer)
-                    (should (eq buffer chat))
-                    (should (buffer-live-p input))
-                    (should (equal (plist-get (pilish-session-runtime buffer) :state) "stopped")))))
-           control outcomes)
-      (with-current-buffer chat (setq pilish--runtime runtime))
-      (cl-letf (((symbol-function 'pilish--runtime-call)
-                 (lambda (args _directory _env callback)
-                   (should (equal args '("stop" "--json" "--id" "test-runtime")))
-                   (setq control callback)))
-                ((symbol-function 'yes-or-no-p) (lambda (_) (ert-fail "Close asked"))))
-        (pilish-close-session
-         chat (lambda (error)
-                (should-not (buffer-live-p chat))
-                (push error outcomes)))
-        (should (buffer-live-p chat))
-        (should-not outcomes)
-        (funcall control '(:muxId "test-runtime" :state "stopped") nil)
-        (should-not (buffer-live-p chat))
-        (should-not (buffer-live-p input))
-        (should (equal outcomes '(nil)))))))
+(ert-deftest pilish-runtime-test-independent-stop-and-close-await-receipt-before-disposal ()
+  (dolist (placement '("root" "interactive-fork"))
+    (dolist (action '(pilish-stop-runtime pilish-close-session))
+      (pilish-runtime-test--with-peer nil
+        (setq runtime (plist-put runtime :placement placement)
+              pilish-runtime-test--chat (pilish--runtime-new-view directory "close"))
+        (let* ((chat pilish-runtime-test--chat)
+               (input (pilish-session-input-buffer chat))
+               (pilish-session-closed-functions
+                (list (lambda (buffer)
+                        (should (eq buffer chat))
+                        (should (buffer-live-p input))
+                        (should (equal (plist-get (pilish-session-runtime buffer) :state) "stopped")))))
+               control outcomes)
+          (with-current-buffer chat (setq pilish--runtime runtime))
+          (cl-letf (((symbol-function 'pilish--runtime-call)
+                     (lambda (args _directory _env callback)
+                       (should (equal args '("stop" "--json" "--id" "test-runtime")))
+                       (setq control callback)))
+                    ((symbol-function 'yes-or-no-p) (lambda (_) (ert-fail "Stop/Close asked"))))
+            (funcall action
+                     chat (lambda (error)
+                            (should-not (buffer-live-p chat))
+                            (push error outcomes)))
+            (should control)
+            (should (buffer-live-p chat))
+            (should-not outcomes)
+            (funcall control '(:muxId "test-runtime" :state "stopped") nil)
+            (should-not (buffer-live-p chat))
+            (should-not (buffer-live-p input))
+            (should (equal outcomes '(nil)))))))))
 
 (ert-deftest pilish-runtime-test-peer-termination-retires-view-without-stop ()
   (pilish-runtime-test--with-peer nil

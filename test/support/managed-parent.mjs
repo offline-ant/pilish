@@ -24,8 +24,8 @@ for (const name of ['tmp', 'home', 'agent', 'mux']) fs.mkdirSync(path.join(direc
 Object.assign(process.env, {
   TMPDIR: path.join(directory, 'tmp'), HOME: path.join(directory, 'home'),
   PI_CODING_AGENT_DIR: path.join(directory, 'agent'),
-  // The actual companion discovers in the test frontend's initial namespace.
-  PIMUX_DIR: endpoint ? process.env.PIMUX_DIR : path.join(directory, 'mux'),
+  // Share the explicit fixture service; frontend defaults may later differ.
+  PIMUX_DIR: process.env.PIMUX_DIR,
   PHIMACS_PI: process.env.PHIMACS_PI_EXECUTABLE,
   PI_ORCHESTRATION_HOST: 'emacs', PI_ORCHESTRATION_ENDPOINT: endpoint || path.join(directory, 'ui.sock'),
   PI_ORCHESTRATION_TARGET: 'native-parent',
@@ -158,7 +158,7 @@ async function waitForRequest() {
 
 let observed;
 try {
-  writeWorkerRequest(artifacts, { id: name, task: '[hold] Pilish worker Close', tools: [],
+  writeWorkerRequest(artifacts, { id: name, task: '[hold] Pilish worker Close', tools: [], resultPolicy: 'retrospective',
     model: { provider: 'orchestration-fixture', id: 'one' }, thinkingLevel: 'off',
     resultPath: artifacts.resultPath, statusPath: artifacts.statusPath });
   observed = runEphemeralWorker(pi, { id: name, name, cwd: directory, sessionFile, paths: artifacts,
