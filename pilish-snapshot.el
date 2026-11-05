@@ -201,28 +201,43 @@ buffer from the return value."
 
 ;;;###autoload
 (defun pilish-open-subagent-snapshot (&optional target)
-  "Read TARGET once and open its saved conversation in another window.
-With no TARGET, use the owned name at point.  Each activation creates a new,
-read-only, non-file-visiting observer.  No polling, RPC or resume occurs.
-The observer can later reread its captured target with
-`pilish-snapshot-refresh' (g)."
+  "Read TARGET and open its saved conversation in another window.
+With no TARGET, use the owned name at point.  The first activation creates a
+read-only, non-file-visiting observer; later ones refresh and show that
+observer (see `pilish-snapshot-refresh') instead of adding another.  No
+polling, RPC or resume occurs.  Return the shown buffer."
   (interactive)
-  (let* ((target (or target (get-text-property (point) 'pilish-subagent-name)))
-         (saved (if (stringp target)
-                    (user-error "Saved snapshot unavailable: %s" target)
-                  (pilish-jsonl-read-snapshot target)))
-         (buffer (pilish--snapshot-build-buffer target saved))
-         published)
-    (unwind-protect
-        (let ((window (display-buffer
-                       buffer '((display-buffer-pop-up-window)
-                                (inhibit-same-window . t)))))
-          (unless (window-live-p window)
-            (user-error "Cannot display saved snapshot in another window"))
-          (select-window window)
-          (setq published t)
-          buffer)
-      (unless published (kill-buffer buffer)))))
+  (let ((target (or target (get-text-property (point) 'pilish-subagent-name))))
+    (when (stringp target)
+      (user-error "Saved snapshot unavailable: %s" target))
+    (if-let* ((existing (pilish--snapshot-observer-of target)))
+        (pilish--snapshot-display
+         (with-current-buffer existing (pilish-snapshot-refresh)))
+      (let ((buffer (pilish--snapshot-build-buffer
+                     target (pilish-jsonl-read-snapshot target)))
+            published)
+        (unwind-protect
+            (prog1 (pilish--snapshot-display buffer)
+              (setq published t))
+          (unless published (kill-buffer buffer)))))))
+
+(defun pilish--snapshot-observer-of (target)
+  "Return the live snapshot buffer observing TARGET, or nil."
+  (seq-find (lambda (buffer)
+              (when-let* ((observer (buffer-local-value 'pilish--snapshot-observer buffer)))
+                (equal (pilish--snapshot-observer-target observer) target)))
+            (buffer-list)))
+
+(defun pilish--snapshot-display (buffer)
+  "Show snapshot BUFFER in another window, select it and return BUFFER.
+A window of the selected frame already showing BUFFER is reused."
+  (let ((window (or (get-buffer-window buffer)
+                    (display-buffer buffer '((display-buffer-pop-up-window)
+                                             (inhibit-same-window . t))))))
+    (unless (window-live-p window)
+      (user-error "Cannot display saved snapshot in another window"))
+    (select-window window)
+    buffer))
 
 (provide 'pilish-snapshot)
 ;;; pilish-snapshot.el ends here
