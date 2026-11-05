@@ -88,7 +88,9 @@ identify one abandoned dialog among several open dialogs.
 Explicit Close stops the agent everywhere without confirmation, even when busy.
 Authoritative root termination retires active chat/input views in every frontend.
 Workers additionally require matching successful final task-cleanup evidence;
-runtime exit alone cannot acknowledge their Close or remove recovery.
+runtime exit alone cannot acknowledge their Close or remove recovery. The one
+exception is a worker that pimux proves ended despite failed evidence (see Worker task
+completion).
 Close immediately suspends normal input and automatic local follow-ups while
 preserving recovery; see [DRAFTS.md](DRAFTS.md#close-suspends-local-input).
 Direct buffer disposal, Emacs exit and socket loss disconnect only.
@@ -159,7 +161,8 @@ runtime available for explicit reconnect/stop.
   mux/transport/input context. A missing command/binding, failed query, changed
   context or expired Close sends no prompt and retains the view. Its callback
   receives nil only after matching final task completion and disposal, or an error
-  string on failure/uncertainty. See Worker task completion below.
+  string on failure/uncertainty, including a failed worker whose view it retired.
+  See Worker task completion below.
 - `pilish-disconnect-session(buffer)` disposes only this local detached view.
   Ordinary frontend/view teardown uses this primitive, not user Close. Task-owned
   worker completion must retain the view until final task evidence can be reconciled,
@@ -216,8 +219,14 @@ transport exit and uncertain delivery retain that marker and cannot authorize re
 `pimux_exit` cannot complete the wait. Only a matching `complete` record proves
 worker death plus owning-task cleanup/name release and retires the view. A
 `failed` record reports its original error and keeps recovery, including for a
-worker closed remotely without a local Close request. Missing, unsafe or changed
-evidence is uncertainty, not permission for another prompt or root Stop.
+worker closed remotely without a local Close request. Explicit Close of that view
+retires it only when the actual Pi and its mux are dead and the read-only
+`pimux receipt --json --id <muxId>` reports `stopped` for the view's exact launch
+`operationId`: its owner has published final evidence, so nothing else can finish the
+cleanup. Retirement runs closed observers, keeps the failure and unsent work in
+`*Pilish closed agents*`, and settles Close with the failure, never nil. Reconnect,
+restoration and `pilish-reconcile-worker-task` never retire failed workers. Missing,
+unsafe or changed evidence is uncertainty, not permission for another prompt or root Stop.
 
 A Close waiter times out after 45 seconds with an error. Read-only polling remains
 owned by the retained view while validated task evidence is pending, so late
@@ -322,7 +331,8 @@ Emacs-compatible recipe policy. See README.org for the exact public call.
 The deterministic `test/pilish-runtime-test.el` uses private fake Unix peers,
 validates hello/identity/readiness and refuses prelive input.
 `test/pilish-runtime-task-test.el` adds read-only CLI boundaries for captured
-namespaces, missing/failed/wrong/unsafe task evidence, timeout/late completion,
+namespaces, missing/failed/wrong/unsafe task evidence, Close of failed workers with
+and without exact pimux termination proof, timeout/late completion,
 reconnection without repeated cancellation, definitive-rejection retry versus uncertain
 delivery, pending-Close input gates, unsent FIFO recovery, notification failures
 and public read-only reconciliation after disconnected natural completion.

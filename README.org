@@ -1787,7 +1787,8 @@ root Close removes active views; an ended root process first requires service
 successor resolution because the service may be restoring that conversation; unsent work and crash
 information remain in the read-only =*Pilish closed agents*= recovery buffer.
 Worker views additionally await matching successful final task cleanup; failed or
-uncertain cleanup retains their recovery view.  See [[file:RUNTIME.md][RUNTIME.md]] for that boundary.
+uncertain cleanup retains their recovery view until Close finds the worker ended
+according to pimux, then reports the failure as it removes the view.  See [[file:RUNTIME.md][RUNTIME.md]] for that boundary.
 Direct buffer disposal, the last client disconnecting and Emacs exit do not stop
 an agent; accepted work and waits may continue and incur usage invisibly.
 Desktop owners use =pilish-session-desktop-state= and
