@@ -145,12 +145,12 @@ Sends nothing; responding is the caller's business."
         (kill-buffer editor)))
     (pilish--run-extension-dialog-functions process request 'close)))
 
-(defun pilish--close-process-dialogs (process)
+(defun pilish--close-process-dialogs (process _response)
   "Forget every request of PROCESS, which exited and can take no answer."
   (dolist (request (pilish--extension-dialog-pending process))
     (pilish--extension-dialog-close process (plist-get request :id))))
 
-(add-hook 'pilish--process-exit-functions #'pilish--close-process-dialogs)
+(add-hook 'pilish-process-exit-functions #'pilish--close-process-dialogs)
 
 (defun pilish--extension-dialog-respond (process request tail)
   "Close REQUEST of PROCESS and send response plist TAIL when PROCESS lives."
