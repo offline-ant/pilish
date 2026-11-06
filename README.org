@@ -1673,7 +1673,9 @@ transport is a network process, not Pi's PID.  =pilish-session-runtime= and
 =pilish-submit-prompt= submits without modifying a draft and acknowledges
 actual RPC acceptance; while Pi is busy, Pi queues the prompt itself.
 =pilish-reload= takes an optional callback, called exactly once with nil or
-a failure reason.  A detached view reconnects the retained runtime identity
+a failure reason.  Nil means the fresh process owns the session, its state
+and history refreshes both succeeded and the transition finished; an error
+inside the callback becomes a warning.  A detached view reconnects the retained runtime identity
 only; it never stops/replaces Pi or starts a missing runtime.
 =pilish-restart-refusal-functions= receive the chat buffer and can refuse
 replacing its process by returning the reason, for a host that tracks the
