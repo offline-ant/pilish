@@ -306,8 +306,10 @@ prove death. Tests cannot redirect that production policy into arbitrary files.
 
 The browser's managed rename/delete/append/rewrite/export paths use the owning
 public claim facilities, not scan-then-write checks or raw Pi fallback. Live name
-and export changes use owning RPC commands. Pi 1.4 lacks owning live tree/label
-RPC, so those active-file mutations refuse rather than writing beside the owner.
+and export changes use owning RPC commands. Live tree navigation uses the
+runtime's `pimux-tree-navigate` extension command, never a disk rewrite. Pi lacks
+an owning live label RPC, so label writes to an active file refuse rather than
+writing beside the owner.
 See [STORAGE.md](STORAGE.md) for leases, alias/digest validation and explicit
 unshared behavior. This cooperative protection does **not** certify raw external
 Pi, arbitrary editors, or Pi's unguarded internal pre-I/O storage mutations;

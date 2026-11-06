@@ -161,6 +161,8 @@ of the suite."
                  #'pilish-tree-browser-dispatch))
      (should (eq (lookup-key map "h")
                  #'pilish-tree-browser-dispatch))
+     (should (eq (lookup-key map "S")
+                 #'pilish-tree-browser-navigate-with-summary))
      (should (eq (lookup-key map "g") #'pilish-browse-refresh))
      (should (eq (lookup-key map "q") #'quit-window))
      (should (eq (lookup-key map (kbd "RET"))

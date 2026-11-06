@@ -205,10 +205,34 @@ Suspend local work bound to CONTEXT without losing the authoritative identity."
           (process-put proc 'pilish-mux-snapshot nil)
           (process-put proc 'pilish-mux-awaiting-snapshot nil)
           (process-put proc 'pilish-mux-live-generation (plist-get live :generation))
-          (when (fboundp 'pilish--runtime-live) (pilish--runtime-live proc)))
+          (when (fboundp 'pilish--runtime-live) (pilish--runtime-live proc))
+          (pilish--shared-run-live-callbacks proc))
       (error
        (pilish--shared-snapshot-application-failed
         proc (error-message-string err) (pilish--draft-context))))))
+
+(defun pilish--shared-call-when-live (proc generation callback)
+  "Call CALLBACK once PROC's snapshot GENERATION, or a newer one, is live.
+A boundary that never becomes live never calls CALLBACK."
+  (if (and (pilish--shared-input-ready-p proc)
+           (>= (process-get proc 'pilish-mux-live-generation) generation))
+      (funcall callback)
+    (process-put proc 'pilish-mux-live-callbacks
+                 (append (process-get proc 'pilish-mux-live-callbacks)
+                         (list (cons generation callback))))))
+
+(defun pilish--shared-run-live-callbacks (proc)
+  "Call and forget PROC's callbacks whose boundary is now live.
+A failing callback reports its error; it cannot fail the live boundary."
+  (let ((live (process-get proc 'pilish-mux-live-generation))
+        due waiting)
+    (dolist (entry (process-get proc 'pilish-mux-live-callbacks))
+      (if (>= live (car entry)) (push (cdr entry) due) (push entry waiting)))
+    (process-put proc 'pilish-mux-live-callbacks (nreverse waiting))
+    (dolist (callback (nreverse due))
+      (condition-case err (funcall callback)
+        (error (message "Pi: After-snapshot action failed: %s"
+                        (error-message-string err)))))))
 
 (defun pilish--shared-refresh-after-run (proc)
   "Request the full authoritative boundary after PROC's truncated run settled."

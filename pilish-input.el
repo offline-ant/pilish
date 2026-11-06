@@ -35,7 +35,8 @@
 ;;   `pilish-send'                  Send prompt (C-c C-c)
 ;;   `pilish-newline-or-send'       Newline; quick second RET sends (RET)
 ;;   `pilish-attach-image'          Attach one prompt image (menu C-c C-p a i)
-;;   `pilish-abort'                 Abort current operation (C-c C-k)
+;;   `pilish-abort'                 Abort current operation
+;;   `pilish-abort-or-tree-browser' Abort, or browse the tree when idle (C-c C-k)
 ;;   `pilish-quit'                  Close session
 ;;   `pilish-previous-input'        History backward (M-p)
 ;;   `pilish-next-input'            History forward (M-n)
@@ -55,6 +56,7 @@
 
 (declare-function pilish--shared-input-ready-p "pilish-shared" (proc))
 (declare-function pilish--abort-shared-turn "pilish-queue" ())
+(declare-function pilish--tree-browser-open "pilish-browse" (orient-current))
 (declare-function pilish--capture-input-context "pilish-core" (proc))
 (declare-function pilish--bind-input-context "pilish-core" (command context))
 (declare-function pilish--draft-context "pilish-drafts" ())
@@ -699,9 +701,7 @@ new shared queue or automatically resubmitting recovered input."
   (interactive)
   (when-let* ((chat-buf (pilish--get-chat-buffer)))
     (with-current-buffer chat-buf
-      (when (or (memq pilish--status '(sending streaming compacting))
-                (pilish--prompt-start-wait-active-p)
-                (pilish--command-pending-p (pilish--get-process) "compact"))
+      (when (pilish--abortable-p)
         (if (pilish--process-shared-p (pilish--get-process))
             ;; The shared helper asks before stop intent, timers, drafts or
             ;; queues change.  Its cancellation must leave all locals intact.
@@ -716,6 +716,24 @@ new shared queue or automatically resubmitting recovered input."
                   (pilish--send-abort))
               (pilish--paint-retired-tool-times retired)))
           (message "Pi: Aborting..."))))))
+
+(defun pilish--abortable-p ()
+  "Return non-nil when the current chat has work `pilish-abort' stops."
+  (or (memq pilish--status '(sending streaming compacting))
+      (pilish--prompt-start-wait-active-p)
+      (pilish--command-pending-p (pilish--get-process) "compact")))
+
+(defun pilish-abort-or-tree-browser ()
+  "Abort the current Pi operation, or browse the session tree when idle.
+Like Escape in Pi's terminal interface: busy work stops as with
+`pilish-abort'; otherwise the tree browser opens on the current entry,
+where RET continues from an earlier turn."
+  (interactive)
+  (let ((chat-buf (pilish--get-chat-buffer)))
+    (if (and (buffer-live-p chat-buf)
+             (with-current-buffer chat-buf (pilish--abortable-p)))
+        (pilish-abort)
+      (pilish--tree-browser-open t))))
 
 (defun pilish-quit ()
   "Close this agent everywhere without confirmation.

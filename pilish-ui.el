@@ -85,6 +85,7 @@
 (declare-function pilish-send "pilish-input")
 (declare-function pilish-attach-image "pilish-input")
 (declare-function pilish-abort "pilish-input")
+(declare-function pilish-abort-or-tree-browser "pilish-input")
 (declare-function pilish-previous-input "pilish-input")
 (declare-function pilish-next-input "pilish-input")
 (declare-function pilish-history-isearch-backward "pilish-input")
@@ -688,7 +689,7 @@ Return nil when PATH is not a string."
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "q") #'pilish-quit)
     (define-key map (kbd "C-c C-p") #'pilish-menu)
-    (define-key map (kbd "C-c C-k") #'pilish-abort)
+    (define-key map (kbd "C-c C-k") #'pilish-abort-or-tree-browser)
     (define-key map (kbd "M-<up>") #'pilish-restore-queued-messages)
     (define-key map (kbd "C-c C-u") #'pilish-clear-queued-messages)
     (define-key map (kbd "C-c C-n") #'pilish-new-session)
@@ -1224,7 +1225,7 @@ removing the instructional header that would otherwise appear."
     ;; second RET send.
     (define-key map (kbd "RET") #'pilish-newline-or-send)
     (define-key map (kbd "TAB") #'pilish-complete)
-    (define-key map (kbd "C-c C-k") #'pilish-abort)
+    (define-key map (kbd "C-c C-k") #'pilish-abort-or-tree-browser)
     (define-key map (kbd "C-c C-p") #'pilish-menu)
     (define-key map (kbd "C-c C-r") #'pilish-session-browser)
     (define-key map (kbd "M-p") #'pilish-previous-input)
@@ -2219,6 +2220,12 @@ Extracted from session_info entries when session is loaded or switched.")
 Each entry is a plist with :name, :source, and :description.
 Optional :location (\"user\" or \"project\") and :path may be present.
 Source is \"prompt\", \"extension\", or \"skill\".")
+
+(defvar-local pilish--extension-command-error-watch nil
+  "Failure capture for one awaited extension command, or nil.
+A cons (NAME . ERROR).  Pi reports a failing command handler as an
+`extension_error' event for \"command:NAME\" before its `prompt' response,
+not as a failed response; the renderer stores that ERROR here.")
 
 (defvar pilish--builtin-commands
   '(("compact" :handler pilish-compact       :args optional)
@@ -3381,7 +3388,7 @@ line built by `pilish--format-startup-banner-compact'."
     (concat
      separator "\n"
      "C-c C-c   send prompt\n"
-     "C-c C-k   abort\n"
+     "C-c C-k   abort, or browse the tree when idle\n"
      "C-c C-r   sessions\n"
      "C-c C-p   menu\n\n"
      (pilish--format-startup-banner-compact) "\n")))
