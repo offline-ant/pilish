@@ -248,10 +248,12 @@ Pi is busy, like Enter in Pi's terminal UI, set
 =pilish-send-while-busy= to =steer=.  =M-RET=
 (=M-x pilish-queue-followup=), like Alt+Enter in Pi, always queues a
 follow-up while Pi is busy and sends at once when it is idle.  Press =C-c C-k=
-(=M-x pilish-abort=) to abort the current response or compaction, not to
-stop a detached agent.  Unshared queued messages return to the draft;
-shared Abort confirms its every-frontend queue consequences and retains
-acknowledged input as recoverable suspended records.
+(=M-x pilish-abort-or-tree-browser=) to abort the current response or
+compaction, not to stop a detached agent.  Unshared queued messages return to
+the draft; shared Abort confirms its every-frontend queue consequences and
+retains acknowledged input as recoverable suspended records.  Like Escape in
+Pi's terminal UI, =C-c C-k= in an idle session instead opens the tree browser
+on the current entry (see [[*Continue from an earlier turn][Continue from an earlier turn]]).
 
 Queued messages show above the draft, like in Pi's terminal UI, with
 their controls below them:
@@ -678,10 +680,18 @@ program.  Read [[file:STORAGE.md][STORAGE.md]] for the mutation/export contract 
 *** Continue from an earlier turn
 
 Open the tree browser with =C-c C-p w=, or Context =w= in the menu.
+In an idle session, =C-c C-k= opens it with point on the current entry.
 It shows the session's saved conversation tree.  =@= marks the
-current entry and =*= marks its active ancestors.  In explicit unshared
-mode, press =RET= to continue from the selected turn in the same session file.  =RET= on
-=@= changes nothing.
+current entry and =*= marks its active ancestors.  Press =RET= to continue
+from the selected turn in the same session file.  =RET= on =@= changes
+nothing.  Selecting one of your prompts moves back to just before it and
+puts its text in the input for editing.
+
+A shared runtime moves its own session through its =pimux-tree-navigate=
+extension command, and its next snapshot rebuilds the chat in every attached
+frontend.  =S= (or =C-u RET=) first asks the model to summarize the abandoned
+branch; plain =RET= makes no summary.  Explicit unshared mode cannot summarize
+and continues without one.
 
 If continuation would replace an unsent text or image draft, Pilish
 asks first.  Decline to keep both text and image and cancel the
@@ -690,15 +700,13 @@ continuation before any file rewrite or resume.
 Press =f= to cycle filters, or =?= to choose any filter directly.
 The default hides tool results.  Use =/= to search and =l= to set or
 clear a node label.  Press =g= to read the last saved state from disk.
-Display and refresh work offline, but ordinary unshared continuation from
-a historical turn needs the linked live, idle Pilish process.
+Display and refresh work offline, but continuing from a historical turn
+needs the linked live, idle Pilish process.
 
-Managed live tree navigation and labels currently refuse their disk mutation:
-Pi 1.4 RPC has no owning navigation/label command, and an idle runtime still
-holds its writer claim.  Pilish does not bypass that claim with a parallel
-rewrite.  Stopped managed append/rewrite primitives use leases; the missing
-live owning command remains an explicit integration limitation, not a claim
-that all storage paths are protected.  See [[file:STORAGE.md][STORAGE.md]].
+Managed live labels refuse their disk mutation: Pi's RPC has no owning label
+command, and an idle runtime still holds its writer claim.  Pilish does not
+bypass that claim with a parallel rewrite.  Stopped managed append/rewrite
+primitives use leases.  See [[file:STORAGE.md][STORAGE.md]].
 
 #+html: <details>
 #+html: <summary><strong>Continuation rules and draft protection</strong></summary>
@@ -708,9 +716,9 @@ that all storage paths are protected.  See [[file:STORAGE.md][STORAGE.md]].
 | Selected node | What =RET= does |
 |---------------+-----------------|
 | The =@= current projected position | Strict no-op before live-process, busy, transition, disk, or draft checks.  Trailing projected-away bookkeeping does not change its identity. |
-| Historical user prompt or user-like =custom_message= with a parent | Continues from the parent and prefills the selected prompt text when available.  If that parent is already current, this is prefill-only.  Otherwise, Pilish rewrites the active path and resumes the same session file. |
+| Historical user prompt or user-like =custom_message= with a parent | Continues from the parent and prefills the selected prompt text when available.  If that parent is already current, this is prefill-only.  Otherwise, the shared runtime moves its leaf, or in explicit unshared mode Pilish rewrites the active path and resumes the same session file. |
 | Historical root user prompt or root user-like =custom_message= | Has no parent to continue from, so Pilish refuses and points to the chat's fork command.  A root prompt that is itself =@= remains the strict no-op above. |
-| Non-current assistant, tool result, branch or compaction summary, model or thinking change, or other node | Continues from that node itself by rewriting the active path and resuming the same session file.  It applies prefill when the navigation target provides one.  Most such nodes provide none. |
+| Non-current assistant, tool result, branch or compaction summary, model or thinking change, or other node | Continues from that node itself, moved by the shared runtime or by the unshared rewrite and resume.  It applies prefill when the navigation target provides one.  Most such nodes provide none. |
 
 Before replacing nonblank text or an attached prompt image,
 continuation asks =Replace the unsent draft ...?=.
@@ -727,6 +735,18 @@ Blank text with no image proceeds without a prompt.  The =@= no-op
 never prompts.  This check applies only when continuation would
 replace a draft, not to every =RET=.
 
+A shared runtime's continuation requires the runtime to list
+=pimux-tree-navigate=; otherwise the slash text would reach the model, so
+Pilish refuses.  The runtime applies Pi's selection rule to the original
+entry.  After its response, Pilish requests one authoritative snapshot and
+judges the move by that snapshot's leaf: the target itself, or the branch
+summary or =pimux:navigate-tree= marker the runtime appended to it.  A
+handler failure reported as =extension_error= is shown when the leaf did not
+move.  The tree-changed snapshot suspends the old draft as recoverable input;
+the prefill follows the live snapshot, and the tree browser refreshes onto
+the new current entry.  Marker entries are bookkeeping: the tree and chat
+never show them.
+
 For a path-changing continuation in explicit unshared mode, Pilish preserves complete raw
 JSONL lines, writes the new order to a sibling temporary file, and
 replaces an ordinary local session file with one atomic rename.
@@ -736,13 +756,10 @@ race the final validated read and rename.  A TRAMP handler may yield
 or implement rename as copy-and-delete, so remote replacement is
 not guaranteed to be atomic.
 
-Pi's TUI can ask the model for a branch summary during tree
-navigation.  Pilish cannot offer that option over Pi's current RPC.
-RPC has observation commands such as =get_tree= and =get_entries=,
-but no in-place =navigate= command.  Its =fork= command creates a
-different session file.  Pilish displays saved =branch_summary=
-entries but does not ask a model for a summary or run a hidden summary
-workflow during navigation.
+Branch summaries come from the shared runtime's =--summarize=
+navigation; Pi's RPC has no navigation command of its own, so explicit
+unshared mode cannot request them.  Pilish displays saved =branch_summary=
+entries in either mode.
 
 #+html: </details>
 
@@ -826,7 +843,7 @@ The main buffers:
 | =RET= =RET=               | input        | Send (=pilish-send-on-double-return=)       |
 | =M-<up>=                  | input, chat  | Move queued messages into the draft         |
 | =C-c C-u=                 | input, chat  | Clear queued messages                       |
-| =C-c C-k=                 | input, chat  | Abort current response or compaction        |
+| =C-c C-k=                 | input, chat  | Abort current work; idle: open the tree     |
 | =C-c C-p=                 | input, chat  | Open the transient menu                     |
 | =C-c C-r=                 | input, chat  | Browse sessions                             |
 | =C-c C-a=                 | input, chat  | Go to the extension question awaiting you   |
@@ -865,6 +882,7 @@ The browsers:
 |-----------+----------------+-------------------------------------------------------------------------|
 | =RET=     | sessions       | Switch to selected session                                              |
 | =RET=     | tree           | Continue from selected turn                                             |
+| =S=       | tree           | Continue after summarizing the old branch (also =C-u RET=)              |
 | =TAB=     | sessions, tree | Toggle this row's fold, or its nearest containing fold                  |
 | =S-TAB=   | sessions, tree | Fold all outer units (=C-u S-TAB= unfolds all)                           |
 | =^=       | sessions, tree | Family root / group heading / nearest visible tree parent               |
@@ -973,7 +991,8 @@ positive number to change the threshold, or =nil= to disable it:
 #+end_src
 
 Hover the status for help.  To stop the current operation and return
-queued messages to the draft, press =C-c C-k= (=M-x pilish-abort=).
+queued messages to the draft, press =C-c C-k= (=M-x pilish-abort=
+while busy).
 
 #+html: <details>
 #+html: <summary><strong>Inactivity timing reference</strong></summary>

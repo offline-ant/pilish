@@ -64,7 +64,7 @@
 ;;     M-RET          Send prompt, or always queue as follow-up if busy
 ;;     M-<up>         Move queued messages into the draft
 ;;     C-c C-u        Clear queued messages
-;;     C-c C-k        Abort current operation
+;;     C-c C-k        Abort current operation, or browse the tree when idle
 ;;     C-c C-p        Open menu
 ;;     C-c C-r        Browse sessions
 ;;     M-p / M-n      History navigation
@@ -83,7 +83,7 @@
 ;;                    plain path, or local Markdown label)
 ;;     C-c C-p d      Describe a completed reply, thinking, or tool in Help
 ;;     C-h .          Show local help at point in the echo area
-;;     C-c C-k        Abort current operation
+;;     C-c C-k        Abort current operation, or browse the tree when idle
 ;;     C-c C-n        New session
 ;;     C-c C-r        Browse sessions
 ;;     C-c C-e        Export HTML
@@ -227,14 +227,6 @@ Returns the chat buffer without displaying it."
              (lambda (error)
                (when (buffer-live-p chat-buf)
                  (with-current-buffer chat-buf
-                   (unless error
-                     (pilish--fetch-commands
-                      pilish--process
-                      (lambda (commands)
-                        (when (buffer-live-p chat-buf)
-                          (with-current-buffer chat-buf
-                            (pilish--set-commands commands)
-                            (pilish--rebuild-commands-menu)))) dir))
                    (when on-ready
                      (funcall on-ready
                               (if error (list :success :false :error error)

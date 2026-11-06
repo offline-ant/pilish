@@ -359,7 +359,7 @@ section identities; RET cannot take the cached-id fast no-op."
       ;; authoritative disk path, not claim either occurrence is current.
       (let (delegated)
         (cl-letf (((symbol-function 'pilish--browse-navigate-noncurrent)
-                   (lambda (node-id) (setq delegated node-id))))
+                   (lambda (node-id &rest _) (setq delegated node-id))))
           (pilish--browse-navigate "dup"))
         (should (equal delegated "dup"))))))
 
@@ -4419,10 +4419,10 @@ completes in-call."
 
 (ert-deftest pilish-test-tree-browser-dispatch-suffixes ()
   "Tree browser dispatch wires actions and all direct filter choices.
-The summarize (`S') and abort (`C-c C-k') suffixes were dropped with
-the summarize feature (needs navigate_tree RPC)."
+A prefix argument on RET requests a runtime branch summary."
   (let ((expected
          '(("RET" . pilish-tree-browser-navigate)
+           ("S"   . pilish-tree-browser-navigate-with-summary)
            ("l"   . pilish-tree-browser-set-label)
            ("f"   . pilish-tree-browser-cycle-filter)
            ("d"   . pilish--tree-browser-filter-default)
@@ -4445,7 +4445,7 @@ the summarize feature (needs navigate_tree RPC)."
   (let ((ret (transient-get-suffix
               'pilish-tree-browser-dispatch "RET")))
     (should (equal (plist-get (cdr ret) :description)
-                   "continue from selected turn"))))
+                   "continue from selected turn (prefix: summarize)"))))
 
 (ert-deftest pilish-test-tree-dispatch-heading ()
   "Tree dispatch heading reflects buffer-local filter state."
@@ -10748,6 +10748,199 @@ just the session browser (V14)."
           (set-window-margins second 5 (+ required 7))
           (run-hooks 'window-configuration-change-hook)
           (should (equal (window-margins second) (cons 5 (+ required 7)))))))))
+
+;;;; Runtime-Owned Tree Navigation
+
+(defun pilish-test--runtime-nav-ready (chat proc dir path)
+  "Make CHAT a snapshot-ready detached view of PATH in DIR on PROC.
+Its runtime offers the navigation command and its leaf is c1."
+  (with-current-buffer chat
+    (pilish--set-chat-session-identity dir "nav")
+    (setq pilish--state (list :session-file path :leaf-id "c1")
+          pilish--commands (list (list :name "pimux-tree-navigate"
+                                       :source "extension"))))
+  (process-put proc 'pilish-mux '(:type "pimux_hello" :protocol 2 :muxId "nav"))
+  (process-put proc 'pilish-detached t)
+  (dolist (key '(pilish-mux-generation pilish-mux-applied-generation
+                 pilish-mux-live-generation))
+    (process-put proc key 1))
+  (process-put proc 'pilish-input-context
+               (list :sessionFile path :leafId "c1" :contextId "before")))
+
+(defun pilish-test--runtime-nav-respond (proc command &rest response)
+  "Deliver PROC's correlated RESPONSE plist to the sent COMMAND."
+  (pilish-test--stdout
+   proc (append (list :type "response" :id (plist-get command :id)
+                      :command (plist-get command :type))
+                response)))
+
+(defun pilish-test--runtime-nav-boundary (proc chat path generation leaf context entries)
+  "Deliver PROC's live snapshot GENERATION of PATH for CHAT.
+The snapshot ends on LEAF with input CONTEXT id and flat ENTRIES."
+  (pilish-test--stdout
+   proc
+   (list :type "pimux_snapshot" :generation generation :reason "request"
+         :session (list :file path :id "sid-nav" :name :null
+                        :cwd (with-current-buffer chat
+                               (pilish--chat-session-directory)))
+         :model (list :provider "faux" :id "m" :name "m")
+         :thinkingLevel "off" :idle t :leafId leaf
+         :inputContext (list :sessionFile path :leafId leaf :contextId context)
+         :entries (vconcat entries) :messages []
+         :run (list :active :false :compacting :false :tailTruncated :false)
+         :replay 0)
+   (list :type "pimux_live" :generation generation)))
+
+(defmacro pilish-test--with-runtime-nav (chat input proc commands messages &rest body)
+  "Run BODY in a tree browser on a shared runtime's navigable session.
+CHAT, INPUT, PROC and COMMANDS are as in `pilish-test-with-rpc-session';
+INPUT holds \"old draft\", drafts are replaced on request and MESSAGES
+collects echo-area output.  Deferred reads run synchronously."
+  (declare (indent 5))
+  `(pilish-test-with-rpc-session (,chat ,input ,proc ,commands)
+     (let* ((dir (pilish-test--make-temp-directory "pi-nav-runtime"))
+            (path (expand-file-name "session.jsonl" dir))
+            (,messages nil))
+       (pilish-test--write-session-lines
+        path (pilish-test--navigable-session-lines))
+       (pilish-test--runtime-nav-ready ,chat ,proc dir path)
+       (with-current-buffer ,input (insert "old draft"))
+       (with-temp-buffer
+         (pilish-tree-browser-mode)
+         (setq pilish--chat-buffer ,chat)
+         (cl-letf (((symbol-function 'run-at-time)
+                    (lambda (_secs _repeat fn &rest args) (apply fn args)))
+                   ((symbol-function 'redisplay) #'ignore)
+                   ((symbol-function 'y-or-n-p) (lambda (&rest _) t))
+                   ((symbol-function 'message)
+                    (lambda (fmt &rest args)
+                      (push (apply #'format fmt args) ,messages))))
+           (pilish--tree-browser-fetch-and-render)
+           ,@body)))))
+
+(ert-deftest pilish-test-navigate-runtime-moves-leaf-then-prefills ()
+  "A shared runtime moves its own leaf; the live snapshot drives the view.
+RET sends the context-bound navigation command for the ORIGINAL entry,
+never rewriting the file.  Its response triggers one authoritative
+snapshot.  The old draft becomes recoverable input, and the prefill
+follows the snapshot that lands on the target's navigation marker."
+  (pilish-test--with-runtime-nav chat input proc commands messages
+    (cl-letf (((symbol-function 'pilish--browse-rewrite-session-file)
+               (lambda (&rest _) (error "Shared navigation rewrote the file"))))
+      (pilish--browse-navigate "u2")
+      (let ((prompt (car commands)))
+        (should (equal (plist-get prompt :type) "prompt"))
+        (should (equal (plist-get prompt :message) "/pimux-tree-navigate u2"))
+        (should (equal (plist-get (plist-get prompt :pimuxContext) :contextId)
+                       "before"))
+        (should (pilish--session-transition-active-p chat))
+        (pilish-test--runtime-nav-respond
+         proc prompt :success t :data '(:disposition "handled")))
+      (let ((bootstrap (car commands)))
+        (should (equal (plist-get bootstrap :type) "pimux_bootstrap"))
+        (pilish-test--runtime-nav-respond
+         proc bootstrap :success t :data '(:generation 2)))
+      (should-not (pilish--session-transition-active-p chat))
+      (should (equal (with-current-buffer input (buffer-string)) "old draft"))
+      (pilish-test--runtime-nav-boundary
+       proc chat (plist-get (buffer-local-value 'pilish--state chat) :session-file)
+       2 "m1" "after"
+       (list '(:type "message" :id "a1" :parentId "u1")
+             '(:type "custom" :id "m1" :parentId "a1"
+               :customType "pimux:navigate-tree")))
+      (should (equal (with-current-buffer input (buffer-string))
+                     "try the other way"))
+      (should (equal (plist-get (car (pilish-session-quarantine chat)) :draft)
+                     "old draft"))
+      (should (member "Pi: Continued from selected turn: try the other way"
+                      messages)))))
+
+(ert-deftest pilish-test-navigate-runtime-reports-extension-error-on-mismatch ()
+  "A handler failure arrives as `extension_error' before a handled response.
+The snapshot still ends on the old leaf, so navigation reports that
+error instead of success and keeps the draft without prefilling."
+  (pilish-test--with-runtime-nav chat input proc commands messages
+    (pilish--browse-navigate "u2")
+    (let ((prompt (car commands)))
+      (pilish-test--stdout
+       proc '(:type "extension_error" :extensionPath "command:pimux-tree-navigate"
+              :event "command" :error "Entry u2 not found"))
+      (pilish-test--runtime-nav-respond
+       proc prompt :success t :data '(:disposition "handled")))
+    (pilish-test--runtime-nav-respond
+     proc (car commands) :success t :data '(:generation 2))
+    (pilish-test--runtime-nav-boundary
+     proc chat (plist-get (buffer-local-value 'pilish--state chat) :session-file)
+     2 "c1" "before" (list '(:type "message" :id "c1" :parentId "u2")))
+    (should (member "Pi: Cannot continue from selected turn: Entry u2 not found"
+                    messages))
+    (should-not (cl-find-if (lambda (text)
+                              (string-prefix-p "Pi: Continued" text))
+                            messages))
+    (should (equal (with-current-buffer input (buffer-string)) "old draft"))
+    (should-not (buffer-local-value 'pilish--extension-command-error-watch chat))))
+
+(ert-deftest pilish-test-navigate-runtime-summarizes-only-on-request ()
+  "The prefix argument asks the runtime for a branch summary."
+  (pilish-test--with-runtime-nav chat _input _proc commands _messages
+    (goto-char (point-min))
+    (search-forward "try the other way")
+    (pilish-tree-browser-navigate t)
+    (should (equal (plist-get (car commands) :message)
+                   "/pimux-tree-navigate --summarize u2"))))
+
+(ert-deftest pilish-test-navigate-runtime-summary-key ()
+  "S summarizes like the prefix argument, where Evil rebinds C-u."
+  (should (eq (lookup-key pilish-tree-browser-mode-map "S")
+              #'pilish-tree-browser-navigate-with-summary))
+  (should (eq (lookup-key pilish-tree-node-section-map "S")
+              #'pilish-tree-browser-navigate-with-summary))
+  (pilish-test--with-runtime-nav chat _input _proc commands _messages
+    (goto-char (point-min))
+    (search-forward "try the other way")
+    (call-interactively #'pilish-tree-browser-navigate-with-summary)
+    (should (equal (plist-get (car commands) :message)
+                   "/pimux-tree-navigate --summarize u2"))))
+
+(ert-deftest pilish-test-navigate-runtime-refuses-without-command ()
+  "Without the runtime command, the slash text would reach the model."
+  (pilish-test--with-runtime-nav chat input _proc commands messages
+    (with-current-buffer chat (setq pilish--commands nil))
+    (pilish--browse-navigate "u2")
+    (should-not commands)
+    (should (member (concat "Pi: Cannot continue from selected turn: the runtime "
+                            "offers no /pimux-tree-navigate")
+                    messages))
+    (should (equal (with-current-buffer input (buffer-string)) "old draft"))))
+
+(ert-deftest pilish-test-tree-browser-orient-current-forgets-selected-row ()
+  "Opening on the current entry discards a reused browser's selection."
+  (pilish-test--with-runtime-nav _chat _input _proc _commands _messages
+    (goto-char (point-min))
+    (search-forward "fix the parser")
+    (should (equal (oref (magit-current-section) value) "u1"))
+    (pilish--tree-browser-fetch-and-render)
+    (should (equal (oref (magit-current-section) value) "u1"))
+    (pilish--tree-browser-fetch-and-render t)
+    (should (equal (oref (magit-current-section) value) "c1"))))
+
+(ert-deftest pilish-test-abort-key-aborts-busy-and-browses-idle-tree ()
+  "C-c C-k aborts busy work and opens the tree on @ when idle."
+  (pilish-test-with-rpc-session (chat input _proc _commands)
+    (let (calls)
+      (cl-letf (((symbol-function 'pilish-abort) (lambda () (push 'abort calls)))
+                ((symbol-function 'pilish--tree-browser-open)
+                 (lambda (orient) (push (list 'tree orient) calls))))
+        (dolist (buffer (list chat input))
+          (with-current-buffer buffer
+            (let ((command (key-binding (kbd "C-c C-k"))))
+              (should (eq command #'pilish-abort-or-tree-browser))
+              (with-current-buffer chat (setq pilish--status 'streaming))
+              (call-interactively command)
+              (with-current-buffer chat (setq pilish--status 'idle))
+              (call-interactively command))))
+        (should (equal (nreverse calls)
+                       '(abort (tree t) abort (tree t))))))))
 
 (provide 'pilish-browse-test)
 ;;; pilish-browse-test.el ends here
