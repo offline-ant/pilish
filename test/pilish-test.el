@@ -981,7 +981,7 @@ still mock the RPC boundary, so the process is never used for I/O."
       (with-current-buffer input
         (rename-buffer (pilish--buffer-name :input "/tmp/" name)))
       (cl-letf (((symbol-function 'pilish--check-dependencies) #'ignore)
-                ((symbol-function 'pilish--start-process) (lambda (_dir) proc))
+                ((symbol-function 'pilish--start-process) (lambda (&rest _) proc))
                 ((symbol-function 'pilish--fetch-commands) #'ignore))
         (should (eq (pilish--setup-session "/tmp/" name) chat)))
       (let ((startup-request (car commands)))
