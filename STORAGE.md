@@ -73,15 +73,15 @@ Remote managed mutations refuse; explicit unshared TRAMP keeps its native policy
 Current-session name changes retain `set_session_name` RPC. Live exports retain
 `export_html` RPC. A stopped current view instead uses the leased append path.
 
-Pi 1.4's RPC command set has no tree-navigation or label command. The imported
-browser's live tree navigation rewrites disk and resumes; that cannot be used next
-to a protocol-2 owner. The managed lease correctly refuses those active-file
-writes, including the current runtime, instead of pretending an idle check is a
-lock. Full live managed tree/label controls therefore need an explicit owning
-runtime command/capability in the runtime integration. Until wired, these actions
-report the claim refusal; no feature is silently converted to an unsafe parallel
-writer. The reusable stopped-file primitives are complete independently of that
-runtime command. Strong universal protection from raw external Pi/internal storage
+Pi's RPC command set has no tree-navigation or label command. Live tree
+navigation therefore goes to the owner: the browser sends the runtime's
+`pimux-tree-navigate` extension command (optionally `--summarize`), which moves
+the leaf in Pi and persists it, and the next snapshot rebuilds the view. It never
+rewrites the active file. Live managed labels have no owning command yet; the
+managed lease refuses those active-file writes, including the current runtime,
+instead of pretending an idle check is a lock. No feature is silently converted
+to an unsafe parallel writer. The reusable stopped-file primitives are complete
+independently of these runtime commands. Strong universal protection from raw external Pi/internal storage
 mutations still requires the upstream owning API described by the runtime package.
 
 ## Verification

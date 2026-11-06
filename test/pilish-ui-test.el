@@ -639,7 +639,7 @@ Closes the category from issue #234: any instance without a usable
 
 (ert-deftest pilish-test-chat-mode-map-binds-commands ()
   "Chat mode map binds abort, session, context, model, and info chords."
-  (dolist (expected '(("C-c C-k" . pilish-abort)
+  (dolist (expected '(("C-c C-k" . pilish-abort-or-tree-browser)
                       ("C-c C-n" . pilish-new-session)
                       ("C-c C-r" . pilish-session-browser)
                       ("C-c C-e" . pilish-export-html)

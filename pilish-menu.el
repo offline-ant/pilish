@@ -57,6 +57,7 @@
 (declare-function pilish-session-input-buffer "pilish" (chat-buffer))
 (declare-function pilish--shared-input-ready-p "pilish-shared" (proc))
 (declare-function pilish--shared-wait-for-snapshot "pilish-shared" (proc generation))
+(declare-function pilish--shared-call-when-live "pilish-shared" (proc generation callback))
 (declare-function pilish--quarantine-input "pilish-drafts" (origin context &rest payload))
 (declare-function pilish--draft-context "pilish-drafts" ())
 (declare-function pilish--capture-input-context "pilish-core" (proc))
@@ -291,10 +292,11 @@ and another transition may not be discarded."
       nil)
      (t t))))
 
-(defun pilish--shared-menu-resynchronize (proc chat-buf generation)
+(defun pilish--shared-menu-resynchronize (proc chat-buf generation &optional after-live)
   "Request one authoritative snapshot for PROC and CHAT-BUF after GENERATION.
 A correlated command response never licenses an independent history read.
-Failure leaves shared input gated until an explicit reconnect succeeds."
+Failure leaves shared input gated until an explicit reconnect succeeds.
+AFTER-LIVE, when non-nil, is called in CHAT-BUF once that snapshot is live."
   (when (and (buffer-live-p chat-buf)
              (eq proc (buffer-local-value 'pilish--process chat-buf)))
     (process-put proc 'pilish-mux-awaiting-snapshot t)
@@ -308,7 +310,15 @@ Failure leaves shared input gated until an explicit reconnect succeeds."
                (let ((boundary (plist-get (plist-get response :data) :generation)))
                  (if (and (eq (plist-get response :success) t)
                           (integerp boundary) (> boundary 0))
-                     (pilish--shared-wait-for-snapshot proc boundary)
+                     (progn
+                       (pilish--shared-wait-for-snapshot proc boundary)
+                       (when after-live
+                         (pilish--shared-call-when-live
+                          proc boundary
+                          (lambda ()
+                            (when (buffer-live-p chat-buf)
+                              (with-current-buffer chat-buf
+                                (funcall after-live)))))))
                    (message "Pi: Snapshot unavailable; reconnect explicitly: %s"
                             (or (plist-get response :error)
                                 "missing authoritative generation"))))

@@ -1346,6 +1346,14 @@ for confirmed runtime termination, or nil for an ordinary subprocess exit."
        "Use explicit Resume stopped conversation; no input will be replayed.")
       (_ (when exit-code (format "Exit code: %s" exit-code)))))))
 
+(defun pilish--note-extension-command-error (event)
+  "Store EVENT's error when it belongs to the awaited extension command."
+  (let ((watch pilish--extension-command-error-watch))
+    (when (and (consp watch)
+               (equal (plist-get event :extensionPath)
+                      (concat "command:" (car watch))))
+      (setcdr watch (or (plist-get event :error) "unknown error")))))
+
 (defun pilish--display-extension-error (event)
   "Display extension error from extension_error EVENT."
   (let* ((extension-path (plist-get event :extensionPath))
@@ -2210,6 +2218,7 @@ Updates buffer-local state and renders display updates."
      (unless (eq (plist-get event :success) t)
        (pilish--recover-followups-after-retry-failure)))
     ("extension_error"
+     (pilish--note-extension-command-error event)
      (pilish--display-extension-error event))
     ("extension_ui_request"
      (pilish--handle-extension-ui-request event))

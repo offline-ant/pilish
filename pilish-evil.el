@@ -135,6 +135,7 @@
 (declare-function pilish-tree-browser-set-label "pilish-browse")
 (declare-function pilish-tree-browser-search "pilish-browse")
 (declare-function pilish-tree-browser-navigate "pilish-browse")
+(declare-function pilish-tree-browser-navigate-with-summary "pilish-browse")
 (declare-function pilish-tree-browser-dispatch "pilish-browse" nil t)
 
 ;; Keymaps defined by `define-derived-mode' in `pilish-browse', which
@@ -368,6 +369,7 @@ options `pilish-evil-chat-state',
     "h" #'pilish-tree-browser-dispatch
     "g" #'pilish-browse-refresh
     "q" #'quit-window
+    "S" #'pilish-tree-browser-navigate-with-summary
     (kbd "RET") #'pilish-tree-browser-navigate)
   (evil-define-key* 'normal pilish-input-mode-map
     (kbd "RET") #'pilish-send
