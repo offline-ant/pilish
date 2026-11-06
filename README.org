@@ -501,17 +501,17 @@ the output again.  =M-x pilish-toggle-jump-to-answer= toggles the
 setting for the current session only.
 
 The same option also controls automatic positioning when you focus a
-session from elsewhere.  A finished session shows its latest final answer
-again, even if already read; a working session follows its latest output.
-Moving between that session's chat and input or using the minibuffer does
-not retrigger this jump.  Pending extension dialogs take priority.  Focus
-positioning affects only the selected frame and never opens a hidden chat.
-Turning it off preserves
-your view on focus as well as completion.  Toggling itself does not move
-the chat; turning it on after a turn finished uses that answer on the next
-focus.  Workspace integrations call =pilish-position-session-on-focus=
-with the chat buffer for explicit focus actions that transiently select
-another window and return before Emacs redisplays.
+session from elsewhere.  A finished session shows its latest final
+answer again, even if already read; a working session follows its latest
+output.  Moving between that session's chat and input or using the
+minibuffer does not retrigger this jump.  Pending extension dialogs take
+priority.  Focus positioning affects only the selected frame and never
+opens a hidden chat.  Turning it off preserves your view on focus as
+well as completion.  Toggling itself does not move the chat; turning it
+on after a turn finished uses that answer on the next focus.  Workspace
+integrations call =pilish-position-session-on-focus= with the chat
+buffer for explicit focus actions that transiently select another window
+and return before Emacs redisplays.
 
 The chat header's summary line shows the Pi and Pilish versions plus
 skill and prompt-template counts.  Expand it to see context files,
@@ -1752,8 +1752,8 @@ sending anything, even while reload's old process is still live.
 =pilish-reload= takes an optional callback, called exactly once with nil or
 a failure reason.  Nil means the fresh process owns the session, its state
 and history refreshes both succeeded and the transition finished; an error
-inside the callback becomes a warning.  A detached view reconnects the retained runtime identity
-only; it never stops/replaces Pi or starts a missing runtime.
+inside the callback becomes a warning.  A detached view reconnects the
+retained runtime identity only; it never stops/replaces Pi or starts a missing runtime.
 =pilish-restart-refusal-functions= receive the chat buffer and can refuse
 replacing its process by returning the reason, for a host that tracks the
 process; =pilish-reload= then reloads in place if Pi has an extension command
