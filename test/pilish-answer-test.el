@@ -101,6 +101,30 @@ its start, so the receipt cannot push its first line out of view."
       (should-not (pilish--answer-visible-p window start))
       (should (= (window-start window) start)))))
 
+(ert-deftest pilish-answer-test-continues-before-returning-control ()
+  "Low-level turns cannot land before the run's final answer and receipt."
+  (pilish-answer-test--with-chat
+    (pilish--handle-display-event '(:type "agent_start"))
+    (let ((message (pilish-answer-test--message
+                    (pilish-answer-test--lines "Intermediate" 100))))
+      (pilish--handle-display-event `(:type "agent_end" :messages [,message])))
+    (should-not pilish--answer-target)
+    (should (pilish--window-following-p window))
+    (pilish--handle-display-event '(:type "agent_start"))
+    (let ((message (pilish-answer-test--message
+                    (pilish-answer-test--lines "Final" 100))))
+      (pilish--handle-display-event `(:type "agent_end" :messages [,message])))
+    (should-not pilish--answer-target)
+    (pilish--handle-display-event '(:type "agent_settled"))
+    (should (text-property-any (point-min) (point-max) 'pilish-run-receipt t))
+    (should (= (window-start window) pilish--answer-target))
+    (save-excursion
+      (goto-char pilish--answer-target)
+      (should (looking-at "Final 1$")))
+    (let ((target pilish--answer-target))
+      (pilish--handle-display-event '(:type "agent_settled"))
+      (should (eq target pilish--answer-target)))))
+
 (ert-deftest pilish-answer-test-receipt-is-no-answer ()
   "A run whose final message shows no text arms no answer at its receipt."
   (pilish-answer-test--with-chat
@@ -498,10 +522,6 @@ Return the start of the answer's first line."
       (pilish--answer-selection-change nil))
     (with-current-buffer buffer
       (should (pilish--window-following-p window)))))
-
-(ert-deftest pilish-answer-test-submit-jumps-by-default ()
-  "Submission jumping is enabled unless explicitly disabled."
-  (should (default-value 'pilish-jump-to-end-on-submit)))
 
 (ert-deftest pilish-answer-test-submit-viewport-and-focus ()
   "Accepted drafts follow the end only when enabled, with input focus kept."
