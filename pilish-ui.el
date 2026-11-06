@@ -4018,11 +4018,16 @@ While the session is busy Pi queues TEXT itself and reports it with
 include.  Pilish's own follow-up queue and `sending' status belong to
 prompts typed in the input buffer, whose draft they restore on failure.
 INPUT-CONTEXT optionally retains the original action's opaque runtime binding;
-callers that defer submission must capture it before yielding to a callback."
+callers that defer submission must capture it before yielding to a callback.
+An unavailable process or an active session transition (reload, resume, new
+session or fork) signals before any RPC is scheduled: during reload the old
+process is still live but no longer owns the session."
   (let ((proc (and (buffer-live-p chat-buffer)
                    (buffer-local-value 'pilish--process chat-buffer))))
     (unless (and (processp proc) (process-live-p proc))
       (error "Pi process is unavailable"))
+    (when (pilish--session-transition-active-p chat-buffer)
+      (error "Cannot submit prompt while session is switching"))
     (pilish--rpc-async
      proc (pilish--bind-input-context
            (list :type "prompt" :message text

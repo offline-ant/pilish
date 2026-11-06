@@ -33,6 +33,86 @@ still mock the RPC boundary, so the process is never used for I/O."
       (pilish--set-chat-buffer chat-buf))
     (list chat-buf input-buf proc)))
 
+(ert-deftest pilish-test-submit-prompt-refuses-session-transitions ()
+  "A transition refuses every behavior before an RPC or a draft change."
+  (pcase-let ((`(,chat ,input ,proc)
+               (pilish-test--make-open-session-command-buffers)))
+    (unwind-protect
+        (progn
+          (with-current-buffer input (insert "Unsent draft"))
+          (with-current-buffer chat
+            (pilish--begin-session-transition proc))
+          (let (sent callback-called)
+            (cl-letf (((symbol-function 'pilish--rpc-async)
+                       (lambda (&rest _) (setq sent t))))
+              (dolist (behavior '(nil "followUp" "steer"))
+                (should-error
+                 (pilish-submit-prompt chat "API text"
+                                       (lambda (_) (setq callback-called t))
+                                       behavior))))
+            (should-not sent)
+            (should-not callback-called)
+            (should (equal (with-current-buffer input (buffer-string))
+                           "Unsent draft"))
+            (should (eq (buffer-local-value 'pilish--process chat) proc))
+            (should (pilish--session-transition-active-p chat))))
+      (pilish-test--kill-live-buffers input chat))))
+
+(ert-deftest pilish-test-submit-prompt-refuses-reload-old-process ()
+  "Reload keeps its old process live, but prompts cannot go to it."
+  (pcase-let ((`(,chat ,input ,old-proc)
+               (pilish-test--make-open-session-command-buffers)))
+    (let ((new-proc (make-pipe-process :name "pilish-api-reload"
+                                       :buffer nil :noquery t))
+          (root (file-name-as-directory (make-temp-file "pilish-api-reload-" t)))
+          switch-callback sent responses)
+      (unwind-protect
+          (progn
+            (with-current-buffer input (insert "Keep this draft through reload"))
+            (with-current-buffer chat
+              (pilish--set-chat-session-identity root)
+              (setq pilish--state
+                    (list :session-file (expand-file-name "session.jsonl" root))))
+            (cl-letf (((symbol-function 'pilish--start-process)
+                       (lambda (&rest _) new-proc))
+                      ((symbol-function 'pilish--rpc-async)
+                       (lambda (proc command callback)
+                         (pcase (plist-get command :type)
+                           ("switch_session" (setq switch-callback callback))
+                           ("prompt"
+                            (push proc sent)
+                            (funcall callback '(:success t)))
+                           (_ (ert-fail "Unexpected reload RPC")))))
+                      ((symbol-function 'pilish--refresh-transition-state-and-history)
+                       (lambda (_proc buf generation &rest _)
+                         (with-current-buffer buf
+                           (pilish--finish-session-transition generation))))
+                      ((symbol-function 'pilish--refresh-commands-ignoring-errors)
+                       #'ignore))
+              (with-current-buffer chat (pilish-reload))
+              (should switch-callback)
+              (should (process-live-p old-proc))
+              (should (eq (buffer-local-value 'pilish--process chat) old-proc))
+              (should (pilish--session-transition-active-p chat))
+              (should-error
+               (pilish-submit-prompt chat "Must not reach the old process"
+                                     (lambda (r) (push r responses))))
+              (should-not sent)
+              (should-not responses)
+              (should (equal (with-current-buffer input (buffer-string))
+                             "Keep this draft through reload"))
+              (funcall switch-callback '(:success t :data (:cancelled :false)))
+              (should (eq (buffer-local-value 'pilish--process chat) new-proc))
+              (should-not (pilish--session-transition-active-p chat))
+              (pilish-submit-prompt chat "Safe after reload"
+                                    (lambda (r) (push r responses)))
+              (should (equal sent (list new-proc)))
+              (should (= 1 (length responses)))))
+        (when (process-live-p new-proc) (delete-process new-proc))
+        (when (process-live-p old-proc) (delete-process old-proc))
+        (pilish-test--kill-live-buffers input chat)
+        (delete-directory root t)))))
+
 (ert-deftest pilish-test-backend-spec-builds-fake-launch-config ()
   "Shared test helper builds fake backend launch data from a scenario name."
   (let* ((spec (pilish-test-backend-spec 'fake "prompt-lifecycle"

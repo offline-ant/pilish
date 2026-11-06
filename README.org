@@ -1671,7 +1671,9 @@ transport is a network process, not Pi's PID.  =pilish-session-runtime= and
 =-busy-p= read its state, and =pilish-session-exists-p= checks a name.
 =pilish-view-session-file= opens a saved session read-only.
 =pilish-submit-prompt= submits without modifying a draft and acknowledges
-actual RPC acceptance; while Pi is busy, Pi queues the prompt itself.
+actual RPC acceptance; while Pi is busy, Pi queues the prompt itself.  During
+a session transition (reload, resume, new session or fork) it signals before
+sending anything, even while reload's old process is still live.
 =pilish-reload= takes an optional callback, called exactly once with nil or
 a failure reason.  Nil means the fresh process owns the session, its state
 and history refreshes both succeeded and the transition finished; an error
