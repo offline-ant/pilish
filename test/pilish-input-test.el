@@ -6515,7 +6515,7 @@ no spurious faces are applied to plain colon-ending lines."
   (with-temp-buffer
     (pilish-input-mode)
     (should (eq (key-binding (kbd "C-c C-c")) 'pilish-send))
-    (should (eq (key-binding (kbd "C-c C-k")) 'pilish-abort))
+    (should (eq (key-binding (kbd "C-c C-k")) 'pilish-abort-or-tree-browser))
     (should (eq (key-binding (kbd "C-c C-p")) 'pilish-menu))
     (should (eq (key-binding (kbd "C-c C-r"))
                 'pilish-session-browser))

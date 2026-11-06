@@ -14,6 +14,10 @@
        (setq pilish-runtime-test--chat (pilish-attach-runtime runtime "task-boundary"))
        (pilish-runtime-test--wait
         (lambda () (equal (plist-get (pilish-session-runtime pilish-runtime-test--chat) :state) "live")))
+       ;; Going live fetches the runtime's commands once; BODY counts only its own traffic.
+       (pilish-runtime-test--wait
+        (lambda () (buffer-local-value 'pilish--commands pilish-runtime-test--chat)))
+       (setq pilish-runtime-test--received nil)
        (let ((chat pilish-runtime-test--chat)) ,@body))))
 
 (ert-deftest pilish-runtime-task-test-explicit-cli-and-captured-namespace ()

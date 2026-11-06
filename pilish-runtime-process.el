@@ -47,6 +47,7 @@ remaining observers and teardown still run, and Close reports the errors.")
 (declare-function pilish--runtime-service-root-p "pilish-runtime" (runtime))
 (declare-function pilish-reconnect-runtime "pilish-runtime" (buffer &optional callback))
 (declare-function pilish--runtime-finish-close "pilish-runtime" (chat error))
+(declare-function pilish--refresh-commands "pilish-menu" (proc))
 (declare-function pilish--runtime-worker-terminated "pilish-runtime-task" (chat))
 (declare-function pilish--runtime-task-cancel-poll "pilish-runtime-task" ())
 
@@ -263,6 +264,10 @@ protocol owns cleanup; a committed runtime is left available for attachment."
   (when-let* ((chat (process-get process 'pilish-chat-buffer))
               ((buffer-live-p chat)))
     (with-current-buffer chat
+      ;; Every new transport (start, attach, reconnect, resume) learns the
+      ;; runtime's commands once; later moves refresh them on adoption.
+      (unless (process-get process 'pilish-was-live)
+        (pilish--refresh-commands process))
       (process-put process 'pilish-was-live t)
       (setq pilish--runtime (plist-put pilish--runtime :state "live"))
       (when-let* ((timer (process-get process 'pilish-runtime-ready-timer)))

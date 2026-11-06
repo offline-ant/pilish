@@ -58,9 +58,11 @@
 ;;
 ;; When a managed runtime is configured, stopped-file appends, deletions and
 ;; rewrites instead acquire the common pimux lease in `pilish-storage'.  Any
-;; live or uncertain writer refuses.  A live name change keeps using its RPC;
-;; a live branch move needs the owning runtime's navigation API, not this
-;; unshared disk-rewrite path.  Refusal never falls back to an unguarded write.
+;; live or uncertain writer refuses.  A live name change keeps using its RPC.
+;; A live shared runtime moves its own branch through its
+;; `pimux-tree-navigate' extension command, optionally summarizing the
+;; abandoned branch; its snapshot then rebuilds the chat.  Refusal never
+;; falls back to an unguarded write.
 
 ;;; Code:
 
@@ -84,6 +86,11 @@
                   (path))
 (declare-function pilish--session-list-directory "pilish-menu"
                   (&optional chat-buf))
+(declare-function pilish--shared-menu-resynchronize "pilish-menu"
+                  (proc chat-buf generation &optional after-live))
+(declare-function pilish--shared-input-ready-p "pilish-shared" (proc))
+(declare-function pilish--shared-wait-for-snapshot "pilish-shared"
+                  (proc generation))
 
 ;;;; Response Parsers
 
@@ -3283,6 +3290,7 @@ that is fine for display-only sections."
     (define-key map (kbd "l") #'pilish-tree-browser-set-label)
     (define-key map (kbd "/") #'pilish-tree-browser-search)
     (define-key map (kbd "RET") #'pilish-tree-browser-navigate)
+    (define-key map (kbd "S") #'pilish-tree-browser-navigate-with-summary)
     (define-key map (kbd "?") #'pilish-tree-browser-dispatch)
     (define-key map (kbd "h") #'pilish-tree-browser-dispatch)
     map)
@@ -3291,6 +3299,7 @@ that is fine for display-only sections."
 (defvar pilish-tree-node-section-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "RET") #'pilish-tree-browser-navigate)
+    (define-key map (kbd "S") #'pilish-tree-browser-navigate-with-summary)
     (define-key map (kbd "l") #'pilish-tree-browser-set-label)
     map)
   "Keymap for tree node sections.")
@@ -3495,7 +3504,10 @@ rendering path."
   "Tree browser help."
   [:description pilish--tree-dispatch-heading
    ["Actions"
-    ("RET" "continue from selected turn" pilish-tree-browser-navigate)
+    ("RET" "continue from selected turn (prefix: summarize)"
+     pilish-tree-browser-navigate)
+    ("S" "continue with branch summary"
+     pilish-tree-browser-navigate-with-summary)
     ("l" "label" pilish-tree-browser-set-label)
     ("g" "refresh" pilish-browse-refresh)
     ("q" "quit" quit-window)]
@@ -4050,12 +4062,13 @@ Whitespace-separated regexp tokens must all match one projected node."
     (when need-rerender
       (pilish--tree-browser-rerender))))
 
-(defun pilish-tree-browser-navigate ()
+(defun pilish-tree-browser-navigate (&optional summarize)
   "Continue the live conversation from the selected turn.
 Selecting the actual current projected entry is a no-op.  Projected
 legacy and ambiguous rows are visible but cannot truthfully name a
-continuation target."
-  (interactive)
+continuation target.  With prefix argument SUMMARIZE, a shared runtime
+first summarizes the abandoned branch; other sessions ignore it."
+  (interactive "P")
   (let* ((section (magit-current-section))
          (value (and section (oref section value))))
     (cond
@@ -4072,7 +4085,14 @@ continuation target."
         "Pi: Cannot continue from selected turn: legacy entry has no id; "
         "open it with pi once to migrate, then refresh with g")))
      (t
-      (pilish--browse-navigate value)))))
+      (pilish--browse-navigate value (and summarize t))))))
+
+(defun pilish-tree-browser-navigate-with-summary ()
+  "Continue from the selected turn after summarizing the abandoned branch.
+Same as \\[universal-argument] \\[pilish-tree-browser-navigate], reachable
+where Evil's scrolling rebinds \\[universal-argument]."
+  (interactive)
+  (pilish-tree-browser-navigate t))
 
 (defun pilish-tree-browser-set-label ()
   "Set or clear a label on the addressable tree node at point."
@@ -4826,8 +4846,10 @@ the exact text/image value previously approved."
     (or (null draft)
         (equal draft approval))))
 
-(defun pilish--browse-navigate (node-id)
+(defun pilish--browse-navigate (node-id &optional summarize)
   "Continue the live conversation from projected tree node NODE-ID.
+SUMMARIZE asks a shared runtime to summarize the abandoned branch.
+An explicit unshared session cannot summarize and ignores it.
 An addressable id identical to `pilish--tree-browser-leaf-id' is the
 actual current entry in the unique-id disk projection already loaded by
 this browser.  Return a concise no-op message for it BEFORE consulting
@@ -4853,7 +4875,7 @@ flow in `pilish--browse-navigate-noncurrent'."
              (pilish-jsonl-tree-ids-unique-p pilish--tree-browser-tree)
              (equal addressable-node-id addressable-leaf-id))
         (message "Pi: Already at current position")
-      (pilish--browse-navigate-noncurrent node-id))))
+      (pilish--browse-navigate-noncurrent node-id nil nil summarize))))
 
 (defun pilish--browse-navigation-owner-current-p (owner)
   "Return non-nil when OWNER still names this browser, chat, and file."
@@ -4875,14 +4897,16 @@ flow in `pilish--browse-navigate-noncurrent'."
     "during draft confirmation")))
 
 (defun pilish--browse-navigate-noncurrent
-    (node-id &optional approved-draft navigation-owner)
+    (node-id &optional approved-draft navigation-owner summarize)
   "Continue from non-current tree node NODE-ID.
 APPROVED-DRAFT and NAVIGATION-OWNER are internal state carried only
 across the post-confirmation revalidation pass.  Initial callers omit
 them.  Revalidation always returns to the original browser buffer and
-aborts if that buffer, its linked chat, or its session file changed."
+aborts if that buffer, its linked chat, or its session file changed.
+SUMMARIZE is recorded in a new owner; revalidation keeps the owner's."
   (if (null navigation-owner)
-      (pilish--browse-navigate-noncurrent-owned node-id approved-draft)
+      (pilish--browse-navigate-noncurrent-owned
+       node-id approved-draft nil summarize)
     (let ((browser-buf (plist-get navigation-owner :browser-buffer)))
       (if (not (buffer-live-p browser-buf))
           (pilish--browse-navigation-owner-changed)
@@ -4893,12 +4917,15 @@ aborts if that buffer, its linked chat, or its session file changed."
             (pilish--browse-navigation-owner-changed)))))))
 
 (defun pilish--browse-navigate-noncurrent-owned
-    (node-id &optional approved-draft navigation-owner)
+    (node-id &optional approved-draft navigation-owner summarize)
   "Continue from non-current tree node NODE-ID under NAVIGATION-OWNER.
 APPROVED-DRAFT is an ephemeral text/image snapshot accepted before a
 recursive revalidation pass.  NAVIGATION-OWNER is captured before the
-first prompt and normally starts nil.
-Guard → rewrite → switch → reload → prefill, mirroring pi's
+first prompt and normally starts nil; a new owner records SUMMARIZE.
+A shared runtime owns its live session file: after steps 1-11 it moves
+the leaf itself (`pilish--browse-navigate-through-runtime') instead of
+steps 12-19.  Explicit unshared sessions follow
+guard → rewrite → switch → reload → prefill, mirroring pi's
 navigateTree without a navigate RPC.  An interactive draft answer is
 bound to the browser buffer, linked chat buffer, and session file
 captured before the prompt.  Revalidation aborts if any owner changed
@@ -4988,7 +5015,8 @@ writer coordination."
             (or navigation-owner
                 (list :browser-buffer (current-buffer)
                       :chat-buffer chat-buf
-                      :session-file path))))
+                      :session-file path
+                      :summarize summarize))))
       (cond
        ((null path)
         (message "Pi: Cannot continue from selected turn: no session file"))
@@ -5055,6 +5083,10 @@ writer coordination."
                            (pilish--browse-navigate-message node-id)
                            (pilish--browse-quit-when-settled
                             chat-buf (selected-window) path))))))
+                   ((pilish--process-shared-p proc)
+                    (pilish--browse-navigate-through-runtime
+                     proc chat-buf input-buf node-id target approved-draft
+                     navigation-owner))
                    (t
                     (condition-case err
                         (pilish--session-file-cwd-or-error path)
@@ -5117,6 +5149,149 @@ with no refetch, truncated to 60; without a preview use the bare
         (message "Pi: Continued from selected turn: %s"
                  (pilish--truncate-string preview 60))
       (message "Pi: Continued from selected turn"))))
+
+;;;; Runtime-Owned Tree Navigation
+
+(defconst pilish--runtime-tree-navigate-command "pimux-tree-navigate"
+  "Extension command through which a shared runtime moves its session leaf.")
+
+(defconst pilish--runtime-tree-navigate-marker "pimux:navigate-tree"
+  "Custom entry type that persists a runtime tree move made without a summary.")
+
+(defun pilish--browse-runtime-navigation-landed-p (entries leaf-id target-leaf)
+  "Return non-nil when LEAF-ID among flat ENTRIES sits on TARGET-LEAF.
+The runtime ends either on TARGET-LEAF or on the branch summary or
+navigation marker it appended as TARGET-LEAF's child."
+  (or (equal leaf-id target-leaf)
+      (when-let* ((entry (cl-find leaf-id (append entries nil)
+                                  :key (lambda (entry) (plist-get entry :id))
+                                  :test #'equal)))
+        (and (equal (pilish--normalize-string-or-null
+                     (plist-get entry :parentId))
+                    target-leaf)
+             (or (equal (plist-get entry :type) "branch_summary")
+                 (and (equal (plist-get entry :type) "custom")
+                      (equal (plist-get entry :customType)
+                             pilish--runtime-tree-navigate-marker)))))))
+
+(defun pilish--browse-navigate-through-runtime
+    (proc chat-buf input-buf node-id target approved-draft navigation-owner)
+  "Ask PROC's shared runtime to continue from NODE-ID's TARGET.
+CHAT-BUF and INPUT-BUF are the linked session buffers.  APPROVED-DRAFT and
+NAVIGATION-OWNER carry the draft confirmation exactly as on the rewrite
+path; an accepted answer re-runs every guard before anything is sent.
+The runtime must list `pilish--runtime-tree-navigate-command': an unknown
+slash command would reach the model as an ordinary prompt."
+  (cond
+   ((not (cl-find pilish--runtime-tree-navigate-command
+                  (buffer-local-value 'pilish--commands chat-buf)
+                  :key (lambda (command) (plist-get command :name))
+                  :test #'equal))
+    (message "Pi: Cannot continue from selected turn: the runtime offers no /%s"
+             pilish--runtime-tree-navigate-command))
+   ((not (pilish--shared-input-ready-p proc))
+    (message (concat "Pi: Cannot continue from selected turn: the shared view "
+                     "is not snapshot-ready; reconnect explicitly")))
+   (t
+    (let ((decision (pilish--browse-confirm-draft-replacement
+                     input-buf approved-draft)))
+      (pcase (car-safe decision)
+        ('revalidate
+         (pilish--browse-navigate-noncurrent
+          node-id (cdr decision) navigation-owner))
+        ('ready
+         (pilish--browse-send-runtime-navigation
+          proc chat-buf node-id target (cdr decision)
+          (plist-get navigation-owner :summarize))))))))
+
+(defun pilish--browse-send-runtime-navigation
+    (proc chat-buf node-id target approval summarize)
+  "Send PROC's runtime navigation to NODE-ID, then reconcile CHAT-BUF.
+The runtime applies Pi's own selection rule to the original NODE-ID.
+TARGET is the expected projection, APPROVAL the accepted draft snapshot,
+and SUMMARIZE requests a branch summary.  The command blocks other
+session transitions until its response; then one authoritative snapshot
+rebuilds the chat.  The tree-changed snapshot suspends the old draft as
+recoverable input, so the prefill follows the live snapshot."
+  (let* ((context (pilish--capture-input-context proc))
+         (browser (current-buffer))
+         (watch (list pilish--runtime-tree-navigate-command))
+         (text (format "/%s %s%s" pilish--runtime-tree-navigate-command
+                       (if summarize "--summarize " "") node-id))
+         (next-generation (1+ (or (process-get proc 'pilish-mux-generation) 0)))
+         (response-seen nil)
+         (generation (with-current-buffer chat-buf
+                       (setq pilish--extension-command-error-watch watch)
+                       (pilish--begin-session-transition proc))))
+    (condition-case err
+        (progn
+          (pilish--rpc-async
+           proc (pilish--bind-input-context
+                 (list :type "prompt" :message text) context)
+           (lambda (response)
+             (setq response-seen t)
+             (when (and (buffer-live-p chat-buf)
+                        (eq proc (buffer-local-value 'pilish--process chat-buf)))
+               (with-current-buffer chat-buf
+                 (when (eq pilish--extension-command-error-watch watch)
+                   (setq pilish--extension-command-error-watch nil))
+                 ;; Even a failed request may have moved the tree: reconcile,
+                 ;; then judge the move by the authoritative snapshot.
+                 (pilish--shared-menu-resynchronize
+                  proc chat-buf generation
+                  (lambda ()
+                    (pilish--browse-finish-runtime-navigation
+                     chat-buf browser node-id target approval
+                     (or (cdr watch)
+                         (and (not (eq (plist-get response :success) t))
+                              (or (plist-get response :error)
+                                  "request failed"))))))))))
+          (with-current-buffer chat-buf
+            (unless response-seen
+              (pilish--shared-wait-for-snapshot proc next-generation)))
+          (message "Pi: Continuing from selected turn%s..."
+                   (if summarize " after summarizing the branch" "")))
+      ((error quit)
+       (with-current-buffer chat-buf
+         (when (eq pilish--extension-command-error-watch watch)
+           (setq pilish--extension-command-error-watch nil))
+         (pilish--shared-wait-for-snapshot proc next-generation)
+         (pilish--finish-session-transition generation))
+       ;; A send error is not proof that the runtime never received it.
+       (message "Pi: Tree navigation delivery uncertain; reconnect without replaying it")
+       (signal (car err) (cdr err))))))
+
+(defun pilish--browse-finish-runtime-navigation
+    (chat-buf browser node-id target approval failure)
+  "Report CHAT-BUF's live runtime navigation to NODE-ID's TARGET.
+CHAT-BUF is current and holds the authoritative snapshot.  A leaf that
+did not land on TARGET reports FAILURE (the captured extension error or
+failed response), never success.  A landed move prefills TARGET's text
+unless a newer draft than APPROVAL exists, then refreshes BROWSER."
+  (let ((input-buf pilish--input-buffer))
+    (if (not (pilish--browse-runtime-navigation-landed-p
+              (plist-get pilish--state :entries)
+              (plist-get pilish--state :leaf-id)
+              (plist-get target :leaf-id)))
+        (message "Pi: Cannot continue from selected turn: %s"
+                 (or failure "the runtime did not move the session"))
+      (let ((replace-draft-p (pilish--browse-draft-replacement-still-safe-p
+                              input-buf approval)))
+        (when replace-draft-p
+          (pilish--browse-prefill-input input-buf (plist-get target :prefill)))
+        (if (not (buffer-live-p browser))
+            (message "Pi: Continued from selected turn")
+          (with-current-buffer browser
+            (pilish--browse-navigate-message node-id)
+            (when (and (derived-mode-p 'pilish-tree-browser-mode)
+                       (eq pilish--chat-buffer chat-buf))
+              (pilish--tree-browser-fetch-and-render t))))
+        (cond
+         ((not replace-draft-p)
+          (message (concat "Pi: Continued from selected turn; kept newer "
+                           "input draft (prefill skipped)")))
+         (failure
+          (message "Pi: Continued from selected turn; Pi reported: %s" failure)))))))
 
 (defun pilish--browse-rewrite-session-file (path lines &optional expected-digest)
   "Replace stopped PATH with LINES under managed storage when configured.
@@ -5277,8 +5452,10 @@ erases any partial obsolete text."
           (pilish--tree-browser-rerender
            anchor lineage nil generation owner))))))
 
-(defun pilish--tree-browser-fetch-and-render ()
+(defun pilish--tree-browser-fetch-and-render (&optional orient-current)
   "Fetch tree and re-render the tree browser.
+ORIENT-CURRENT discards the selected row, as a new session file does,
+so the new snapshot selects the current entry; folds are kept.
 The tree is read from the linked chat's session file on disk, so no
 live pi process is required.  The callback reports (TREE LEAF-ID
 MESSAGE): a non-nil MESSAGE renders as an error state with a zero
@@ -5314,10 +5491,11 @@ to redisplay between its slices; one timer hop never does)."
          (loaded (pilish--tree-browser-chat-session-file))
          (new-owner-p
           (not (equal loaded pilish--tree-browser-state-file)))
-         (captured (and (not new-owner-p)
+         (reorient-p (or new-owner-p orient-current))
+         (captured (and (not reorient-p)
                         (pilish--browse-capture-point-anchor)))
          (anchor
-          (and (not new-owner-p)
+          (and (not reorient-p)
                (or captured
                    ;; Mid-flight refresh: the loading render already
                    ;; destroyed the sections under point.
@@ -5325,7 +5503,7 @@ to redisplay between its slices; one timer hop never does)."
                         pilish--tree-browser-fetch-anchor)
                    pilish--tree-browser-point-anchor)))
          (lineage
-          (and (not new-owner-p)
+          (and (not reorient-p)
                (cond
                 (captured
                  (pilish--tree-anchor-lineage
@@ -5337,8 +5515,9 @@ to redisplay between its slices; one timer hop never does)."
       ;; Node ids are canonical only within one session file.  A reused
       ;; browser must not transfer folds to coincidentally equal ids owned
       ;; by another file.
-      (setq pilish--browse-fold-state (make-hash-table :test #'equal)
-            pilish--tree-browser-point-oriented-p nil
+      (setq pilish--browse-fold-state (make-hash-table :test #'equal)))
+    (when reorient-p
+      (setq pilish--tree-browser-point-oriented-p nil
             pilish--tree-browser-point-anchor nil
             pilish--tree-browser-point-lineage nil
             pilish--tree-browser-fetch-anchor nil
@@ -5349,7 +5528,7 @@ to redisplay between its slices; one timer hop never does)."
           pilish--tree-browser-fetch-lineage lineage)
     ;; On a file switch, the old sections are still in the buffer here;
     ;; explicitly suppress their capture while painting loading state.
-    (pilish--tree-browser-rerender nil nil new-owner-p)
+    (pilish--tree-browser-rerender nil nil reorient-p)
     ;; Paint it before scheduling the read — see docstring.
     (redisplay)
     (pilish--browse-load-tree
@@ -5521,6 +5700,11 @@ error forever).  A new browser starts from
 browser buffer is reused with its current state.  Re-running the
 browser major mode re-initializes from the current defaults."
   (interactive)
+  (pilish--tree-browser-open nil))
+
+(defun pilish--tree-browser-open (orient-current)
+  "Open the current session's tree browser; see `pilish-tree-browser'.
+ORIENT-CURRENT selects the current entry instead of the previous row."
   (let ((chat-buf (pilish--get-chat-buffer)))
     (unless (and chat-buf (buffer-live-p chat-buf))
       (user-error "No pi session to browse")))
@@ -5536,7 +5720,7 @@ browser major mode re-initializes from the current defaults."
           (setq pilish--chat-buffer chat-buf))))
     (pop-to-buffer buf)
     (pilish--apply-disclosure-margins)
-    (pilish--tree-browser-fetch-and-render)
+    (pilish--tree-browser-fetch-and-render orient-current)
     (when new-p
       (message "Pi: Press ? for available commands"))))
 
