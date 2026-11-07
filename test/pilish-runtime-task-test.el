@@ -306,6 +306,8 @@
           (pilish-runtime-test--write-task task-file task-record)
           ;; Run the owned timer callback directly instead of waiting a period.
           (apply (timer--function timer) (timer--args timer))
+          (pilish-runtime-test--wait
+           (lambda () (not (buffer-local-value 'pilish--runtime-task-query chat))))
           (should-not (memq timer timer-list))
           (should-not (buffer-local-value 'pilish--runtime-task-timer chat))
           (should (buffer-live-p chat))
@@ -317,6 +319,72 @@
           (should-not (buffer-local-value 'pilish--runtime-task-timer chat))
           (pilish--runtime-worker-terminated chat)
           (should-not (buffer-local-value 'pilish--runtime-task-timer chat)))))))
+
+(ert-deftest pilish-runtime-task-test-poll-reads-asynchronously-and-reschedules-after-settling ()
+  (pilish-runtime-task-test--with-view
+    (pilish--runtime-worker-terminated chat)
+    (let ((timer (buffer-local-value 'pilish--runtime-task-timer chat)) query)
+      (should (timerp timer))
+      (cl-letf (((symbol-function 'process-file)
+                 (lambda (&rest _) (ert-fail "Polling blocked Emacs on task evidence"))))
+        (apply (timer--function timer) (timer--args timer))
+        (setq query (buffer-local-value 'pilish--runtime-task-query chat))
+        (should (processp query))
+        (should-not (buffer-local-value 'pilish--runtime-task-timer chat))
+        ;; Still pending: the next read starts only after this one settled.
+        (pilish-runtime-test--wait
+         (lambda () (timerp (buffer-local-value 'pilish--runtime-task-timer chat))))
+        (should-not (buffer-local-value 'pilish--runtime-task-query chat))
+        (should-not (process-live-p query))
+        (setq task-record (plist-put task-record :state "complete"))
+        (pilish-runtime-test--write-task task-file task-record)
+        (setq timer (buffer-local-value 'pilish--runtime-task-timer chat))
+        (apply (timer--function timer) (timer--args timer))
+        (should (buffer-live-p chat))
+        (pilish-runtime-test--wait (lambda () (not (buffer-live-p chat))))))))
+
+(ert-deftest pilish-runtime-task-test-cancelled-read-never-applies-its-evidence ()
+  (pilish-runtime-task-test--with-view
+    (pilish--runtime-worker-terminated chat)
+    (let ((timer (buffer-local-value 'pilish--runtime-task-timer chat)) query)
+      (setq task-record (plist-put task-record :state "complete"))
+      (pilish-runtime-test--write-task task-file task-record)
+      (apply (timer--function timer) (timer--args timer))
+      (setq query (buffer-local-value 'pilish--runtime-task-query chat))
+      (with-current-buffer chat (pilish--runtime-task-cancel-poll))
+      (should-not (process-live-p query))
+      (should-not (buffer-live-p (process-buffer query)))
+      (pilish-runtime-test--wait (lambda () (memq (process-status query) '(exit signal))))
+      (accept-process-output nil 0.05)
+      (should (buffer-live-p chat))
+      (should-not (buffer-local-value 'pilish--runtime-task-timer chat)))))
+
+(defun pilish-runtime-task-test--orphan (record)
+  "Return pending RECORD owned by a dead parent: Emacs's PID with another start."
+  (let ((owner (copy-tree (plist-get (plist-get record :parent) :process))))
+    (plist-put (copy-tree record) :parent
+               (list :process (plist-put owner :startTime "1") :taskId "test-task"))))
+
+(ert-deftest pilish-runtime-task-test-dead-owner-stops-polling-and-retains-uncertainty ()
+  (pilish-runtime-task-test--with-view
+    (setq task-record (pilish-runtime-task-test--orphan task-record))
+    (pilish-runtime-test--write-task task-file task-record)
+    (with-current-buffer (pilish-session-input-buffer chat) (insert "orphaned worker draft"))
+    (let ((captured (pilish-runtime-task-test--captured-runtime runtime)))
+      (pilish--runtime-worker-terminated chat)
+      (should-not (buffer-local-value 'pilish--runtime-task-timer chat))
+      (should-not (buffer-local-value 'pilish--runtime-task-query chat))
+      (should (buffer-live-p chat))
+      (should (equal (plist-get (pilish-session-runtime chat) :task-binding) task-record))
+      (should (string-match-p "owner exited before cleanup"
+                              (plist-get (pilish-session-runtime chat) :task-error)))
+      (should (equal (plist-get (pilish-session-desktop-state chat) :draft) "orphaned worker draft"))
+      (pilish--runtime-task-start-poll chat)
+      (should-not (buffer-local-value 'pilish--runtime-task-timer chat))
+      (let ((failure (should-error (pilish-reconcile-worker-task chat captured))))
+        (should (string-match-p "owner exited before cleanup" (error-message-string failure))))
+      (should (buffer-live-p chat))
+      (should-not pilish-runtime-test--received))))
 
 (ert-deftest pilish-runtime-task-test-reconnect-preserves-binding-and-never-rearms-cancellation ()
   (pilish-runtime-task-test--with-view
@@ -772,6 +840,38 @@
       (with-current-buffer "*Pilish closed agents*"
         (should (string-search "ended worker draft" (buffer-string)))
         (should (string-search "Emacs view close timed out" (buffer-string)))))))
+
+(ert-deftest pilish-runtime-task-test-close-retires-orphaned-worker-pimux-proves-ended ()
+  "Pending evidence of a dead owner plus pimux's exact receipt lets Close remove the view."
+  (pilish-runtime-task-test--with-ended-worker t
+      '(:muxId "test-runtime" :operationId "test-operation" :state "stopped")
+    (setq task-record (pilish-runtime-task-test--orphan (plist-put task-record :state "pending"))
+          task-record (cl-loop for (key value) on task-record by #'cddr
+                               unless (eq key :error) append (list key value)))
+    (pilish-runtime-test--write-task task-file task-record)
+    (let (outcomes (closed 0))
+      (let ((pilish-session-closed-functions (list (lambda (_) (cl-incf closed)))))
+        (pilish-close-session chat (lambda (error) (push error outcomes))))
+      (should (= closed 1))
+      (should-not (buffer-live-p chat))
+      (should (= (length outcomes) 1))
+      (should (string-match-p "owner exited before cleanup" (car outcomes))))))
+
+(ert-deftest pilish-runtime-task-test-close-retains-orphaned-worker-without-termination-proof ()
+  (pilish-runtime-task-test--with-ended-worker nil
+      '(:muxId "test-runtime" :operationId "test-operation" :state "stopped")
+    (setq task-record (pilish-runtime-task-test--orphan (plist-put task-record :state "pending"))
+          task-record (cl-loop for (key value) on task-record by #'cddr
+                               unless (eq key :error) append (list key value)))
+    (pilish-runtime-test--write-task task-file task-record)
+    (let (outcomes
+          (pilish-session-closed-functions
+           (list (lambda (_) (ert-fail "Unproven orphaned worker termination retired the view")))))
+      (pilish-close-session chat (lambda (error) (push error outcomes)))
+      (should (buffer-live-p chat))
+      (should (= (length outcomes) 1))
+      (should (string-match-p "owner exited before cleanup" (car outcomes)))
+      (should-not (buffer-local-value 'pilish--runtime-close-timer chat)))))
 
 (ert-deftest pilish-runtime-task-test-close-retains-failed-worker-without-termination-proof ()
   "Missing evidence, live processes or a foreign or absent receipt keep the refusal."
