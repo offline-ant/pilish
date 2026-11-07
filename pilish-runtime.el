@@ -59,15 +59,9 @@ without it worker Close fails explicitly, without sending any input."
   "Return non-nil only when RUNTIME's wrapper and actual Pi are known dead."
   (cl-every
    (lambda (keys)
-     (let* ((pid (plist-get runtime (nth 0 keys)))
-            (start (plist-get runtime (nth 1 keys)))
-            (boot (plist-get runtime (nth 2 keys)))
-            (current (pilish--runtime-process-identity pid)))
-       (and (integerp pid)
-            (or (not (file-exists-p (format "/proc/%d" pid)))
-                (and current start boot
-                     (not (and (equal start (plist-get current :start-time))
-                               (equal boot (plist-get current :boot-id)))))))))
+     (pilish--runtime-identity-dead-p (plist-get runtime (nth 0 keys))
+                                      (plist-get runtime (nth 1 keys))
+                                      (plist-get runtime (nth 2 keys))))
    '((:pid :owner-start-time :owner-boot-id)
      (:pi-pid :pi-start-time :pi-boot-id))))
 

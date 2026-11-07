@@ -219,7 +219,11 @@ transport exit and uncertain delivery retain that marker and cannot authorize re
 `pimux_exit` cannot complete the wait. Only a matching `complete` record proves
 worker death plus owning-task cleanup/name release and retires the view. A
 `failed` record reports its original error and keeps recovery, including for a
-worker closed remotely without a local Close request. Explicit Close of that view
+worker closed remotely without a local Close request. Only the exact owning parent
+process publishes final evidence, so `pending` evidence whose parent process is dead
+(gone, or its PID reused by another start/boot) is equally final uncertainty: Pilish
+reports that the owner exited before cleanup, stops polling and keeps recovery.
+Explicit Close of a failed or orphaned view
 retires it only when the actual Pi and its mux are dead and the read-only
 `pimux receipt --json --id <muxId>` reports `stopped` for the view's exact launch
 `operationId`: its owner has published final evidence, so nothing else can finish the
@@ -229,8 +233,10 @@ restoration and `pilish-reconcile-worker-task` never retire failed workers. Miss
 unsafe or changed evidence is uncertainty, not permission for another prompt or root Stop.
 
 A Close waiter times out after 45 seconds with an error. Read-only polling remains
-owned by the retained view while validated task evidence is pending, so late
-matching completion can retire it without recalling settled callbacks. Missing,
+owned by the retained view while validated task evidence is pending and its owner
+lives, so late matching completion can retire it without recalling settled callbacks.
+Each poll runs the CLI asynchronously and schedules the next read 0.25 seconds after
+the previous one settles, so any number of pending views never blocks Emacs. Missing,
 invalid or changed evidence cancels polling and clears the latest status while
 retaining the pinned binding and local work for explicit reconciliation. Another Close joins reconciliation and never replays
 a cancellation whose delivery may have succeeded. A late definitive rejection can
@@ -333,8 +339,9 @@ Emacs-compatible recipe policy. See README.org for the exact public call.
 The deterministic `test/pilish-runtime-test.el` uses private fake Unix peers,
 validates hello/identity/readiness and refuses prelive input.
 `test/pilish-runtime-task-test.el` adds read-only CLI boundaries for captured
-namespaces, missing/failed/wrong/unsafe task evidence, Close of failed workers with
-and without exact pimux termination proof, timeout/late completion,
+namespaces, missing/failed/wrong/unsafe task evidence, Close of failed and orphaned
+workers with and without exact pimux termination proof, asynchronous polling and
+cancelled reads, dead-owner uncertainty, timeout/late completion,
 reconnection without repeated cancellation, definitive-rejection retry versus uncertain
 delivery, pending-Close input gates, unsent FIFO recovery, notification failures
 and public read-only reconciliation after disconnected natural completion.

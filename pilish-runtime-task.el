@@ -5,8 +5,10 @@
 
 ;; Runtime exit is not parent-task cleanup.  Capture the owning task binding
 ;; before cancellation and accept only its final complete evidence.  Polling is
-;; read-only and survives transport loss or a local waiter timeout; disposing a
-;; view cancels its polling, never the parent or worker.
+;; read-only, asynchronous and survives transport loss or a local waiter
+;; timeout; disposing a view cancels its polling, never the parent or worker.
+;; Only the exact owning parent can publish final evidence, so pending evidence
+;; whose parent is dead stays uncertain and is not polled.
 
 ;;; Code:
 
@@ -29,57 +31,107 @@
        (cl-every (lambda (key) (equal (plist-get left key) (plist-get right key)))
                  '(:pid :startTime :bootId))))
 
-(defun pilish--runtime-task-read (runtime)
-  "Read and validate RUNTIME's owning task, signalling on unknown evidence.
-Use the captured socket namespace, not this frontend's ambient PIMUX_DIR.
-A retained :task-binding also pins the lease and both process identities."
+(defun pilish--runtime-task-environment (runtime)
+  "Return the task CLI's environment for RUNTIME's captured socket namespace.
+Signal when the CLI is unconfigured or the namespace is not a local path."
   (unless (and (stringp pilish-runtime-task-status-executable)
                (file-name-absolute-p pilish-runtime-task-status-executable)
                (not (file-remote-p pilish-runtime-task-status-executable))
                (file-executable-p pilish-runtime-task-status-executable))
     (error "Configure an absolute task-status executable before closing workers"))
-  (let* ((socket (plist-get runtime :socket))
-         (binding (plist-get runtime :task-binding))
-         (worker (list :pid (plist-get runtime :pi-pid)
-                       :startTime (plist-get runtime :pi-start-time)
-                       :bootId (plist-get runtime :pi-boot-id)))
-         (default-directory temporary-file-directory)
-         (process-environment (copy-sequence process-environment)))
+  (let ((socket (plist-get runtime :socket))
+        (process-environment (copy-sequence process-environment)))
     (unless (and (stringp socket) (file-name-absolute-p socket) (not (file-remote-p socket)))
       (error "Worker task evidence requires the captured runtime socket namespace"))
     (setenv "PIMUX_DIR" (directory-file-name (file-name-directory socket)))
+    process-environment))
+
+(defun pilish--runtime-task-read (runtime)
+  "Read and validate RUNTIME's owning task, signalling on unknown evidence.
+Use the captured socket namespace, not this frontend's ambient PIMUX_DIR."
+  (let ((process-environment (pilish--runtime-task-environment runtime))
+        (default-directory temporary-file-directory))
     (with-temp-buffer
-      (unless (eq 0 (process-file pilish-runtime-task-status-executable nil t nil
-                                  "--id" (plist-get runtime :mux-id) "--json"))
-        (error "Worker task evidence unavailable or unsafe; view retained: %s"
-               (string-trim (buffer-string))))
-      (let* ((record (json-parse-string (buffer-string) :object-type 'plist))
-             (owner (and (listp record) (plist-get record :parent))))
-        (unless (and (listp record) (eq (plist-get record :schema) 1)
-                     (equal (plist-get record :muxId) (plist-get runtime :mux-id))
-                     (pilish--runtime-task-identity-p worker (plist-get record :worker))
-                     (listp owner)
-                     (pilish--runtime-task-identity-p (plist-get owner :process) (plist-get owner :process))
-                     (stringp (plist-get owner :taskId))
-                     (not (string-empty-p (plist-get owner :taskId)))
-                     (stringp (plist-get record :leaseFile))
-                     (file-name-absolute-p (plist-get record :leaseFile))
-                     (member (plist-get record :state) '("pending" "complete" "failed"))
-                     (if (equal (plist-get record :state) "failed")
-                         (and (stringp (plist-get record :error))
-                              (not (string-empty-p (plist-get record :error))))
-                       (not (plist-member record :error)))
-                     (or (null binding)
-                         (and (equal (plist-get record :leaseFile) (plist-get binding :leaseFile))
-                              (pilish--runtime-task-identity-p (plist-get binding :worker)
-                                                               (plist-get record :worker))
-                              (pilish--runtime-task-identity-p
-                               (plist-get (plist-get binding :parent) :process) (plist-get owner :process))
-                              (equal (plist-get (plist-get binding :parent) :taskId)
-                                     (plist-get owner :taskId))
-                              (equal (plist-get binding :muxId) (plist-get record :muxId)))))
-          (error "Worker task evidence missing or identity/binding changed; view retained"))
-        record))))
+      (let ((status (process-file pilish-runtime-task-status-executable nil t nil
+                                  "--id" (plist-get runtime :mux-id) "--json")))
+        (pilish--runtime-task-parse runtime status (buffer-string))))))
+
+(defun pilish--runtime-task-read-async (runtime callback)
+  "Start reading RUNTIME's task evidence without blocking; return its process.
+CALLBACK receives a function that returns the validated record or signals."
+  (let ((process-environment (pilish--runtime-task-environment runtime))
+        (default-directory temporary-file-directory)
+        (output (generate-new-buffer " *pilish-task-evidence*" t)))
+    (condition-case failure
+        (make-process
+         :name "pilish-task-evidence" :buffer output :noquery t :connection-type 'pipe
+         :command (list pilish-runtime-task-status-executable
+                        "--id" (plist-get runtime :mux-id) "--json")
+         :sentinel (lambda (process _event)
+                     (unless (process-live-p process)
+                       (let ((status (process-exit-status process))
+                             (text (if (buffer-live-p output)
+                                       (with-current-buffer output (buffer-string))
+                                     "")))
+                         (when (buffer-live-p output) (kill-buffer output))
+                         (funcall callback
+                                  (lambda () (pilish--runtime-task-parse runtime status text)))))))
+      (error (kill-buffer output) (signal (car failure) (cdr failure))))))
+
+(defun pilish--runtime-task-parse (runtime status output)
+  "Validate the task CLI's OUTPUT and exit STATUS for RUNTIME, or signal.
+A retained :task-binding also pins the lease and both process identities."
+  (let ((binding (plist-get runtime :task-binding))
+        (worker (list :pid (plist-get runtime :pi-pid)
+                      :startTime (plist-get runtime :pi-start-time)
+                      :bootId (plist-get runtime :pi-boot-id))))
+    (unless (eq 0 status)
+      (error "Worker task evidence unavailable or unsafe; view retained: %s"
+             (string-trim output)))
+    (let* ((record (json-parse-string output :object-type 'plist))
+           (owner (and (listp record) (plist-get record :parent))))
+      (unless (and (listp record) (eq (plist-get record :schema) 1)
+                   (equal (plist-get record :muxId) (plist-get runtime :mux-id))
+                   (pilish--runtime-task-identity-p worker (plist-get record :worker))
+                   (listp owner)
+                   (pilish--runtime-task-identity-p (plist-get owner :process) (plist-get owner :process))
+                   (stringp (plist-get owner :taskId))
+                   (not (string-empty-p (plist-get owner :taskId)))
+                   (stringp (plist-get record :leaseFile))
+                   (file-name-absolute-p (plist-get record :leaseFile))
+                   (member (plist-get record :state) '("pending" "complete" "failed"))
+                   (if (equal (plist-get record :state) "failed")
+                       (and (stringp (plist-get record :error))
+                            (not (string-empty-p (plist-get record :error))))
+                     (not (plist-member record :error)))
+                   (or (null binding)
+                       (and (equal (plist-get record :leaseFile) (plist-get binding :leaseFile))
+                            (pilish--runtime-task-identity-p (plist-get binding :worker)
+                                                             (plist-get record :worker))
+                            (pilish--runtime-task-identity-p
+                             (plist-get (plist-get binding :parent) :process) (plist-get owner :process))
+                            (equal (plist-get (plist-get binding :parent) :taskId)
+                                   (plist-get owner :taskId))
+                            (equal (plist-get binding :muxId) (plist-get record :muxId)))))
+        (error "Worker task evidence missing or identity/binding changed; view retained"))
+      record)))
+
+(defconst pilish--runtime-task-orphaned-message
+  "Worker task owner exited before cleanup; outcome uncertain, view retained"
+  "Report for pending evidence that its dead owning parent can never finish.")
+
+(defun pilish--runtime-task-orphaned-p (record)
+  "Return non-nil when pending RECORD's owning parent is known dead.
+Only that exact parent process can publish final evidence, so it never will."
+  (and (equal (plist-get record :state) "pending")
+       (let ((owner (plist-get (plist-get record :parent) :process)))
+         (pilish--runtime-identity-dead-p (plist-get owner :pid) (plist-get owner :startTime)
+                                          (plist-get owner :bootId)))))
+
+(defun pilish--runtime-task-awaitable-p (record)
+  "Return non-nil when RECORD is pending and its owner can still finish it."
+  (and (equal (plist-get record :state) "pending")
+       (not (pilish--runtime-task-orphaned-p record))))
 
 (defun pilish--runtime-task-same-view-p (chat runtime)
   "Return non-nil if CHAT still displays captured worker RUNTIME."
@@ -89,10 +141,15 @@ A retained :task-binding also pins the lease and both process identities."
                    '(:mux-id :socket :pi-pid :pi-start-time :pi-boot-id :parent :placement)))))
 
 (defun pilish--runtime-task-cancel-poll ()
-  "Cancel this view's read-only task polling."
+  "Cancel this view's read-only task polling, including an in-flight read."
   (when pilish--runtime-task-timer
     (cancel-timer pilish--runtime-task-timer)
-    (setq pilish--runtime-task-timer nil)))
+    (setq pilish--runtime-task-timer nil))
+  (when-let* ((query pilish--runtime-task-query))
+    (setq pilish--runtime-task-query nil)
+    (let ((output (process-buffer query)))
+      (delete-process query)
+      (when (buffer-live-p output) (kill-buffer output)))))
 
 (defun pilish--runtime-task-error (chat message)
   "Retain CHAT's task uncertainty MESSAGE and settle current waiters with error."
@@ -117,7 +174,11 @@ A retained :task-binding also pins the lease and both process identities."
         (setq pilish--runtime (plist-put pilish--runtime :task-binding (copy-tree record))))
       (setq pilish--runtime (plist-put pilish--runtime :task-status record))
       (pcase (plist-get record :state)
-        ("pending" (when new-binding (pilish--note-desktop-state)))
+        ("pending"
+         (when new-binding (pilish--note-desktop-state))
+         (when (pilish--runtime-task-orphaned-p record)
+           (pilish--runtime-task-cancel-poll)
+           (pilish--runtime-task-error chat pilish--runtime-task-orphaned-message)))
         ("complete"
          (pilish--runtime-task-cancel-poll)
          (setq pilish--runtime (plist-put pilish--runtime :state "stopped")
@@ -130,24 +191,36 @@ A retained :task-binding also pins the lease and both process identities."
 
 (defun pilish--runtime-task-refresh (chat runtime)
   "Reconcile CHAT's captured RUNTIME against read-only final task evidence."
-  (if (not (pilish--runtime-task-same-view-p chat runtime))
-      (when (buffer-live-p chat)
-        (with-current-buffer chat (pilish--runtime-task-cancel-poll))
-        (pilish--runtime-finish-close chat "Worker identity changed; original Close cannot retire its replacement"))
-    (condition-case failure
-        (let ((record (pilish--runtime-task-read (pilish-session-runtime chat))))
-          (if (pilish--runtime-task-same-view-p chat runtime)
-              (pilish--runtime-task-apply chat record)
-            (with-current-buffer chat (pilish--runtime-task-cancel-poll))
-            (pilish--runtime-finish-close chat "Worker identity changed while reading task evidence")))
-      (error
-       ;; A previous pending record cannot authorize repeated queries after
-       ;; current evidence becomes missing, unsafe or identity-inconsistent.
-       ;; Keep the pinned binding and local work for explicit reconciliation.
+  (if (pilish--runtime-task-same-view-p chat runtime)
+      (pilish--runtime-task-settle
+       chat runtime (lambda () (pilish--runtime-task-read (pilish-session-runtime chat))))
+    (pilish--runtime-task-view-changed chat)))
+
+(defun pilish--runtime-task-view-changed (chat)
+  "Stop CHAT's polling and settle waiters: it no longer shows the captured worker."
+  (when (buffer-live-p chat)
+    (with-current-buffer chat (pilish--runtime-task-cancel-poll))
+    (pilish--runtime-finish-close chat "Worker identity changed; original Close cannot retire its replacement")))
+
+(defun pilish--runtime-task-settle (chat runtime read)
+  "Apply the evidence READ returns to CHAT while it still displays RUNTIME.
+READ returns a validated record or signals its uncertainty."
+  (condition-case failure
+      (let ((record (funcall read)))
+        (if (pilish--runtime-task-same-view-p chat runtime)
+            (pilish--runtime-task-apply chat record)
+          (when (buffer-live-p chat)
+            (with-current-buffer chat (pilish--runtime-task-cancel-poll)))
+          (pilish--runtime-finish-close chat "Worker identity changed while reading task evidence")))
+    (error
+     ;; A previous pending record cannot authorize repeated queries after
+     ;; current evidence becomes missing, unsafe or identity-inconsistent.
+     ;; Keep the pinned binding and local work for explicit reconciliation.
+     (when (buffer-live-p chat)
        (with-current-buffer chat
          (pilish--runtime-task-cancel-poll)
-         (setq pilish--runtime (plist-put pilish--runtime :task-status nil)))
-       (pilish--runtime-task-error chat (error-message-string failure))))))
+         (setq pilish--runtime (plist-put pilish--runtime :task-status nil))))
+     (pilish--runtime-task-error chat (error-message-string failure)))))
 
 (defun pilish-reconcile-worker-task (buffer runtime)
   "Reconcile BUFFER with captured worker RUNTIME using read-only task evidence.
@@ -169,24 +242,46 @@ Return nil on success, including an already dead BUFFER."
           (pcase (plist-get record :state)
             ("complete" (when failure (error "%s" failure)))
             ("failed" (error "Worker task cleanup failed: %s" (plist-get record :error)))
-            (_ (error "Worker task cleanup is pending; view retained")))))))
+            (_ (error "%s" (if (pilish--runtime-task-orphaned-p record)
+                               pilish--runtime-task-orphaned-message
+                             "Worker task cleanup is pending; view retained"))))))))
   nil)
 
 (defun pilish--runtime-task-start-poll (chat)
-  "Poll CHAT only while its last validated task evidence is pending.
+  "Poll CHAT only while its last validated task evidence can still become final.
 A waiter timeout never fabricates success or recalls its settled callback.
-Missing or invalid evidence stops polling until explicit reconciliation."
+Missing or invalid evidence, or a dead owning parent, stops polling until
+explicit reconciliation.  Each read is asynchronous and the next one is
+scheduled only after it settles, so pending views never block Emacs."
   (with-current-buffer chat
-    (when (and (not pilish--runtime-task-timer)
-               (equal (plist-get (plist-get pilish--runtime :task-status) :state) "pending"))
-      (let ((runtime (pilish-session-runtime chat)) timer)
-        (setq timer
-              (run-at-time 0.25 0.25
-                           (lambda ()
-                             (if (buffer-live-p chat)
-                                 (pilish--runtime-task-refresh chat runtime)
-                               (cancel-timer timer)))))
-        (setq pilish--runtime-task-timer timer)))))
+    (when (and (not pilish--runtime-task-timer) (not pilish--runtime-task-query)
+               (pilish--runtime-task-awaitable-p (plist-get pilish--runtime :task-status)))
+      (setq pilish--runtime-task-timer
+            (run-at-time 0.25 nil #'pilish--runtime-task-poll chat (pilish-session-runtime chat))))))
+
+(defun pilish--runtime-task-poll (chat runtime)
+  "Start one asynchronous task-evidence read for CHAT's captured RUNTIME."
+  (when (buffer-live-p chat)
+    (with-current-buffer chat
+      (when pilish--runtime-task-timer (cancel-timer pilish--runtime-task-timer))
+      (setq pilish--runtime-task-timer nil))
+    (if (not (pilish--runtime-task-same-view-p chat runtime))
+        (pilish--runtime-task-view-changed chat)
+      (condition-case failure
+          (let (query)
+            (setq query
+                  (pilish--runtime-task-read-async
+                   (pilish-session-runtime chat)
+                   (lambda (read)
+                     ;; A cancelled read is no longer this view's query.
+                     (when (and (buffer-live-p chat)
+                                (eq query (buffer-local-value 'pilish--runtime-task-query chat)))
+                       (with-current-buffer chat (setq pilish--runtime-task-query nil))
+                       (pilish--runtime-task-settle chat runtime read)
+                       (when (buffer-live-p chat) (pilish--runtime-task-start-poll chat))))))
+            (with-current-buffer chat (setq pilish--runtime-task-query query)))
+        (error (pilish--runtime-task-settle
+                chat runtime (lambda () (signal (car failure) (cdr failure)))))))))
 
 (defun pilish--runtime-worker-terminated (chat)
   "Reconcile terminated worker CHAT, never equating runtime exit with cleanup."
@@ -213,23 +308,26 @@ Pimux's terminal receipt must name RUNTIME's exact mux and launch operation."
 
 (defun pilish--runtime-close-worker (chat callback)
   "Close worker CHAT through its owning task; CALLBACK identifies this request.
-Failed final evidence for a worker that pimux proves ended retires the view,
-settling CALLBACK with that failure: nothing else can finish its cleanup."
+Failed final evidence, or pending evidence whose owning parent is dead, for a
+worker that pimux proves ended retires the view, settling CALLBACK with that
+failure: nothing else can finish its cleanup."
   (with-current-buffer chat
     (let* ((runtime (pilish-session-runtime chat))
-           (record (pilish--runtime-task-read runtime)))
+           (record (pilish--runtime-task-read runtime))
+           (failure (cond ((equal (plist-get record :state) "failed")
+                           (format "Worker task cleanup failed: %s" (plist-get record :error)))
+                          ((pilish--runtime-task-orphaned-p record)
+                           pilish--runtime-task-orphaned-message))))
       (unless (pilish--runtime-task-same-view-p chat runtime)
         (error "Worker identity changed while reading task evidence; nothing sent"))
-      (if (and (equal (plist-get record :state) "failed")
-               (pilish--runtime-worker-ended-p runtime))
+      (if (and failure (pilish--runtime-worker-ended-p runtime))
           (progn
             (pilish--runtime-task-cancel-poll)
             (setq pilish--runtime (plist-put pilish--runtime :state "stopped")
                   pilish--runtime (plist-put pilish--runtime :task-status record))
-            (pilish--runtime-retire-view
-             chat (format "Worker task cleanup failed: %s" (plist-get record :error))))
+            (pilish--runtime-retire-view chat failure))
         (pilish--runtime-task-apply chat record))
-      (when (and (buffer-live-p chat) (equal (plist-get record :state) "pending"))
+      (when (and (buffer-live-p chat) (pilish--runtime-task-awaitable-p record))
         (setq pilish--runtime-close-timer
               (run-at-time 45 nil
                            (lambda ()
@@ -272,7 +370,7 @@ settling CALLBACK with that failure: nothing else can finish its cleanup."
                                       (equal context (pilish--capture-input-context transport)))
                            (error "Worker identity/context changed while reading task evidence; nothing sent"))
                          (pilish--runtime-task-apply chat fresh)
-                         (when (equal (plist-get fresh :state) "pending")
+                         (when (pilish--runtime-task-awaitable-p fresh)
                            (setq pilish--runtime (plist-put pilish--runtime :task-cancel-requested t))
                            (pilish--runtime-task-start-poll chat)
                            (let ((pilish--close-cancellation-context (cons transport context)))

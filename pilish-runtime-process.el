@@ -38,6 +38,8 @@ remaining observers and teardown still run, and Close reports the errors.")
   "Bounded wait for a dispatched worker cancellation.")
 (defvar-local pilish--runtime-task-timer nil
   "Read-only polling of this view's captured worker task evidence.")
+(defvar-local pilish--runtime-task-query nil
+  "This view's in-flight asynchronous task-evidence read, if any.")
 (defvar-local pilish--runtime-recovery-timer nil
   "One pending service reconnection, never a prompt retry.")
 (defvar-local pilish--runtime-retiring nil
@@ -90,6 +92,17 @@ Unreadable metadata is not proof of termination.  This function never signals."
                      (not (member (car fields) '("Z" "X"))))
             (list :pid pid :start-time start :boot-id boot)))
       (file-error nil))))
+
+(defun pilish--runtime-identity-dead-p (pid start boot)
+  "Return non-nil only when the process PID with START and BOOT is known dead.
+A missing process or a different live identity under PID proves exit;
+unreadable metadata does not."
+  (and (integerp pid)
+       (or (not (file-exists-p (format "/proc/%d" pid)))
+           (let ((current (pilish--runtime-process-identity pid)))
+             (and current start boot
+                  (not (and (equal start (plist-get current :start-time))
+                            (equal boot (plist-get current :boot-id)))))))))
 
 (defun pilish--runtime-normalize (record)
   "Return discovery or launcher RECORD as the public runtime identity."
