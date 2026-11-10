@@ -194,7 +194,8 @@ to reconnect. Reconnect refuses it without discovery or launch; explicit Resume
 still acquires the exact file's managed claim, attaching an existing compatible
 owner or refusing conflicting ownership. Close has nothing to stop: it retires
 the view through `pilish-session-closed-functions` and keeps unsent work in
-recovery. Discovery also carries its advertised
+recovery. The same holds for an `"unavailable"` view whose launch settled
+without an identity, such as a start that pimux refused. Discovery also carries its advertised
 activity state; consumers must not mistake that for view readiness.
 Workers retain their parent-task/result protocol; cancellation/resume belongs to
 that owner, not a root-stop fallback.
