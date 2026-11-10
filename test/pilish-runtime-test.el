@@ -254,31 +254,36 @@
       (should-not (pilish-session-process pilish-runtime-test--chat)))))
 
 (ert-deftest pilish-runtime-test-identity-free-close-retires-view-and-retains-draft ()
-  (pilish-runtime-test--with-peer '(:silent t)
-    (cl-letf (((symbol-function 'pilish-list-runtimes)
-               (lambda () (ert-fail "Identity-free Close needs no discovery")))
-              ((symbol-function 'pilish--runtime-call)
-               (lambda (&rest _) (ert-fail "Identity-free Close has no runtime to control"))))
-      (setq pilish-runtime-test--chat
-            (pilish-restore-session-state
-             (list :directory directory :name "identity-free-close" :session-file nil
-                   :runtime '(:protocol 2 :state "stopped" :session-file nil)
-                   :draft "identity-free close keeps this draft")))
-      (let* ((chat pilish-runtime-test--chat)
-             (input (pilish-session-input-buffer chat))
-             observed outcomes
-             (pilish-session-closed-functions
-              (list (lambda (buffer)
-                      (should (buffer-live-p input))
-                      (push buffer observed)))))
-        (should (equal (plist-get (pilish-session-runtime chat) :state) "stopped"))
-        (pilish-close-session chat (lambda (error) (push error outcomes)))
-        (should (equal outcomes '(nil)))
-        (should (equal observed (list chat)))
-        (should-not (buffer-live-p chat))
-        (should-not (buffer-live-p input))
-        (with-current-buffer "*Pilish closed agents*"
-          (should (string-match-p "identity-free close keeps this draft" (buffer-string))))))))
+  "Stopped and failed-launch (unavailable) views without identity retire."
+  (dolist (state '("stopped" "unavailable"))
+    (pilish-runtime-test--with-peer '(:silent t)
+      (cl-letf (((symbol-function 'pilish-list-runtimes)
+                 (lambda () (ert-fail "Identity-free Close needs no discovery")))
+                ((symbol-function 'pilish--runtime-call)
+                 (lambda (&rest _) (ert-fail "Identity-free Close has no runtime to control"))))
+        (setq pilish-runtime-test--chat
+              (pilish-restore-session-state
+               (list :directory directory :name "identity-free-close" :session-file nil
+                     :runtime '(:protocol 2 :state "stopped" :session-file nil)
+                     :draft "identity-free close keeps this draft")))
+        ;; A launch refused before commitment leaves exactly this state.
+        (with-current-buffer pilish-runtime-test--chat
+          (setq pilish--runtime (plist-put pilish--runtime :state state)))
+        (let* ((chat pilish-runtime-test--chat)
+               (input (pilish-session-input-buffer chat))
+               observed outcomes
+               (pilish-session-closed-functions
+                (list (lambda (buffer)
+                        (should (buffer-live-p input))
+                        (push buffer observed)))))
+          (should (equal (plist-get (pilish-session-runtime chat) :state) state))
+          (pilish-close-session chat (lambda (error) (push error outcomes)))
+          (should (equal outcomes '(nil)))
+          (should (equal observed (list chat)))
+          (should-not (buffer-live-p chat))
+          (should-not (buffer-live-p input))
+          (with-current-buffer "*Pilish closed agents*"
+            (should (string-match-p "identity-free close keeps this draft" (buffer-string)))))))))
 
 (ert-deftest pilish-runtime-test-missing-restore-retains-draft-never-spawns ()
   (pilish-runtime-test--with-peer '(:silent t)
