@@ -5160,7 +5160,7 @@ the RET routing stays pinned here, a structural binding check."
                     (should-error
                      (pilish--browse-switch-session "/test/a.jsonl")
                      :type 'user-error))
-                   "No pi session to switch to")))
+                   "Session file is not readable: /test/a.jsonl")))
   ;; RET still routes the tree browser — mode map and node sections —
   ;; into the navigate command.
   (should (eq (lookup-key pilish-tree-browser-mode-map (kbd "RET"))
@@ -7010,14 +7010,57 @@ transitions."
       (kill-buffer chat-buf))))
 
 (ert-deftest pilish-test-switch-no-session ()
-  "Switching with no linked chat session signals a `user-error'."
+  "An unlinked browser validates the file before starting anything."
   (with-temp-buffer
     (pilish-session-browser-mode)
-    (should (equal (error-message-string
-                    (should-error
-                     (pilish--browse-switch-session "/test/a.jsonl")
-                     :type 'user-error))
-                   "No pi session to switch to"))))
+    (cl-letf (((symbol-function 'pilish-start-session)
+               (lambda (&rest _) (ert-fail "Unreadable file started a session"))))
+      (should (equal (error-message-string
+                      (should-error
+                       (pilish--browse-switch-session "/test/a.jsonl")
+                       :type 'user-error))
+                     "Session file is not readable: /test/a.jsonl")))))
+
+(ert-deftest pilish-test-switch-orphaned-browser-opens-a-new-view ()
+  "A browser whose chat was killed opens the file in a fresh view.
+It never switches another view's conversation, picks a free session
+name, shows an already open view instead of starting a second one, and
+links the browser to the result."
+  (let* ((dir (make-temp-file "pilish-orphan-" t))
+         (file (expand-file-name "s.jsonl" dir))
+         (dead (generate-new-buffer "*dead-chat*"))
+         (taken (list "1"))
+         started open)
+    (unwind-protect
+        (progn
+          (pilish-test--write-session-file file nil dir)
+          (kill-buffer dead)
+          (cl-letf (((symbol-function 'pilish-session-exists-p)
+                     (lambda (_dir name) (member name taken)))
+                    ((symbol-function 'pilish--browse-live-session-chat-buffer)
+                     (lambda (_path) open))
+                    ((symbol-function 'pilish-start-session)
+                     (lambda (directory name &rest options)
+                       (push (list directory name (plist-get options :session-file)) started)
+                       (with-current-buffer (generate-new-buffer "*new-chat*")
+                         (setq-local pilish--input-buffer (generate-new-buffer "*new-input*"))
+                         (current-buffer))))
+                    ((symbol-function 'pilish--show-session-buffers) #'ignore)
+                    ((symbol-function 'pilish--resume-selected-session)
+                     (lambda (&rest _) (ert-fail "An orphaned browser switched a conversation"))))
+            (with-temp-buffer
+              (pilish-session-browser-mode)
+              (setq pilish--chat-buffer dead)
+              (let ((chat (pilish--browse-switch-session file)))
+                (should (equal started (list (list (file-name-as-directory dir) "2" file))))
+                (should (eq pilish--chat-buffer chat))
+                (setq open chat started nil)
+                (setq pilish--chat-buffer dead)
+                (should (eq (pilish--browse-switch-session file) open))
+                (should-not started)
+                (kill-buffer (buffer-local-value 'pilish--input-buffer chat))
+                (kill-buffer chat)))))
+      (delete-directory dir t))))
 
 (ert-deftest pilish-test-quit-when-settled ()
   "--browse-quit-when-settled waits out the transition, then quits only
