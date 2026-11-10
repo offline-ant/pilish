@@ -585,10 +585,12 @@ Only cleanup errors raise a warning: callers already report ORIGINAL."
        ((null pilish--runtime)
         (pilish--dispose-session-view chat)
         (funcall callback nil))
-       ;; An identity-free stopped view has no agent to stop.  Retire it like a
+       ;; An identity-free stopped view, or an unavailable one whose launch
+       ;; settled without an identity, has no agent to stop.  Retire it like a
        ;; terminated one: closed observers run and unsent work is retained.
-       ((and (equal (plist-get pilish--runtime :state) "stopped")
-             (not (plist-get pilish--runtime :mux-id)))
+       ((and (member (plist-get pilish--runtime :state) '("stopped" "unavailable"))
+             (not (plist-get pilish--runtime :mux-id))
+             (not pilish--runtime-launcher))
         (funcall callback (pilish--runtime-retire-view chat)))
        (pilish--runtime-close-callbacks
         (push callback pilish--runtime-close-callbacks))
