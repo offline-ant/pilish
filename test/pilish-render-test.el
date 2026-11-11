@@ -26523,5 +26523,33 @@ events where the header text hasn't changed."
     (plist-put node :children (vector (pilish-test--subagent-run :episodeId "one-too-many")))
     (should-not (pilish--subagent-run-view-p deep))))
 
+;;; Hidden history
+
+(ert-deftest pilish-test-history-hidden-before-summarizes-until-shown ()
+  "Messages older than the hidden boundary stay canonical but are not drawn."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (setq-local pilish-history-hidden-before 2000)
+    (pilish-chat-mode)
+    (should (equal pilish-history-hidden-before 2000))
+    (let ((messages
+           (vector (list :role "user" :content "inherited question" :timestamp 1000)
+                   (list :role "assistant" :content [(:type "text" :text "inherited answer")]
+                         :timestamp 1500 :stopReason "stop")
+                   (list :role "user" :content "worker task" :timestamp 2500)
+                   (list :role "assistant" :content [(:type "text" :text "worker answer")]
+                         :timestamp 3000 :stopReason "stop"))))
+      (pilish--display-session-history messages (current-buffer))
+      (should (string-match-p "2 earlier messages not shown \\[show\\]" (buffer-string)))
+      (should-not (string-match-p "inherited" (buffer-string)))
+      (should (string-match-p "worker task" (buffer-string)))
+      (should (string-match-p "worker answer" (buffer-string)))
+      (should (eq pilish--canonical-messages messages))
+      (pilish-show-hidden-history (current-buffer))
+      (should-not pilish-history-hidden-before)
+      (should (string-match-p "inherited question" (buffer-string)))
+      (should (string-match-p "inherited answer" (buffer-string)))
+      (should-not (string-match-p "not shown" (buffer-string))))))
+
 (provide 'pilish-render-test)
 ;;; pilish-render-test.el ends here
