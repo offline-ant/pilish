@@ -59,6 +59,7 @@
 ;; Forward references for functions in other modules
 (declare-function pilish-compact "pilish-menu" (&optional custom-instructions))
 (declare-function pilish-session-runtime "pilish-runtime" (buffer))
+(declare-function pilish-session-busy-p "pilish" (chat-buffer))
 (declare-function pilish-open-subagent-snapshot "pilish-snapshot" (&optional target))
 (declare-function pilish--cancel-process-dialogs "pilish-dialog" (process))
 (declare-function pilish--shared-handle-record "pilish-shared" (event))
@@ -10932,17 +10933,55 @@ Tool calls are rendered with headers, output, overlays, and toggles."
           ("toolResult"
            nil))))))
 
+(defvar-local pilish-history-hidden-before nil
+  "Epoch milliseconds before which history messages are not drawn, or nil.
+A chat whose earlier history its user need not read, such as a worker's
+inherited conversation, sets this before its first history load.  Those
+messages stay canonical; one line summarizes them and offers to show them.")
+(put 'pilish-history-hidden-before 'permanent-local t)
+
+(defun pilish--history-shown-from (messages)
+  "Return the index of the first of MESSAGES that is drawn.
+Earlier messages are older than `pilish-history-hidden-before'."
+  (let ((index 0))
+    (when pilish-history-hidden-before
+      (while (and (< index (length messages))
+                  (< (or (plist-get (aref messages index) :timestamp) 0)
+                     pilish-history-hidden-before))
+        (setq index (1+ index))))
+    index))
+
+(defun pilish-show-hidden-history (&optional chat-buf)
+  "Draw the whole history of CHAT-BUF (default: the current chat), once idle."
+  (interactive)
+  (with-current-buffer (or chat-buf (pilish--get-chat-buffer))
+    (when (pilish-session-busy-p (current-buffer))
+      (user-error "Pi: earlier messages can be shown once this session is idle"))
+    (setq pilish-history-hidden-before nil)
+    (pilish--rerender-canonical-history)))
+
+(defun pilish--hidden-history-notice (count chat-buf)
+  "Return the line summarizing COUNT undrawn messages of CHAT-BUF."
+  (concat (propertize (format "%d earlier message%s not shown " count (if (= count 1) "" "s"))
+                      'face 'shadow)
+          (buttonize "[show]" (lambda (_) (pilish-show-hidden-history chat-buf)))
+          "\n"))
+
 (defun pilish--display-session-history (messages &optional chat-buf)
   "Display session history MESSAGES in the chat buffer.
 MESSAGES is a vector of message plists from get_messages RPC.
 CHAT-BUF is the target buffer; if nil, uses `pilish--get-chat-buffer'.
+Messages older than `pilish-history-hidden-before' are summarized, not drawn.
 Note: When called from async callbacks, pass CHAT-BUF explicitly."
   (setq chat-buf (or chat-buf (pilish--get-chat-buffer)))
   (when (and chat-buf (buffer-live-p chat-buf))
     (with-current-buffer chat-buf
       (pilish--set-canonical-messages messages)
-      (pilish--replay-history chat-buf messages
-                              (concat (pilish--format-startup-header) "\n")))))
+      (let ((from (if (vectorp messages) (pilish--history-shown-from messages) 0)))
+        (pilish--replay-history
+         chat-buf (if (> from 0) (seq-subseq messages from) messages)
+         (concat (pilish--format-startup-header) "\n"
+                 (if (> from 0) (pilish--hidden-history-notice from chat-buf) "")))))))
 
 (cl-defstruct (pilish--history-parser-restart
                (:constructor pilish--make-history-parser-restart))
