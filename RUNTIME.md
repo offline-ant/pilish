@@ -225,10 +225,11 @@ process publishes final evidence, so `pending` evidence whose parent process is 
 (gone, or its PID reused by another start/boot) is equally final uncertainty: Pilish
 reports that the owner exited before cleanup, stops polling and keeps recovery.
 Explicit Close of a failed or orphaned view
-retires it only when the actual Pi and its mux are dead and the read-only
+retires it only when the actual Pi and its mux are dead and either the read-only
 `pimux receipt --json --id <muxId>` reports `stopped` for the view's exact launch
-`operationId`: its owner has published final evidence, so nothing else can finish the
-cleanup. Retirement runs closed observers, keeps the failure and unsent work in
+`operationId`, or the exact pimux service recorded as the runtime's `:service` is
+dead: its owner has published final evidence or can never publish any, so nothing
+else can finish the cleanup. Retirement runs closed observers, keeps the failure and unsent work in
 `*Pilish closed agents*`, and settles Close with the failure, never nil. Reconnect,
 restoration and `pilish-reconcile-worker-task` never retire failed workers. Missing,
 unsafe or changed evidence is uncertainty, not permission for another prompt or root Stop.

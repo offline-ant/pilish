@@ -857,6 +857,25 @@
       (should (= (length outcomes) 1))
       (should (string-match-p "owner exited before cleanup" (car outcomes))))))
 
+(ert-deftest pilish-runtime-task-test-close-retires-orphaned-worker-of-dead-service-without-receipt ()
+  "A dead owning pimux service replaces the expired receipt; a live one does not."
+  (dolist (service-dead '(t nil))
+    (pilish-runtime-task-test--with-ended-worker t nil
+      (setq task-record (pilish-runtime-task-test--orphan (plist-put task-record :state "pending"))
+            task-record (cl-loop for (key value) on task-record by #'cddr
+                                 unless (eq key :error) append (list key value)))
+      (pilish-runtime-test--write-task task-file task-record)
+      (with-current-buffer chat
+        (setq pilish--runtime
+              (plist-put pilish--runtime :service
+                         (if service-dead (plist-put (copy-tree json-identity) :startTime "1")
+                           json-identity))))
+      (let (outcomes)
+        (pilish-close-session chat (lambda (error) (push error outcomes)))
+        (should (eq (buffer-live-p chat) (not service-dead)))
+        (should (= (length outcomes) 1))
+        (should (string-match-p "owner exited before cleanup" (car outcomes)))))))
+
 (ert-deftest pilish-runtime-task-test-close-retains-orphaned-worker-without-termination-proof ()
   (pilish-runtime-task-test--with-ended-worker nil
       '(:muxId "test-runtime" :operationId "test-operation" :state "stopped")
