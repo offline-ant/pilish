@@ -300,11 +300,20 @@ Socket exit, unknown replies and uncertain delivery cannot rearm input."
 
 (defun pilish--runtime-worker-ended-p (runtime)
   "Return non-nil when pimux and dead processes prove RUNTIME ended.
-Pimux's terminal receipt must name RUNTIME's exact mux and launch operation."
+Besides its dead mux and Pi, pimux's terminal receipt must name RUNTIME's
+exact mux and launch operation, or the exact pimux service that owned it
+must be dead: a dead owner can never publish a receipt or finish cleanup."
   (and (stringp (plist-get runtime :operation-id))
        (pilish--runtime-definitely-dead-p runtime)
-       (equal (plist-get (pilish--runtime-terminal-receipt runtime) :operationId)
-              (plist-get runtime :operation-id))))
+       (or (let ((service (plist-get runtime :service)))
+             (and (listp service)
+                  (stringp (plist-get service :startTime))
+                  (stringp (plist-get service :bootId))
+                  (pilish--runtime-identity-dead-p (plist-get service :pid)
+                                                   (plist-get service :startTime)
+                                                   (plist-get service :bootId))))
+           (equal (plist-get (pilish--runtime-terminal-receipt runtime) :operationId)
+                  (plist-get runtime :operation-id)))))
 
 (defun pilish--runtime-close-worker (chat callback)
   "Close worker CHAT through its owning task; CALLBACK identifies this request.
