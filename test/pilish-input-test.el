@@ -5237,7 +5237,7 @@ Follow-ups Pi never received return to the draft."
               (pilish-quit)))
           (should-not (buffer-live-p chat-buf))
           (should-not (buffer-live-p input-buf))
-          (should-not (process-live-p proc)))
+          (should (pilish-test-wait-for-process-exit proc)))
       (when (process-live-p proc)
         (delete-process proc))
       (pilish-test--kill-live-buffers input-buf chat-buf))))
