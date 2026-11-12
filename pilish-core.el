@@ -844,11 +844,35 @@ Calls only the handler registered for this specific process."
     (error "Primary-bound pimux transports are unsupported; configure the detached release API"))
   (pilish--runtime-accept-hello process hello))
 
+(defvar pilish--process-shutdown-grace 5
+  "Seconds an unshared Pi may take to exit after its stdin closes.
+Pi then disposes its runtime: it aborts the run, runs extension shutdown
+handlers and saves credential writes in progress, such as a refreshed
+OAuth token whose predecessor the provider already revoked.")
+
 (defun pilish--terminate-process (process)
-  "Disconnect live PROCESS; native unshared Pi keeps its ordinary lifetime.
-For a detached socket this only removes a client.  Explicit acknowledged
-runtime stop is a separate operation and never signals a bare Pi PID."
-  (when (process-live-p process) (delete-process process)))
+  "Stop Pilish's use of live PROCESS.
+A detached socket is only disconnected: other clients keep the runtime,
+and explicit acknowledged runtime stop is a separate operation that never
+signals a bare Pi PID.  An unshared Pi is asked to shut down by closing
+its stdin; Pilish ignores its further output, and its exit runs the usual
+exit cleanup.  It is killed if it still runs after
+`pilish--process-shutdown-grace' seconds."
+  (when (process-live-p process)
+    (if (process-get process 'pilish-detached)
+        (delete-process process)
+      (set-process-filter process #'ignore)
+      (condition-case nil
+          (progn
+            (process-send-eof process)
+            (run-at-time pilish--process-shutdown-grace nil
+                         #'pilish--kill-unfinished-process process))
+        (error (delete-process process))))))
+
+(defun pilish--kill-unfinished-process (process)
+  "Kill PROCESS if it still runs after its shutdown grace period."
+  (when (process-live-p process)
+    (delete-process process)))
 
 (defconst pilish--process-stderr-max-chars 4000
   "Maximum number of stderr characters to keep in process exit excerpts.")
