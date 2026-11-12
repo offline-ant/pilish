@@ -2,7 +2,9 @@
 
 This note defines the supported fake-pi surface used by deterministic tests.
 The fake is a protocol double for the RPC subprocess boundary, not a mock
-of internal Emacs functions. It targets Pi 1.0.0; references to older releases
+of internal Emacs functions. It targets Pi 1.5.2, the Makefile's `PI_VERSION`;
+version-specific source citations name the release they were checked against,
+and references to older releases
 below are historical comparisons, not compatibility guarantees.
 The fake's persisted sessions deliberately omit the record kinds pi 0.86+
 added (usage, context_edit, leading system message); tolerance for those
@@ -446,8 +448,8 @@ one worker, not a concurrent extension engine. Stop/switch joins that worker,
 so any custom output and pending prompt acknowledgment precede stop/switch success,
 except for the editor's abort behavior described below.
 
-Editor requests have neither a timeout nor an abort signal in Pi 1.0.0's
-`rpc-mode.ts:254-271`. The fake ignores timeout overrides for `editor` and
+Editor requests have neither a timeout nor an abort signal in Pi 1.5.2's
+`rpc-mode.ts:258-275`. The fake ignores timeout overrides for `editor` and
 acknowledges `abort` without releasing the editor waiter. Only a matching
 `extension_ui_response` settles an editor command. Switching sessions or closing
 stdin still tears down the fake worker. Other dialog methods keep their existing
