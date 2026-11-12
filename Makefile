@@ -21,7 +21,7 @@ LOCAL_LOAD_PATH = --eval "(setq load-path (cons (expand-file-name \".\") load-pa
 
 # Exact host for opt-in real compatibility lanes; unit/fake tests never need Pi.
 # The fake models a bounded RPC subset, not a replacement for real-host checks.
-PI_VERSION ?= 1.4.0
+PI_VERSION ?= 1.5.2
 PI_PACKAGE ?= @earendil-works/pi-coding-agent
 PI_BIN ?= .cache/pi/node_modules/.bin/pi
 PI_BIN_DIR = $(abspath $(dir $(PI_BIN)))

@@ -88,8 +88,8 @@ See [[file:RUNTIME.md][RUNTIME.md]] for ownership and recovery checks.
 - Node.js 22.19 or later for the Pi CLI
 - [[https://pi.dev][pi coding agent]] =@earendil-works/pi-coding-agent@1.1.0= or later,
   installed and in =PATH= on the host where Pi runs
-- Pi CLI authentication: a provider API key, or a one-time =/login=
-  run in a terminal (see below)
+- Pi CLI authentication: a provider API key, or a one-time login in a
+  terminal with =pi auth login <provider>= or =/login= (see below)
 - A C compiler if Emacs needs to compile tree-sitter grammars
 
 Upgrade older Pi installations before using Pilish, for example with
@@ -105,14 +105,19 @@ npm install -g @earendil-works/pi-coding-agent
 mise use -g npm:@earendil-works/pi-coding-agent@latest
 
 # Authenticate the CLI: either set a provider API key (see below), or
-# run `pi` interactively in a terminal and type `/login`.
+# log in from the shell (Pi 1.5.1 or later):
+pi auth login <provider>
+# On older Pi, run `pi` interactively in a terminal and type `/login`.
 #+end_src
 
 Pi authenticates in one of two ways:
 
-- *Subscription or API key* via =/login=: =/login= is interactive and
-  unavailable from Emacs, so run plain =pi= once in a terminal and
-  type =/login=.  You can then pick a subscription such as ChatGPT
+- *Subscription or API key* via a terminal login: login is interactive
+  and unavailable from Emacs.  With Pi 1.5.1 or later, run
+  =pi auth login <provider>= in a shell; it signs in through the browser
+  and exits (=--api-key= saves an API key instead, =--no-browser= uses
+  device-code or copy-code sign-in).  Otherwise run plain =pi= once in a
+  terminal and type =/login=, then pick a subscription such as ChatGPT
   Plus/Pro, or choose a provider and enter its API key.  Credentials
   are stored in =~/.pi/agent/auth.json= and auto-refresh, so later
   Emacs sessions pick them up automatically.
@@ -912,10 +917,11 @@ including submenus for skills, prompt templates, and extension commands.
 #+html: <summary><strong>No models are available: authenticate the Pi CLI</strong></summary>
 
 Authenticate the [[https://pi.dev/docs/latest/providers][Pi CLI]] before expecting models to
-appear.  Set a provider API key, or run =pi= in a terminal once and use
-=/login=.  Then make the running session pick up the new credentials:
-in ordinary unshared mode, press =C-c C-p R= (or =M-x pilish-reload=)
-to restart Pi without losing the conversation.  Detached =pilish-reload=
+appear.  Set a provider API key, or log in once in a terminal with
+=pi auth login <provider>= (Pi 1.5.1 or later) or =pi= and =/login=.
+Then make the running session pick up the new credentials: in ordinary
+unshared mode, press =C-c C-p R= (or =M-x pilish-reload=) to restart Pi
+without losing the conversation.  Detached =pilish-reload=
 only reconnects the same runtime; it does not reload runtime code or
 restart a provider.  Any necessary agent restart is a separate explicit
 Close/Resume operation after checking accepted and queued work.
@@ -1040,7 +1046,8 @@ Pilish starts the Pi CLI on the remote host.  Install =pi= there.  The
 Phimacs detached candidate uses same-user local Unix sockets; remote managed
 launches and mutations are not an implicit fallback to plain Pi.
 
-Authentication and configuration are remote too.  Run =pi= and =/login=
+Authentication and configuration are remote too.  Run
+=pi auth login <provider>= (Pi 1.5.1 or later), or =pi= and =/login=,
 on that host, or set provider environment variables for the remote
 process.  Paths such as =~/.pi/agent/auth.json= and absolute entries in
 =pilish-executable= are interpreted on the host where Pi runs.
