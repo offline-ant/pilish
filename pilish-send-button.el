@@ -32,8 +32,8 @@
 ;; it, such as pi-sound's stop-and-send while dictating.  With
 ;; `pilish-input-stop-button', a ✕ after it stops running work like
 ;; C-c C-k does while busy (`pilish-abort'); it never opens the tree.
-;; A double click on it stops shared Pi without asking to clear the
-;; shared queue, so a single click waits `double-click-time' first.
+;; A click while its shared-queue confirmation is showing answers yes,
+;; so a double click stops shared Pi at once.
 ;;
 ;; Each button adds `pilish--send-button-width' columns to the buffer's
 ;; right margin rather than setting its width, so other margin buttons,
@@ -79,7 +79,8 @@ existing input buffers."
   "Non-nil shows a clickable stop button beside the draft's last line.
 A click stops running work with `pilish-abort', as
 `pilish-abort-or-tree-browser' does while busy; idle, it does nothing.
-A double click also skips the confirmation to clear a shared queue.
+A click while the confirmation to clear a shared queue is showing
+answers yes.
 The button sits after the send button in the input window's right
 margin, which grows by three columns.  Setting it through Customize or
 `setopt' updates existing input buffers."
@@ -112,31 +113,12 @@ A remapping of `pilish-send' in that input applies, as for its keys."
 
 (defun pilish-stop-button-click (event)
   "Stop the running work of the input whose margin button EVENT clicked.
-A second click within `double-click-time' confirms clearing a shared
-queue instead of asking."
+A click while that input's shared abort asks for confirmation answers
+yes.  An unbound double click runs this as a single click."
   (interactive "e")
   (select-window (posn-window (event-start event)))
-  (pilish-abort (pilish--stop-button-clicked-again-p)))
-
-(defun pilish--stop-button-clicked-again-p ()
-  "Return non-nil when the stop button is clicked again in time.
-Wait up to `double-click-time' for the double click and consume its
-events; another event is put back for the command loop.  Emacs reports a
-double click only near the first one, so it is on the same button."
-  (when (numberp double-click-time)
-    (let ((timeout (/ double-click-time 1000.0))
-          event)
-      (while (and (setq event (read-event nil nil timeout))
-                  (pilish--double-mouse-1-p event)
-                  (memq 'down (event-modifiers event))))
-      (cond ((null event) nil)
-            ((pilish--double-mouse-1-p event) t)
-            (t (push event unread-command-events) nil)))))
-
-(defun pilish--double-mouse-1-p (event)
-  "Return non-nil when EVENT presses or releases the left button twice."
-  (and (eq (event-basic-type event) 'mouse-1)
-       (memq 'double (event-modifiers event))))
+  (pilish--confirm-pending-abort (pilish--get-chat-buffer))
+  (pilish-abort))
 
 (defun pilish--send-button-label (label map help)
   "Return margin button LABEL with keymap MAP and HELP text."

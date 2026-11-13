@@ -302,9 +302,9 @@ To send with the mouse, set =pilish-input-send-button= to =t=: a =⏎=
 button in the input window's right margin, beside its last visible row,
 sends like =C-c C-c= when clicked.  Set =pilish-input-stop-button= to
 =t= for a =✕= after it that stops running work like =C-c C-k= while
-busy; it does nothing when idle.  A double click on =✕= stops a shared
-session without asking to clear its queue; a single click therefore
-waits =double-click-time= before it acts.
+busy; it does nothing when idle.  When a shared session asks whether to
+clear its queue, another click on =✕= answers yes, so a double click
+stops it at once.
 
 =M-p= / =M-n= browse the prompts you sent; resuming a session adds its
 earlier prompts, as in Pi.  Set =pilish-input-arrow-history= to make

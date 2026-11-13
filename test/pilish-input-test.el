@@ -704,16 +704,15 @@
   "The stop button sits after the send button and a click aborts busy work."
   (let ((pilish-input-send-button t)
         (pilish-input-stop-button t)
-        (double-click-time 1)
         (aborts 0)
-        (shared nil)
-        (shared-aborts nil))
+        (answers nil))
     (pilish-test-with-mock-session "/tmp/pilish-test-stop-button/"
       (cl-letf (((symbol-function 'pilish--send-abort)
                  (lambda (&rest _) (cl-incf aborts)))
-                ((symbol-function 'pilish--process-shared-p) (lambda (_) shared))
-                ((symbol-function 'pilish--abort-shared-turn)
-                 (lambda (&optional confirmed) (push confirmed shared-aborts)))
+                ;; Batch Emacs has no minibuffer to answer in.
+                ((symbol-function 'active-minibuffer-window) #'selected-window)
+                ((symbol-function 'y-or-n-p-insert-y)
+                 (lambda () (throw 'answered (current-buffer))))
                 ((symbol-function 'message) #'ignore))
         (save-window-excursion
           (delete-other-windows)
@@ -730,28 +729,28 @@
                 (should (eq (keymap-lookup (get-text-property 3 'local-map label)
                                            "<right-margin> <mouse-1>")
                             'pilish-stop-button-click))))
-            ;; Idle, a click leaves the session alone; an event other
-            ;; than a double click is left for the command loop.
+            ;; Idle, a click leaves the session alone.
             (select-window (next-window window))
-            (setq unread-command-events (list ?x))
             (pilish-stop-button-click `(mouse-1 (,window right-margin (0 . 0) 0)))
             (should (eq (selected-window) window))
-            (should (equal unread-command-events (list ?x)))
             (should (= aborts 0))
             ;; Busy, it aborts the clicked input's session.
             (with-current-buffer chat (setq pilish--status 'streaming))
             (pilish-stop-button-click `(mouse-1 (,window right-margin (0 . 0) 0)))
             (should (= aborts 1))
-            ;; Shared, a single click leaves the queue confirmation to the
-            ;; abort, and a double click confirms it.
-            (setq shared t unread-command-events nil)
-            (pilish-stop-button-click `(mouse-1 (,window right-margin (0 . 0) 0)))
-            (setq unread-command-events
-                  `((double-down-mouse-1 (,window right-margin (0 . 0) 0) 2)
-                    (double-mouse-1 (,window right-margin (0 . 0) 0) 2)))
-            (pilish-stop-button-click `(mouse-1 (,window right-margin (0 . 0) 0)))
-            (should-not unread-command-events)
-            (should (equal shared-aborts '(t nil)))
+            ;; While another session's shared abort asks, a click aborts
+            ;; its own session; while its own asks, it answers yes.
+            (let ((pilish--abort-confirming (get-buffer-create " *other chat*")))
+              (pilish-stop-button-click `(mouse-1 (,window right-margin (0 . 0) 0)))
+              (should (= aborts 2))
+              (kill-buffer pilish--abort-confirming))
+            (let ((pilish--abort-confirming chat))
+              (push (catch 'answered
+                      (pilish-stop-button-click
+                       `(mouse-1 (,window right-margin (0 . 0) 0))))
+                    answers))
+            (should (equal answers (list input)))
+            (should (= aborts 2))
             (with-current-buffer input
               ;; Each option owns its own columns.
               (customize-set-variable 'pilish-input-send-button nil)
