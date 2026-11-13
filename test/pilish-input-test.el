@@ -627,6 +627,22 @@
               (should (= right-margin-width 5))
               (should (= (cdr (window-margins window)) 5)))))))))
 
+(ert-deftest pilish-test-send-button-honors-a-send-remapping ()
+  "A click runs the input's remapping of `pilish-send', as its keys would."
+  (let ((pilish-input-send-button t)
+        (called nil))
+    (pilish-test-with-mock-session "/tmp/pilish-test-send-button-remap/"
+      (save-window-excursion
+        (let ((input (get-buffer "*pilish-input:/tmp/pilish-test-send-button-remap/*"))
+              (map (make-sparse-keymap)))
+          (set-window-buffer (selected-window) input)
+          (keymap-set map "<remap> <pilish-send>"
+                      (lambda () (interactive) (push (current-buffer) called)))
+          (with-current-buffer input
+            (use-local-map (make-composed-keymap map (current-local-map))))
+          (pilish-send-button-click `(mouse-1 (,(selected-window) right-margin (0 . 0) 0)))
+          (should (equal called (list input))))))))
+
 (ert-deftest pilish-test-send-button-survives-a-mode-rerun ()
   "A re-run input mode keeps one button and reserves its margin again."
   (let ((pilish-input-send-button t))
@@ -637,6 +653,48 @@
       (should (= (length (overlays-in (point-min) (point-max))) 1))
       (insert "a\nb")
       (should (= (overlay-start pilish--send-button-overlay) 3)))))
+
+(ert-deftest pilish-test-stop-button-follows-send-and-aborts ()
+  "The stop button sits after the send button and a click aborts busy work."
+  (let ((pilish-input-send-button t)
+        (pilish-input-stop-button t)
+        (aborts 0))
+    (pilish-test-with-mock-session "/tmp/pilish-test-stop-button/"
+      (cl-letf (((symbol-function 'pilish--send-abort)
+                 (lambda (&rest _) (cl-incf aborts)))
+                ((symbol-function 'message) #'ignore))
+        (save-window-excursion
+          (delete-other-windows)
+          (let* ((chat (get-buffer "*pilish-chat:/tmp/pilish-test-stop-button/*"))
+                 (input (get-buffer "*pilish-input:/tmp/pilish-test-stop-button/*"))
+                 (window (split-window)))
+            (set-window-buffer window input)
+            (with-current-buffer input
+              (should (= right-margin-width 4))
+              (should (= (cdr (window-margins window)) 4))
+              (let ((label (pilish-test--send-button-label)))
+                (should (equal (substring-no-properties label) " ⏎ ✕"))
+                (should (eq (keymap-lookup (get-text-property 3 'local-map label)
+                                           "<right-margin> <mouse-1>")
+                            'pilish-stop-button-click))))
+            ;; Idle, a click leaves the session alone.
+            (select-window (next-window window))
+            (pilish-stop-button-click `(mouse-1 (,window right-margin (0 . 0) 0)))
+            (should (eq (selected-window) window))
+            (should (= aborts 0))
+            ;; Busy, it aborts the clicked input's session.
+            (with-current-buffer chat (setq pilish--status 'streaming))
+            (pilish-stop-button-click `(mouse-1 (,window right-margin (0 . 0) 0)))
+            (should (= aborts 1))
+            (with-current-buffer input
+              ;; Each option owns its own columns.
+              (customize-set-variable 'pilish-input-send-button nil)
+              (should (= right-margin-width 2))
+              (should (equal (substring-no-properties (pilish-test--send-button-label))
+                             " ✕"))
+              (customize-set-variable 'pilish-input-stop-button nil)
+              (should-not pilish--send-button-overlay)
+              (should (= right-margin-width 0)))))))))
 
 (ert-deftest pilish-test-send-button-off-reserves-no-margin ()
   "Without the option the input has no button and no margin."
