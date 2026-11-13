@@ -269,15 +269,28 @@ when present, receives the actual response after requester-only recovery."
           (pilish--quarantine-input "local-queue-recovery" context :followups local))
         (pilish--clear-shared-queue-confirmed proc context)))))
 
-(defun pilish--abort-shared-turn (&optional confirmed)
+(defvar pilish--abort-confirming nil
+  "Chat buffer whose shared abort is asking for confirmation, or nil.")
+
+(defun pilish--confirm-pending-abort (chat)
+  "Answer yes to CHAT's pending shared abort confirmation.
+Exit its minibuffer and do not return when one is pending; otherwise
+return nil."
+  (when-let* (((eq pilish--abort-confirming chat))
+              (window (active-minibuffer-window)))
+    (with-current-buffer (window-buffer window)
+      (y-or-n-p-insert-y))))
+
+(defun pilish--abort-shared-turn ()
   "Confirm global queue removal, suspend local work and abort this shared run.
 Called by the owning Abort control, before it changes queues or stop intent.
-CONFIRMED non-nil means the user already confirmed the removal.
+While it asks, `pilish--confirm-pending-abort' can answer yes.
 Later delayed-start aborts must send only Abort, not clear new shared input."
   (let* ((proc (pilish--get-process))
          (input-context (pilish--capture-input-context proc))
          (context (pilish--draft-context)))
-    (when (or confirmed (pilish--confirm-shared-queue-clear))
+    (when (let ((pilish--abort-confirming (current-buffer)))
+            (pilish--confirm-shared-queue-clear))
       (unless (equal input-context (pilish--capture-input-context proc))
         (user-error "Abort confirmation belongs to a previous conversation; nothing was cleared or aborted"))
       (let* ((local (pilish--take-unsubmitted-followups))

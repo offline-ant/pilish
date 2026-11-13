@@ -162,7 +162,9 @@
     (with-current-buffer chat
       (cl-letf (((symbol-function 'pilish--get-chat-buffer) (lambda () chat))
                 ((symbol-function 'pilish--get-process) (lambda () proc))
-                ((symbol-function 'pilish--confirm-shared-queue-clear) (lambda () t))
+                ;; A stop button click while it asks answers yes.
+                ((symbol-function 'pilish--confirm-shared-queue-clear)
+                 (lambda () (eq pilish--abort-confirming chat)))
                 ((symbol-function 'pilish--cancel-tool-times-state) #'ignore)
                 ((symbol-function 'pilish--paint-retired-tool-times) #'ignore))
         (pilish--abort-shared-turn))
