@@ -574,6 +574,78 @@ dialog hook calls as (ID STATE) and RESPONSES records sent responses."
         (should (equal (plist-get (car responses) :value) "a"))
         (should (equal (buffer-string) "Reply.\nLater output.\n"))))))
 
+(ert-deftest pilish-test-dialog-answer-text-matches-choices-or-answers-input ()
+  "Text such as a dictated answer chooses by number, label or yes/no."
+  (pilish-test--with-dialog-session (chat process events responses)
+    (let ((pilish-extension-dialog-style 'inline))
+      (with-current-buffer chat
+        (let ((inhibit-read-only t)) (insert "Reply.\n"))
+        (pilish--handle-extension-ui-request
+         '(:type "extension_ui_request" :id "s1" :method "select"
+           :title "Pick" :options ["Alpha" "Beta" "Gamma"]))
+        (let ((choice (pilish-test--dialog-choice chat "Alpha")))
+          (should (equal (pilish-dialog-at choice) "s1"))
+          (should-not (pilish-dialog-at (point-min)))
+          ;; Unmatched text answers nothing.
+          (should-not (pilish-dialog-answer-text "banana" choice))
+          (should-not responses)
+          (should (equal (pilish-dialog-answer-text "Option two." choice) "Beta")))
+        (should (equal (plist-get (car responses) :value) "Beta"))
+        (should-not (pilish-dialog-at (point-max)))
+        (should-error (pilish-dialog-answer-text "one" (point-min)) :type 'user-error)
+        (pilish--handle-extension-ui-request
+         '(:type "extension_ui_request" :id "s2" :method "select"
+           :title "Pick" :options ["Alpha" "Beta"]))
+        (should (equal (pilish-dialog-answer-text "gamma? no: Alpha!"
+                                                  (pilish-test--dialog-choice chat "Alpha"))
+                       nil))
+        (should (equal (pilish-dialog-answer-text "ALPHA." (pilish-test--dialog-choice chat "Alpha"))
+                       "Alpha"))
+        (should (equal (plist-get (car responses) :value) "Alpha"))
+        (pilish--handle-extension-ui-request
+         '(:type "extension_ui_request" :id "c1" :method "confirm" :title "Go?" :message ""))
+        (should (equal (pilish-dialog-answer-text "Yes." (pilish-test--dialog-choice chat "Yes"))
+                       "Yes"))
+        (should (eq (plist-get (car responses) :confirmed) t))
+        (pilish--handle-extension-ui-request
+         '(:type "extension_ui_request" :id "c2" :method "confirm" :title "Go?" :message ""))
+        (should (equal (pilish-dialog-answer-text "Cancel" (pilish-test--dialog-choice chat "Yes"))
+                       "Cancel"))
+        (should (equal (car responses) '(:type "extension_ui_response" :id "c2" :cancelled t)))
+        ;; A question asking for text takes unmatched text, formatted.
+        (pilish--handle-extension-ui-request
+         '(:type "extension_ui_request" :id "i1" :method "input" :title "Name"))
+        (cl-letf (((symbol-function 'read-string)
+                   (lambda (&rest _) (error "Text answers never prompt"))))
+          (should (equal (pilish-dialog-answer-text
+                          "Ada Lovelace" (pilish-test--dialog-choice chat "Type an answer")
+                          (lambda (text) (format "(d) %s" text)))
+                         "(d) Ada Lovelace")))
+        (should (equal (plist-get (car responses) :value) "(d) Ada Lovelace"))
+        (should (equal (buffer-string) "Reply.\n"))))))
+
+(ert-deftest pilish-test-dialog-row-functions-add-buttons ()
+  "Rows of `pilish-dialog-row-functions' sit above Cancel; RET presses them."
+  (pilish-test--with-dialog-session (chat process events responses)
+    (let* ((pilish-extension-dialog-style 'inline)
+           (pressed nil)
+           (pilish-dialog-row-functions
+            (list (lambda (id)
+                    (make-text-button (format "Dictate %s" id) nil
+                                      'action (lambda (_) (push id pressed))))
+                  #'ignore)))
+      (with-current-buffer chat
+        (pilish--handle-extension-ui-request
+         '(:type "extension_ui_request" :id "s1" :method "select"
+           :title "Pick" :options ["a"]))
+        (should (string-match-p "  1 a\n  Dictate s1\n  Cancel" (buffer-string)))
+        (goto-char (point-min))
+        (search-forward "Dictate")
+        (should (equal (pilish-dialog-at) "s1"))
+        (pilish-test--dialog-key chat (match-beginning 0) "RET")
+        (should (equal pressed '("s1")))
+        (should-not responses)))))
+
 (ert-deftest pilish-test-dialog-header-shows-pending ()
   (pilish-test--with-dialog-session (chat process events responses)
     (let ((pilish-extension-dialog-style 'inline))
