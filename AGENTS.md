@@ -16,7 +16,7 @@ the versioned public API, lifetime policy and isolated native-test contract.
 
 ## Architecture and ownership
 
-- `pilish.el` starts views. `pilish-core.el` owns framing and RPC routing. `pilish-runtime-process.el` owns compiled-launcher receipts, socket/hello readiness and exact Pi identity; `pilish-runtime.el` owns public runtime and desktop APIs. `pilish-ui.el` owns session state and disclosure behavior. `pilish-render.el` owns streaming, tool display, and cooling.
+- `pilish.el` starts views. `pilish-core.el` owns framing and RPC routing. `pilish-runtime-process.el` owns compiled-launcher receipts, socket/hello readiness and exact Pi identity; `pilish-runtime.el` owns public runtime and desktop APIs; `pilish-runtime-watch.el` owns the live discovery subscription. `pilish-ui.el` owns session state and disclosure behavior. `pilish-render.el` owns streaming, tool display, and cooling.
 - `pilish-jsonl.el` reads Pi's saved data. `pilish-browse.el` owns session and tree browsers; `pilish-storage.el` and its Node helper hold common stopped-file leases for managed writes. `pilish-snapshot.el` owns independent read-only saved-conversation observers. `pilish-drafts.el` owns context-bound local recovery, never runtime lifetime.
 - Keep internal `require` dependencies acyclic. `pilish-ui.el` does not depend on `pilish-jsonl.el`. `pilish-menu.el` and `pilish-input.el` are siblings. `pilish-evil.el` is an optional leaf integration.
 - Use the accessors in `pilish-ui.el` for cross-module state mutations. Direct `setq` is fine for state owned within a module.

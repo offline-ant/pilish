@@ -200,6 +200,32 @@ activity state; consumers must not mistake that for view readiness.
 Workers retain their parent-task/result protocol; cancellation/resume belongs to
 that owner, not a root-stop fallback.
 
+### Live discovery
+
+`pilish-runtime-watch.el` follows discovery with one long-lived
+`pimux watch --json` process (configured executable and environment). Each
+line is a complete snapshot, so the latest wins and a restarted watch
+resynchronizes from its first line; the line protocol belongs to
+[pimux](../phimacs/packages/pimux/README.md).
+
+- `pilish-runtime-watch-start()` starts it once (idempotent) and requires the
+  detached configuration; `pilish-runtime-watch-stop()` ends it, cancels a
+  pending restart and clears the snapshot without notifying observers.
+- `pilish-runtime-live` holds the latest snapshot: `pilish-list-runtimes`
+  plists plus `:started-at`, `:session-name` and `:blocked`. It is nil before
+  the first snapshot and while the watch fails.
+- `pilish-runtime-discovery-functions` receives `(runtimes failure)`: that list
+  and nil after each snapshot, or nil and the diagnostic when the watch fails,
+  so an empty snapshot is distinct from a failure. A failing observer is
+  reported as a warning; the others still run.
+- A watch that exits, writes a malformed or oversized (4 MiB) line, or cannot
+  start restarts after 1 s, doubling to 30 s; the delay resets at the next
+  snapshot. Each failure streak is reported once.
+
+The watch only observes. Attach keeps its synchronous identity check through
+`pilish-list-runtimes`; a listed runtime is never started, attached or stopped
+by the watch. Covered by `test/pilish-runtime-watch-test.el` (`make test-runtime`).
+
 ### Worker task completion
 
 `pilish-runtime-task.el` reads the configured orchestration CLI as

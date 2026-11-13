@@ -130,6 +130,7 @@
 (require 'pilish-snapshot)
 (require 'pilish-pair)
 (require 'pilish-runtime)
+(require 'pilish-runtime-watch)
 
 (declare-function dired-get-filename "dired" (&optional localp no-error-if-not-filep))
 
