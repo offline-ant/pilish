@@ -439,7 +439,7 @@ ollama-status:
 PILISH_SOURCES = pilish-core.el pilish-jsonl.el pilish-grammars.el pilish-ui.el \
 	pilish-drafts.el pilish-dialog.el pilish-queue.el pilish-style.el \
 	pilish-answer.el pilish-terminal-image.el pilish-pair.el pilish-table.el \
-	pilish-render.el pilish-snapshot.el pilish-input.el pilish-menu.el \
+	pilish-render.el pilish-snapshot.el pilish-input.el pilish-send-button.el pilish-menu.el \
 	pilish-shared.el pilish-storage.el pilish-runtime-process.el \
 	pilish-runtime-task.el pilish-runtime.el pilish-runtime-watch.el pilish-browse.el pilish-evil.el pilish.el
 CHECK_SOURCES = scripts/pilish-build.el scripts/install-deps.el \

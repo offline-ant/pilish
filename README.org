@@ -298,6 +298,10 @@ A second =RET= within that time at the end of the draft removes the
 newline the first one inserted and sends, like =C-c C-c=.  A slower
 second =RET= inserts a blank line; pasted text never sends.
 
+To send with the mouse, set =pilish-input-send-button= to =t=: a =⏎=
+button in the input window's right margin, beside the draft's last line,
+sends like =C-c C-c= when clicked.
+
 =M-p= / =M-n= browse the prompts you sent; resuming a session adds its
 earlier prompts, as in Pi.  Set =pilish-input-arrow-history= to make
 =↑= / =↓= browse like Pi's editor: =↑= on the first line recalls the

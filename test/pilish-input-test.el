@@ -569,6 +569,83 @@
       ;; No message should have been sent
       (should (null sent-text)))))
 
+;;; Send Button
+
+(defun pilish-test--send-button-label ()
+  "Return the current input's margin send button string."
+  (let ((display (get-text-property
+                  0 'display (overlay-get pilish--send-button-overlay 'before-string))))
+    (should (equal (car display) '(margin right-margin)))
+    (cadr display)))
+
+(ert-deftest pilish-test-send-button-follows-the-last-line-and-sends ()
+  "The margin button stays beside the draft's last line and a click sends."
+  (let ((pilish-input-send-button t)
+        (sent-text nil))
+    (pilish-test-with-mock-session "/tmp/pilish-test-send-button/"
+      (cl-letf (((symbol-function 'pilish--send-prompt)
+                 (lambda (text &optional on-success &rest _)
+                   (setq sent-text text)
+                   (when on-success (funcall on-success)))))
+        (save-window-excursion
+          (delete-other-windows)
+          (let* ((input (get-buffer "*pilish-input:/tmp/pilish-test-send-button/*"))
+                 (window (split-window)))
+            (set-window-buffer window input)
+            (with-current-buffer input
+              (should (= right-margin-width 2))
+              (should (= (cdr (window-margins window)) 2))
+              (should (equal (overlay-get pilish--send-button-overlay 'priority) 2))
+              (let ((label (pilish-test--send-button-label)))
+                (should (equal (substring-no-properties label) " ⏎"))
+                (should (= (string-width label) pilish--send-button-width))
+                (should (eq (keymap-lookup (get-text-property 1 'local-map label)
+                                           "<right-margin> <mouse-1>")
+                            'pilish-send-button-click)))
+              ;; The button follows the last line; the draft never holds it.
+              (insert "first\nsecond")
+              (should (equal (buffer-string) "first\nsecond"))
+              (should (= (overlay-start pilish--send-button-overlay) 7))
+              (goto-char (point-min))
+              (insert "zero\n")
+              (should (= (overlay-start pilish--send-button-overlay) 12)))
+            ;; A click from another window sends the clicked input's draft.
+            (select-window (next-window window))
+            (pilish-send-button-click `(mouse-1 (,window right-margin (0 . 0) 0)))
+            (should (equal sent-text "zero\nfirst\nsecond"))
+            (should (eq (selected-window) window))
+            (with-current-buffer input
+              (should (string-empty-p (buffer-string)))
+              (should (= (overlay-start pilish--send-button-overlay) 1))
+              ;; The option removes only its own columns, and restores them.
+              (setq-local right-margin-width (+ right-margin-width 3))
+              (customize-set-variable 'pilish-input-send-button nil)
+              (should-not pilish--send-button-overlay)
+              (should-not (overlays-in (point-min) (point-max)))
+              (should (= right-margin-width 3))
+              (customize-set-variable 'pilish-input-send-button t)
+              (should (= right-margin-width 5))
+              (should (= (cdr (window-margins window)) 5)))))))))
+
+(ert-deftest pilish-test-send-button-survives-a-mode-rerun ()
+  "A re-run input mode keeps one button and reserves its margin again."
+  (let ((pilish-input-send-button t))
+    (with-temp-buffer
+      (pilish-input-mode)
+      (pilish-input-mode)
+      (should (= right-margin-width 2))
+      (should (= (length (overlays-in (point-min) (point-max))) 1))
+      (insert "a\nb")
+      (should (= (overlay-start pilish--send-button-overlay) 3)))))
+
+(ert-deftest pilish-test-send-button-off-reserves-no-margin ()
+  "Without the option the input has no button and no margin."
+  (let ((pilish-input-send-button nil))
+    (with-temp-buffer
+      (pilish-input-mode)
+      (should-not pilish--send-button-overlay)
+      (should (= right-margin-width 0)))))
+
 ;;; Run Settlement
 
 (ert-deftest pilish-test-review-fixes-settled-reentry-keeps-new-run ()
