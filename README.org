@@ -1819,6 +1819,10 @@ your answer from the same multi-question tool, such as the next question or
 a text editor, takes focus in the window you answered from, so multi-step
 questions are answered in a row.  Answering never changes the prompt draft.
 Stop cancels pending questions; Pi expires questions with a timeout.
+Integrations such as dictation answer an inline question from text with
+=pilish-dialog-answer-text= (a choice's number, such as =two=, its name, or
+yes or no; otherwise the text, for questions asking for text) and add rows
+of buttons to it through =pilish-dialog-row-functions=.
 
 =pilish-session-identity-functions= is called with the chat buffer whenever
 its session file, directory or buffer name changes: when Pi first reports

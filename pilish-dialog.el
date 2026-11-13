@@ -354,6 +354,12 @@ must be typed, or `cancel'.  The final choice always cancels."
   (cond ((< index 9) (number-to-string (1+ index)))
         ((= index 9) "0")))
 
+(defvar pilish-dialog-row-functions nil
+  "Functions adding rows to inline dialog widgets, above their Cancel row.
+Each is called with the request id, in the chat buffer when the widget is
+drawn, and returns a row string or nil.  Buttons in a row, made with
+`make-text-button', answer mouse-1 and RET; the widget's keys stay active.")
+
 (defun pilish--dialog-widget-string (request)
   "Return the widget text for REQUEST."
   (let* ((id (plist-get request :id))
@@ -390,6 +396,9 @@ must be typed, or `cancel'.  The final choice always cancels."
                        index (plist-get choice :label) request))
               lines))
       (setq index (1+ index)))
+    (dolist (row (delq nil (mapcar (lambda (function) (funcall function id))
+                                   pilish-dialog-row-functions)))
+      (push (concat "  " row) lines))
     (push (concat "  "
                   (pilish--dialog-button
                    (propertize "Cancel" 'font-lock-face 'pilish-dialog-choice)
@@ -627,13 +636,17 @@ A dialog following an answer in the same flow takes focus."
                              (get-text-property (point) 'pilish-dialog-choice)))))
 
 (defun pilish-dialog-choose ()
-  "Answer the inline dialog with the choice at point."
+  "Answer the inline dialog with the choice at point, or press its button."
   (interactive)
-  (if-let* ((index (get-text-property (point) 'pilish-dialog-choice)))
-      (pcase-let ((`(,process ,request) (pilish--dialog-at-point)))
-        (pilish--dialog-answer process request index))
-    (pilish-dialog-next-choice)
-    (message "Pi: choose with RET or a click on a choice")))
+  (cond
+   ((get-text-property (point) 'pilish-dialog-choice)
+    (pcase-let ((`(,process ,request) (pilish--dialog-at-point)))
+      (pilish--dialog-answer process request
+                             (get-text-property (point) 'pilish-dialog-choice))))
+   ;; A button of `pilish-dialog-row-functions'.
+   ((button-at (point)) (push-button))
+   (t (pilish-dialog-next-choice)
+      (message "Pi: choose with RET or a click on a choice"))))
 
 (defun pilish-dialog-choose-digit ()
   "Answer the inline dialog with the choice numbered by the typed digit."
@@ -701,6 +714,80 @@ A dialog following an answer in the same flow takes focus."
   "Move to the previous choice of the inline dialog at point."
   (interactive)
   (pilish--dialog-move-choice -1))
+
+;;;; Answers from text, such as dictation
+
+(defun pilish-dialog-at (&optional position)
+  "Return the id of the inline dialog awaiting an answer at POSITION, or nil.
+POSITION defaults to point in the current chat buffer."
+  (when-let* ((id (get-text-property (or position (point)) 'pilish-dialog))
+              ((processp pilish--process))
+              ((pilish--extension-dialog-request pilish--process id)))
+    id))
+
+(defconst pilish--dialog-number-words
+  '(("one" "first") ("two" "second") ("three" "third") ("four" "fourth")
+    ("five" "fifth") ("six" "sixth") ("seven" "seventh") ("eight" "eighth")
+    ("nine" "ninth") ("ten" "tenth"))
+  "Spoken numbers of the choices, in order.")
+
+(defun pilish--dialog-normalize (text)
+  "Return TEXT downcased, without punctuation and with single spaces."
+  (string-join (split-string (downcase (replace-regexp-in-string "[[:punct:]]" " " text))
+                             nil t)
+               " "))
+
+(defun pilish--dialog-text-choice (request text)
+  "Return the index of REQUEST's choice that TEXT names, or nil.
+TEXT names a choice by its digit key, its spoken number (\"two\",
+\"option two\", \"second\"), its label, or yes and no for confirmations."
+  (let* ((choices (pilish--dialog-choices request))
+         (spoken (replace-regexp-in-string
+                  "\\`\\(?:\\(?:option\\|choice\\|number\\|the\\) \\)+" ""
+                  (pilish--dialog-normalize text)))
+         (number (if (string-match-p "\\`[0-9]+\\'" spoken)
+                     (let ((digit (string-to-number spoken)))
+                       (if (zerop digit) 10 digit))
+                   (when-let* ((index (cl-position-if (lambda (words) (member spoken words))
+                                                      pilish--dialog-number-words)))
+                     (1+ index)))))
+    (cond
+     ;; Numbers name the answers, not Cancel, as the digit keys do.
+     (number (and (<= 1 number (1- (length choices))) (1- number)))
+     ((and (equal (plist-get request :method) "confirm")
+           (member spoken '("yes" "yeah" "yep" "sure" "ok" "okay")))
+      0)
+     ((and (equal (plist-get request :method) "confirm")
+           (member spoken '("no" "nope")))
+      1)
+     (t (cl-position-if (lambda (choice)
+                          (equal (pilish--dialog-normalize (plist-get choice :label))
+                                 spoken))
+                        choices)))))
+
+(defun pilish-dialog-answer-text (text &optional position format-function)
+  "Answer the inline dialog at POSITION with TEXT, as spoken or typed.
+POSITION defaults to point in the current chat buffer.  TEXT chooses a
+choice by its number (a digit or a word such as \"two\" or \"second\"),
+its label, or yes and no for a confirmation; \"Cancel\" cancels.  A
+question asking for text that TEXT chooses no choice of is answered with
+TEXT, passed through FORMAT-FUNCTION when given.  Return the label of the
+chosen choice, the text answered, or nil when TEXT answers nothing."
+  (unless (pilish-dialog-at position)
+    (user-error "No Pi dialog awaiting an answer here"))
+  (save-excursion
+    (goto-char (or position (point)))
+    (pcase-let* ((`(,process ,request) (pilish--dialog-at-point))
+                 (index (pilish--dialog-text-choice request text)))
+      (cond
+       (index
+        (pilish--dialog-answer process request index)
+        (plist-get (nth index (pilish--dialog-choices request)) :label))
+       ((equal (plist-get request :method) "input")
+        (let ((value (if format-function (funcall format-function text) text)))
+          (pilish--dialog-note-answer process request (selected-window) 0)
+          (pilish--extension-dialog-respond process request (list :value value))
+          value))))))
 
 (provide 'pilish-dialog)
 ;;; pilish-dialog.el ends here
