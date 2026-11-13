@@ -286,7 +286,9 @@ second =RET= inserts a blank line; pasted text never sends.
 
 To send with the mouse, set =pilish-input-send-button= to =t=: a =⏎=
 button in the input window's right margin, beside the draft's last line,
-sends like =C-c C-c= when clicked.
+sends like =C-c C-c= when clicked.  Set =pilish-input-stop-button= to
+=t= for a =✕= after it that stops running work like =C-c C-k= while
+busy; it does nothing when idle.
 
 To make =C-c C-c= steer while Pi is busy, like Enter in Pi's terminal
 UI, set =pilish-send-while-busy= to =steer=.  See
