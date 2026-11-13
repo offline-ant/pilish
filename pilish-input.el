@@ -55,7 +55,7 @@
 (require 'ring)
 
 (declare-function pilish--shared-input-ready-p "pilish-shared" (proc))
-(declare-function pilish--abort-shared-turn "pilish-queue" ())
+(declare-function pilish--abort-shared-turn "pilish-queue" (&optional confirmed))
 (declare-function pilish--tree-browser-open "pilish-browse" (orient-current))
 (declare-function pilish--capture-input-context "pilish-core" (proc))
 (declare-function pilish--bind-input-context "pilish-core" (command context))
@@ -667,10 +667,11 @@ sent to pi."
       (with-current-buffer chat-buf
         (pilish--prepare-and-send text))))))
 
-(defun pilish-abort ()
+(defun pilish-abort (&optional confirmed)
   "Abort the current Pi operation while sending, streaming or compacting.
 Unshared Pi returns queued messages to the draft.  Shared Pi asks before
-changing any local state or clearing every frontend's queue; acknowledged
+changing any local state or clearing every frontend's queue, unless
+CONFIRMED says the user already chose to clear it; acknowledged
 recovery remains requester-only suspended input.  A stop during preflight
 is retained if Pi later starts the accepted prompt, without clearing a
 new shared queue or automatically resubmitting recovered input."
@@ -681,7 +682,7 @@ new shared queue or automatically resubmitting recovered input."
         (if (pilish--process-shared-p (pilish--get-process))
             ;; The shared helper asks before stop intent, timers, drafts or
             ;; queues change.  Its cancellation must leave all locals intact.
-            (pilish--abort-shared-turn)
+            (pilish--abort-shared-turn confirmed)
           (pilish--set-aborted t)
           ;; Plain Pi keeps its ordinary queue recovery and wire order.
           (let ((retired (pilish--cancel-tool-times-state)))
