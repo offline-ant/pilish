@@ -269,14 +269,15 @@ when present, receives the actual response after requester-only recovery."
           (pilish--quarantine-input "local-queue-recovery" context :followups local))
         (pilish--clear-shared-queue-confirmed proc context)))))
 
-(defun pilish--abort-shared-turn ()
+(defun pilish--abort-shared-turn (&optional confirmed)
   "Confirm global queue removal, suspend local work and abort this shared run.
 Called by the owning Abort control, before it changes queues or stop intent.
+CONFIRMED non-nil means the user already confirmed the removal.
 Later delayed-start aborts must send only Abort, not clear new shared input."
   (let* ((proc (pilish--get-process))
          (input-context (pilish--capture-input-context proc))
          (context (pilish--draft-context)))
-    (when (pilish--confirm-shared-queue-clear)
+    (when (or confirmed (pilish--confirm-shared-queue-clear))
       (unless (equal input-context (pilish--capture-input-context proc))
         (user-error "Abort confirmation belongs to a previous conversation; nothing was cleared or aborted"))
       (let* ((local (pilish--take-unsubmitted-followups))

@@ -571,15 +571,23 @@
 
 ;;; Send Button
 
-(defun pilish-test--send-button-label ()
-  "Return the current input's margin send button string."
+(defun pilish-test--send-button-overlay (window)
+  "Return the current input's button overlay for WINDOW."
+  (let ((overlay (cdr (assq window pilish--send-button-overlays))))
+    (should (overlay-buffer overlay))
+    (should (eq (overlay-get overlay 'window) window))
+    overlay))
+
+(defun pilish-test--send-button-label (window)
+  "Return the current input's margin button string in WINDOW."
   (let ((display (get-text-property
-                  0 'display (overlay-get pilish--send-button-overlay 'before-string))))
+                  0 'display (overlay-get (pilish-test--send-button-overlay window)
+                                          'before-string))))
     (should (equal (car display) '(margin right-margin)))
     (cadr display)))
 
-(ert-deftest pilish-test-send-button-follows-the-last-line-and-sends ()
-  "The margin button stays beside the draft's last line and a click sends."
+(ert-deftest pilish-test-send-button-follows-each-window-and-sends ()
+  "The margin button stays beside each window's last visible row; a click sends."
   (let ((pilish-input-send-button t)
         (sent-text nil))
     (pilish-test-with-mock-session "/tmp/pilish-test-send-button/"
@@ -590,25 +598,60 @@
         (save-window-excursion
           (delete-other-windows)
           (let* ((input (get-buffer "*pilish-input:/tmp/pilish-test-send-button/*"))
-                 (window (split-window)))
+                 (window (split-window nil -6)))
             (set-window-buffer window input)
             (with-current-buffer input
-              (should (= right-margin-width 2))
-              (should (= (cdr (window-margins window)) 2))
-              (should (equal (overlay-get pilish--send-button-overlay 'priority) 2))
-              (let ((label (pilish-test--send-button-label)))
+              ;; Redisplay runs these hooks; batch Emacs never redisplays.
+              (dolist (hook pilish--send-button-hooks)
+                (should (memq #'pilish--place-send-buttons (symbol-value hook))))
+              (pilish--place-send-buttons)
+              (should (= right-margin-width pilish--send-button-width))
+              (should (= (cdr (window-margins window)) pilish--send-button-width))
+              (should (equal (overlay-get (pilish-test--send-button-overlay window)
+                                          'priority)
+                             2))
+              (let ((label (pilish-test--send-button-label window)))
                 (should (equal (substring-no-properties label) " ⏎"))
-                (should (= (string-width label) pilish--send-button-width))
+                (should (< (string-width label) pilish--send-button-width))
                 (should (eq (keymap-lookup (get-text-property 1 'local-map label)
                                            "<right-margin> <mouse-1>")
                             'pilish-send-button-click)))
-              ;; The button follows the last line; the draft never holds it.
+              ;; A short draft has it beside its last line; the draft never
+              ;; holds it.
               (insert "first\nsecond")
+              (pilish--place-send-buttons)
               (should (equal (buffer-string) "first\nsecond"))
-              (should (= (overlay-start pilish--send-button-overlay) 7))
+              (should (= (overlay-start (pilish-test--send-button-overlay window)) 7))
               (goto-char (point-min))
               (insert "zero\n")
-              (should (= (overlay-start pilish--send-button-overlay) 12)))
+              (pilish--place-send-buttons)
+              (should (= (overlay-start (pilish-test--send-button-overlay window)) 12))
+              ;; A scrolled long draft has it beside the last visible row.
+              (let ((rows (window-body-height window)))
+                (erase-buffer)
+                (dotimes (line 30) (insert (format "line %d\n" line)))
+                (set-window-start window (save-excursion
+                                           (goto-char (point-min))
+                                           (forward-line 10)
+                                           (point)))
+                (pilish--place-send-buttons)
+                (should (= (overlay-start (pilish-test--send-button-overlay window))
+                           (save-excursion (goto-char (point-min))
+                                           (forward-line (+ 10 rows -1))
+                                           (point)))))
+              ;; A second window of the input gets its own button, which
+              ;; leaves with the window.
+              (let ((second (split-window (next-window window))))
+                (set-window-buffer second input)
+                (pilish--place-send-buttons)
+                (should (= (length pilish--send-button-overlays) 2))
+                (pilish-test--send-button-overlay second)
+                (delete-window second)
+                (pilish--place-send-buttons)
+                (should (equal (mapcar #'car pilish--send-button-overlays) (list window)))
+                (should (= (length (overlays-in (point-min) (point-max))) 1)))
+              (erase-buffer)
+              (insert "zero\nfirst\nsecond"))
             ;; A click from another window sends the clicked input's draft.
             (select-window (next-window window))
             (pilish-send-button-click `(mouse-1 (,window right-margin (0 . 0) 0)))
@@ -616,16 +659,16 @@
             (should (eq (selected-window) window))
             (with-current-buffer input
               (should (string-empty-p (buffer-string)))
-              (should (= (overlay-start pilish--send-button-overlay) 1))
+              (should (= (overlay-start (pilish-test--send-button-overlay window)) 1))
               ;; The option removes only its own columns, and restores them.
               (setq-local right-margin-width (+ right-margin-width 3))
               (customize-set-variable 'pilish-input-send-button nil)
-              (should-not pilish--send-button-overlay)
+              (should-not pilish--send-button-overlays)
               (should-not (overlays-in (point-min) (point-max)))
               (should (= right-margin-width 3))
               (customize-set-variable 'pilish-input-send-button t)
-              (should (= right-margin-width 5))
-              (should (= (cdr (window-margins window)) 5)))))))))
+              (should (= right-margin-width (+ 3 pilish--send-button-width)))
+              (should (= (cdr (window-margins window)) (+ 3 pilish--send-button-width))))))))))
 
 (ert-deftest pilish-test-send-button-honors-a-send-remapping ()
   "A click runs the input's remapping of `pilish-send', as its keys would."
@@ -647,21 +690,30 @@
   "A re-run input mode keeps one button and reserves its margin again."
   (let ((pilish-input-send-button t))
     (with-temp-buffer
-      (pilish-input-mode)
-      (pilish-input-mode)
-      (should (= right-margin-width 2))
-      (should (= (length (overlays-in (point-min) (point-max))) 1))
-      (insert "a\nb")
-      (should (= (overlay-start pilish--send-button-overlay) 3)))))
+      (save-window-excursion
+        (set-window-buffer (selected-window) (current-buffer))
+        (pilish-input-mode)
+        (pilish-input-mode)
+        (should (= right-margin-width pilish--send-button-width))
+        (should (= (length (overlays-in (point-min) (point-max))) 1))
+        (insert "a\nb")
+        (should (= (overlay-start (pilish-test--send-button-overlay (selected-window)))
+                   3))))))
 
 (ert-deftest pilish-test-stop-button-follows-send-and-aborts ()
   "The stop button sits after the send button and a click aborts busy work."
   (let ((pilish-input-send-button t)
         (pilish-input-stop-button t)
-        (aborts 0))
+        (double-click-time 1)
+        (aborts 0)
+        (shared nil)
+        (shared-aborts nil))
     (pilish-test-with-mock-session "/tmp/pilish-test-stop-button/"
       (cl-letf (((symbol-function 'pilish--send-abort)
                  (lambda (&rest _) (cl-incf aborts)))
+                ((symbol-function 'pilish--process-shared-p) (lambda (_) shared))
+                ((symbol-function 'pilish--abort-shared-turn)
+                 (lambda (&optional confirmed) (push confirmed shared-aborts)))
                 ((symbol-function 'message) #'ignore))
         (save-window-excursion
           (delete-other-windows)
@@ -670,30 +722,45 @@
                  (window (split-window)))
             (set-window-buffer window input)
             (with-current-buffer input
-              (should (= right-margin-width 4))
-              (should (= (cdr (window-margins window)) 4))
-              (let ((label (pilish-test--send-button-label)))
+              (pilish--place-send-buttons)
+              (should (= right-margin-width (* 2 pilish--send-button-width)))
+              (should (= (cdr (window-margins window)) (* 2 pilish--send-button-width)))
+              (let ((label (pilish-test--send-button-label window)))
                 (should (equal (substring-no-properties label) " ⏎ ✕"))
                 (should (eq (keymap-lookup (get-text-property 3 'local-map label)
                                            "<right-margin> <mouse-1>")
                             'pilish-stop-button-click))))
-            ;; Idle, a click leaves the session alone.
+            ;; Idle, a click leaves the session alone; an event other
+            ;; than a double click is left for the command loop.
             (select-window (next-window window))
+            (setq unread-command-events (list ?x))
             (pilish-stop-button-click `(mouse-1 (,window right-margin (0 . 0) 0)))
             (should (eq (selected-window) window))
+            (should (equal unread-command-events (list ?x)))
             (should (= aborts 0))
             ;; Busy, it aborts the clicked input's session.
             (with-current-buffer chat (setq pilish--status 'streaming))
             (pilish-stop-button-click `(mouse-1 (,window right-margin (0 . 0) 0)))
             (should (= aborts 1))
+            ;; Shared, a single click leaves the queue confirmation to the
+            ;; abort, and a double click confirms it.
+            (setq shared t unread-command-events nil)
+            (pilish-stop-button-click `(mouse-1 (,window right-margin (0 . 0) 0)))
+            (setq unread-command-events
+                  `((double-down-mouse-1 (,window right-margin (0 . 0) 0) 2)
+                    (double-mouse-1 (,window right-margin (0 . 0) 0) 2)))
+            (pilish-stop-button-click `(mouse-1 (,window right-margin (0 . 0) 0)))
+            (should-not unread-command-events)
+            (should (equal shared-aborts '(t nil)))
             (with-current-buffer input
               ;; Each option owns its own columns.
               (customize-set-variable 'pilish-input-send-button nil)
-              (should (= right-margin-width 2))
-              (should (equal (substring-no-properties (pilish-test--send-button-label))
+              (should (= right-margin-width pilish--send-button-width))
+              (should (equal (substring-no-properties
+                              (pilish-test--send-button-label window))
                              " ✕"))
               (customize-set-variable 'pilish-input-stop-button nil)
-              (should-not pilish--send-button-overlay)
+              (should-not pilish--send-button-overlays)
               (should (= right-margin-width 0)))))))))
 
 (ert-deftest pilish-test-send-button-off-reserves-no-margin ()
@@ -701,7 +768,7 @@
   (let ((pilish-input-send-button nil))
     (with-temp-buffer
       (pilish-input-mode)
-      (should-not pilish--send-button-overlay)
+      (should-not pilish--send-button-overlays)
       (should (= right-margin-width 0)))))
 
 ;;; Run Settlement

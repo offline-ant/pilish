@@ -26,29 +26,33 @@
 ;;; Commentary:
 
 ;; With `pilish-input-send-button', input buffers show a ⏎ button in the
-;; right margin beside the draft's last line; mouse-1 on it runs
+;; right margin beside each window's last visible row, so scrolling a long
+;; draft never hides it; mouse-1 on it runs
 ;; `pilish-send' in that input, like C-c C-c, or the input's remapping of
 ;; it, such as pi-sound's stop-and-send while dictating.  With
 ;; `pilish-input-stop-button', a ✕ after it stops running work like
 ;; C-c C-k does while busy (`pilish-abort'); it never opens the tree.
+;; A double click on it stops shared Pi without asking to clear the
+;; shared queue, so a single click waits `double-click-time' first.
 ;;
 ;; Each button adds `pilish--send-button-width' columns to the buffer's
 ;; right margin rather than setting its width, so other margin buttons,
-;; such as pi-sound's microphone, keep theirs.  Both share one overlay;
-;; with a one-line draft the margin shows the microphone first (overlay
-;; priority 2 puts these after it).
+;; such as pi-sound's microphone, keep theirs.  Both share one overlay
+;; per window (its `window' property), moved on scrolling, edits, resizes
+;; and display; with a one-row window the margin shows the microphone
+;; first (overlay priority 2 puts these after it).
 
 ;;; Code:
 
 (require 'pilish-input)
 
-(defvar pilish--send-button-overlay nil
-  "This input buffer's send and stop button overlay, or nil.")
-(make-variable-buffer-local 'pilish--send-button-overlay)
+(defvar pilish--send-button-overlays nil
+  "This input buffer's button overlays, an alist of (WINDOW . OVERLAY).")
+(make-variable-buffer-local 'pilish--send-button-overlays)
 ;; A re-run major mode can keep its overlays, so it must keep their owner
 ;; too.  md-ts-mode's teardown deletes them instead, which leaves the
-;; overlay without a buffer.
-(put 'pilish--send-button-overlay 'permanent-local t)
+;; overlays without a buffer.
+(put 'pilish--send-button-overlays 'permanent-local t)
 
 (defvar-local pilish--send-button-margin 0
   "Columns the buttons currently add to the right margin.
@@ -65,7 +69,7 @@ Not permanent: a re-run major mode resets `right-margin-width' too.")
 (defcustom pilish-input-send-button nil
   "Non-nil shows a clickable send button beside the draft's last line.
 The button sits in the input window's right margin, which grows by
-two columns.  Setting it through Customize or `setopt' updates
+three columns.  Setting it through Customize or `setopt' updates
 existing input buffers."
   :type 'boolean
   :group 'pilish
@@ -75,15 +79,18 @@ existing input buffers."
   "Non-nil shows a clickable stop button beside the draft's last line.
 A click stops running work with `pilish-abort', as
 `pilish-abort-or-tree-browser' does while busy; idle, it does nothing.
+A double click also skips the confirmation to clear a shared queue.
 The button sits after the send button in the input window's right
-margin, which grows by two columns.  Setting it through Customize or
+margin, which grows by three columns.  Setting it through Customize or
 `setopt' updates existing input buffers."
   :type 'boolean
   :group 'pilish
   :set #'pilish--set-input-button-option)
 
-(defconst pilish--send-button-width 2
-  "Columns each button adds to the right margin.")
+(defconst pilish--send-button-width 3
+  "Columns each button adds to the right margin.
+A label takes two, but graphical frames draw ⏎ and ✕ from fallback fonts
+wider than a column; the third keeps the last button from being cut off.")
 
 (defvar-keymap pilish-send-button-map
   :doc "Bindings of the send button in the right margin."
@@ -104,10 +111,32 @@ A remapping of `pilish-send' in that input applies, as for its keys."
   (call-interactively (or (command-remapping #'pilish-send) #'pilish-send)))
 
 (defun pilish-stop-button-click (event)
-  "Stop the running work of the input whose margin button EVENT clicked."
+  "Stop the running work of the input whose margin button EVENT clicked.
+A second click within `double-click-time' confirms clearing a shared
+queue instead of asking."
   (interactive "e")
   (select-window (posn-window (event-start event)))
-  (pilish-abort))
+  (pilish-abort (pilish--stop-button-clicked-again-p)))
+
+(defun pilish--stop-button-clicked-again-p ()
+  "Return non-nil when the stop button is clicked again in time.
+Wait up to `double-click-time' for the double click and consume its
+events; another event is put back for the command loop.  Emacs reports a
+double click only near the first one, so it is on the same button."
+  (when (numberp double-click-time)
+    (let ((timeout (/ double-click-time 1000.0))
+          event)
+      (while (and (setq event (read-event nil nil timeout))
+                  (pilish--double-mouse-1-p event)
+                  (memq 'down (event-modifiers event))))
+      (cond ((null event) nil)
+            ((pilish--double-mouse-1-p event) t)
+            (t (push event unread-command-events) nil)))))
+
+(defun pilish--double-mouse-1-p (event)
+  "Return non-nil when EVENT presses or releases the left button twice."
+  (and (eq (event-basic-type event) 'mouse-1)
+       (memq 'double (event-modifiers event))))
 
 (defun pilish--send-button-label (label map help)
   "Return margin button LABEL with keymap MAP and HELP text."
@@ -132,21 +161,48 @@ A remapping of `pilish-send' in that input applies, as for its keys."
   (* pilish--send-button-width
      (+ (if pilish-input-send-button 1 0) (if pilish-input-stop-button 1 0))))
 
-(defun pilish--send-button-last-line ()
-  "Return the start of the draft's last line."
-  (save-excursion (goto-char (point-max)) (pos-bol)))
+(defun pilish--send-button-row (window)
+  "Return the start of WINDOW's last visible row of the current buffer."
+  (save-excursion
+    (goto-char (window-start window))
+    (vertical-motion (1- (max 1 (window-body-height window))) window)
+    ;; A draft shorter than the window stops within its last row.
+    (vertical-motion 0 window)
+    (point)))
 
-(defun pilish--send-button-live-p ()
-  "Return non-nil when this buffer shows its send button overlay."
-  (and (overlayp pilish--send-button-overlay)
-       (overlay-buffer pilish--send-button-overlay)))
+(defun pilish--clear-send-buttons ()
+  "Delete this buffer's button overlays."
+  (dolist (entry pilish--send-button-overlays)
+    (delete-overlay (cdr entry)))
+  (setq pilish--send-button-overlays nil))
 
-(defun pilish--follow-send-button (&rest _)
-  "Keep the send button beside the draft's last line."
-  (when (pilish--send-button-live-p)
-    (let ((start (pilish--send-button-last-line)))
-      (unless (= start (overlay-start pilish--send-button-overlay))
-        (move-overlay pilish--send-button-overlay start start)))))
+(defun pilish--place-send-buttons (&rest _)
+  "Show the buttons beside the last visible row of each window of this buffer.
+Windows no longer showing the buffer lose theirs."
+  (let ((windows (get-buffer-window-list nil nil t))
+        (string (pilish--send-button-string))
+        placed)
+    (dolist (window windows)
+      (let ((overlay (cdr (assq window pilish--send-button-overlays)))
+            (row (pilish--send-button-row window)))
+        (if (and overlay (overlay-buffer overlay))
+            (unless (= row (overlay-start overlay))
+              (move-overlay overlay row row))
+          (setq overlay (make-overlay row row))
+          (overlay-put overlay 'window window)
+          ;; Before-strings show in increasing priority: after the lines
+          ;; above the draft and a priority-1 button such as pi-sound's.
+          (overlay-put overlay 'priority 2))
+        (overlay-put overlay 'before-string string)
+        (push (cons window overlay) placed)))
+    (dolist (entry pilish--send-button-overlays)
+      (unless (memq (car entry) windows) (delete-overlay (cdr entry))))
+    (setq pilish--send-button-overlays placed)))
+
+(defconst pilish--send-button-hooks
+  '(after-change-functions window-scroll-functions
+    window-size-change-functions window-buffer-change-functions)
+  "Buffer-local hooks after which the buttons are placed again.")
 
 (defun pilish--reserve-send-button-margin (columns)
   "Make the buttons' share of the right margin COLUMNS wide."
@@ -161,20 +217,13 @@ A remapping of `pilish-send' in that input applies, as for its keys."
   "Show, refresh or remove this input buffer's buttons per their options."
   (if (or pilish-input-send-button pilish-input-stop-button)
       (progn
-        (unless (pilish--send-button-live-p)
-          (let ((start (pilish--send-button-last-line)))
-            (setq pilish--send-button-overlay (make-overlay start start)))
-          ;; Before-strings show in increasing priority: after the lines
-          ;; above the draft and a priority-1 button such as pi-sound's.
-          (overlay-put pilish--send-button-overlay 'priority 2))
-        (overlay-put pilish--send-button-overlay 'before-string
-                     (pilish--send-button-string))
-        (add-hook 'after-change-functions #'pilish--follow-send-button nil t)
-        (pilish--reserve-send-button-margin (pilish--send-button-columns)))
-    (when (overlayp pilish--send-button-overlay)
-      (delete-overlay pilish--send-button-overlay)
-      (setq pilish--send-button-overlay nil))
-    (remove-hook 'after-change-functions #'pilish--follow-send-button t)
+        (dolist (hook pilish--send-button-hooks)
+          (add-hook hook #'pilish--place-send-buttons nil t))
+        (pilish--reserve-send-button-margin (pilish--send-button-columns))
+        (pilish--place-send-buttons))
+    (dolist (hook pilish--send-button-hooks)
+      (remove-hook hook #'pilish--place-send-buttons t))
+    (pilish--clear-send-buttons)
     (pilish--reserve-send-button-margin 0)))
 
 (add-hook 'pilish-input-mode-hook #'pilish--update-send-button)
