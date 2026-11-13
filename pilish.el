@@ -60,6 +60,7 @@
 ;;     C-c C-c        Send prompt (queues text as follow-up if busy;
 ;;                    steers instead with `pilish-send-while-busy')
 ;;     RET RET        Send prompt with `pilish-send-on-double-return'
+;;     mouse-1 on ⏎   Send prompt with `pilish-input-send-button'
 ;;     C-c C-s        Queue steering (interrupts after current tool; busy only)
 ;;     M-RET          Send prompt, or always queue as follow-up if busy
 ;;     M-<up>         Move queued messages into the draft
@@ -126,6 +127,7 @@
 (require 'pilish-menu)
 (require 'pilish-shared)
 (require 'pilish-input)
+(require 'pilish-send-button)
 (require 'pilish-browse)
 (require 'pilish-snapshot)
 (require 'pilish-pair)

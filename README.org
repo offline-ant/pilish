@@ -284,6 +284,10 @@ A second =RET= within that time at the end of the draft removes the
 newline the first one inserted and sends, like =C-c C-c=.  A slower
 second =RET= inserts a blank line; pasted text never sends.
 
+To send with the mouse, set =pilish-input-send-button= to =t=: a =⏎=
+button in the input window's right margin, beside the draft's last line,
+sends like =C-c C-c= when clicked.
+
 To make =C-c C-c= steer while Pi is busy, like Enter in Pi's terminal
 UI, set =pilish-send-while-busy= to =steer=.  See
 [[file:#prompt-queues][Prompt queues and run status]] for delivery rules and
