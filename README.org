@@ -381,8 +381,9 @@ open a link.
 
 Click a generated Pi session link or press =RET= on it to open a
 read-only snapshot in another window.  Use =C-c ]= and =C-c [= to reach
-the next or previous visible link.  Each open creates an independent
-observer with no live session controls.
+the next or previous visible link.  The snapshot has no live session
+controls; opening a conversation that already has one refreshes and
+shows it.
 
 To open a Pi-v3 JSONL file directly without starting or resuming Pi, run:
 
