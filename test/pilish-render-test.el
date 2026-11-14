@@ -7699,6 +7699,37 @@ replay output without it, byte for byte."
     (cl-letf (((symbol-function 'window-point) (lambda (_w) (1- (point-max)))))
       (should (pilish--window-following-p 'mock-window)))))
 
+(ert-deftest pilish-test-rewrite-keeps-underfilled-follower-following ()
+  "A rewrite bottom-aligning a follower during a command is no scroll back.
+The follower's end sits above blank rows, so the restore moves its start
+back; settling after the command keeps it following."
+  (let ((chat (generate-new-buffer " *pilish-rewrite-follower*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer chat)
+          (pilish-chat-mode)
+          (let ((inhibit-read-only t)
+                (window (selected-window))
+                late-start)
+            (dotimes (i 100) (insert (format "line %d\n" (1+ i))))
+            (setq late-start (save-excursion
+                               (goto-char (point-max))
+                               (forward-line -2)
+                               (point)))
+            (set-window-start window late-start)
+            (set-window-point window (point-max))
+            (pilish--record-command-chat-views)
+            (let ((states (pilish--capture-window-rewrite-states)))
+              (goto-char (point-min))
+              (delete-region (point) (line-end-position))
+              (insert "first")
+              (pilish--restore-window-rewrite-states chat states))
+            (should (< (window-start window) late-start))
+            (pilish--settle-command-chat-views)
+            (should (pilish--window-following-p window))))
+      (kill-buffer chat))))
+
 (ert-deftest pilish-test-rewrite-tail-window-p-keeps-lower-tail-view-following ()
   "A lower-window tail view should stay in tail-following mode after a rewrite."
   (should (pilish--rewrite-tail-window-p 10 99 100 18 30))

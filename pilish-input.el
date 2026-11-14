@@ -602,7 +602,8 @@ the selected frame to its end."
     (dolist (window (get-buffer-window-list chat-buf nil))
       (with-selected-window window
         (goto-char (point-max))
-        (recenter -1)))))
+        (recenter -1))
+      (pilish--release-command-chat-view window))))
 
 (defun pilish--queue-followup-text (chat-buf text)
   "Accept TEXT and enqueue it as a follow-up in CHAT-BUF."

@@ -2804,7 +2804,11 @@ larger window when the selected one cannot be split."
 ;; After a command that moves a chat window's start, its point is settled
 ;; before the next command.  A command that scrolls a following window back
 ;; while the end stays visible leaves point at the end, so point moves off
-;; the end and the window reads instead of following.  Emacs scrolling can
+;; the end and the window reads instead of following.  Pilish's own tail
+;; positioning during a command (`pilish--restore-tail-window', returning
+;; to the end on submit, display and tool rewrites) releases the window
+;; from this settling through `pilish--release-command-chat-view'.  Emacs
+;; scrolling can
 ;; also leave point outside the view (`vertical-motion' and the display
 ;; disagree about rows with overlay strings), and the next scroll command
 ;; then restarts near point; point moves back into the view, as redisplay
@@ -2885,10 +2889,17 @@ Return nil."
             (set-window-start window start t)
           (recenter -1))))
     (set-window-point window end)
-    ;; Positioning the tail during a command is not the reader scrolling.
-    (when-let* ((view (assq window pilish--command-chat-views)))
-      (set-marker (nth 1 view) (window-start window))))
+    (pilish--release-command-chat-view window))
   nil)
+
+(defun pilish--release-command-chat-view (window)
+  "Exclude WINDOW from settling after the current command.
+Call after Pilish itself positions WINDOW's tail: that is not the reader
+scrolling, and point is already at the end."
+  (when-let* ((view (assq window pilish--command-chat-views)))
+    (set-marker (nth 1 view) nil)
+    (setq pilish--command-chat-views
+          (delq view pilish--command-chat-views))))
 
 (defun pilish--release-command-chat-views ()
   "Forget `pilish--command-chat-views' and detach its markers."
