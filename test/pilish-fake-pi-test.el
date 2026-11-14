@@ -2097,61 +2097,64 @@ SPEC is (SESSION SCENARIO &rest EXTRA-ARGS)."
               (should (equal saved message)))))))))
 
 (ert-deftest pilish-fake-pi-test-tool-duration-live-and-history-render ()
-  "The real filter drives local ticks, authoritative completion and quiet history."
+  "The real filter drives local ticks, authoritative completion and quiet history.
+The chat is shown in a window: ticks repaint only chats a window shows."
   (let ((pilish-bash-preview-lines 2))
     (dolist (scenario '("tool-duration" "tool-read"))
       (pilish-fake-pi-test-with-session (session scenario)
-        (let* ((chat (plist-get session :chat-buffer))
-               (input (plist-get session :input-buffer))
-               (proc (plist-get session :process))
-               (timed (equal scenario "tool-duration"))
-               block)
-          (pilish-fake-pi-test--wait-or-fail
-           proc (lambda () (with-current-buffer chat
-                             (not (pilish--session-transition-active-p)))) "startup")
-          (with-current-buffer input (insert "duration display contract") (pilish-send))
-          (when timed
+        (save-window-excursion
+          (set-window-buffer (selected-window) (plist-get session :chat-buffer))
+          (let* ((chat (plist-get session :chat-buffer))
+                 (input (plist-get session :input-buffer))
+                 (proc (plist-get session :process))
+                 (timed (equal scenario "tool-duration"))
+                 block)
             (pilish-fake-pi-test--wait-or-fail
              proc (lambda () (with-current-buffer chat
-                               (setq block (car pilish--running-tool-blocks))
-                               (and block (equal (pilish--tool-duration-label block) "Elapsed 0s"))))
-             "immediate local elapsed time")
+                               (not (pilish--session-transition-active-p)))) "startup")
+            (with-current-buffer input (insert "duration display contract") (pilish-send))
+            (when timed
+              (pilish-fake-pi-test--wait-or-fail
+               proc (lambda () (with-current-buffer chat
+                                 (setq block (car pilish--running-tool-blocks))
+                                 (and block (equal (pilish--tool-duration-label block) "Elapsed 0s"))))
+               "immediate local elapsed time")
+              (pilish-fake-pi-test--wait-or-fail
+               proc (lambda () (with-current-buffer chat
+                                 (string-match-p "Elapsed 1s" (buffer-string))))
+               "real production one-second tick"))
             (pilish-fake-pi-test--wait-or-fail
-             proc (lambda () (with-current-buffer chat
-                               (string-match-p "Elapsed 1s" (buffer-string))))
-             "real production one-second tick"))
-          (pilish-fake-pi-test--wait-or-fail
-           proc (lambda () (with-current-buffer chat (eq pilish--status 'idle))) "settlement")
-          (with-current-buffer chat
-            (should (string-match-p (if timed "DURATION FIRST" "fake tool output")
-                                    (buffer-string)))
-            (should-not pilish--tool-time-timer)
-            (should-not pilish--running-tool-blocks)
-            (should-not (string-match-p "Elapsed" (buffer-string)))
-            (if timed
-                (progn
-                  (should (equal (pilish--tool-duration-label block) "Took 2m 5s"))
-                  (should (string-match-p "Took 2m 5s" (pilish--visible-text (point-min) (point-max)))))
-              ;; The run-level return receipt says "Took" even for an untimed
-              ;; tool.  Assert the absence of tool-owned duration instead.
-              (should-not (text-property-not-all (point-min) (point-max)
-                                                 'pilish-tool-duration nil)))
-            (let ((text (buffer-substring-no-properties (point-min) (point-max)))
-                  (tick (buffer-chars-modified-tick)))
-              (sleep-for 1.15)
-              (should (= tick (buffer-chars-modified-tick)))
-              (should (equal text (buffer-substring-no-properties (point-min) (point-max))))))
-          (let* ((response (pilish--rpc-sync proc '(:type "get_messages") 5))
-                 (messages (plist-get (plist-get response :data) :messages)))
-            (with-temp-buffer
-              (pilish-chat-mode)
-              (pilish--display-history-messages messages)
+             proc (lambda () (with-current-buffer chat (eq pilish--status 'idle))) "settlement")
+            (with-current-buffer chat
+              (should (string-match-p (if timed "DURATION FIRST" "fake tool output")
+                                      (buffer-string)))
               (should-not pilish--tool-time-timer)
               (should-not pilish--running-tool-blocks)
               (should-not (string-match-p "Elapsed" (buffer-string)))
-              (should (string-match-p (if timed "DURATION FIRST" "fake tool output")
-                                      (buffer-string)))
-              (should (eq (not (null (string-match-p "Took 2m 5s" (buffer-string)))) timed)))))))))
+              (if timed
+                  (progn
+                    (should (equal (pilish--tool-duration-label block) "Took 2m 5s"))
+                    (should (string-match-p "Took 2m 5s" (pilish--visible-text (point-min) (point-max)))))
+                ;; The run-level return receipt says "Took" even for an untimed
+                ;; tool.  Assert the absence of tool-owned duration instead.
+                (should-not (text-property-not-all (point-min) (point-max)
+                                                   'pilish-tool-duration nil)))
+              (let ((text (buffer-substring-no-properties (point-min) (point-max)))
+                    (tick (buffer-chars-modified-tick)))
+                (sleep-for 1.15)
+                (should (= tick (buffer-chars-modified-tick)))
+                (should (equal text (buffer-substring-no-properties (point-min) (point-max))))))
+            (let* ((response (pilish--rpc-sync proc '(:type "get_messages") 5))
+                   (messages (plist-get (plist-get response :data) :messages)))
+              (with-temp-buffer
+                (pilish-chat-mode)
+                (pilish--display-history-messages messages)
+                (should-not pilish--tool-time-timer)
+                (should-not pilish--running-tool-blocks)
+                (should-not (string-match-p "Elapsed" (buffer-string)))
+                (should (string-match-p (if timed "DURATION FIRST" "fake tool output")
+                                        (buffer-string)))
+                (should (eq (not (null (string-match-p "Took 2m 5s" (buffer-string)))) timed))))))))))
 
 (ert-deftest pilish-fake-pi-test-nested-tools-wire-and-disk ()
   "Nested wire records keep the parent snapshot unchanged after a late end."
