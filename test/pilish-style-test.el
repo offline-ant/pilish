@@ -472,6 +472,40 @@ Customizing the style installs and removes it in open input buffers."
             (should (= (window-total-height input-win) 4)))
         (kill-buffer chat)))))
 
+(ert-deftest pilish-style-test-fit-input-wraps-widgets-like-the-draft ()
+  "A widget line takes as many rows as the same line typed as the draft.
+This holds with and without `word-wrap', which moves whole words to rows
+of their own, and on a text terminal, which keeps the last column for
+continuation marks.  Counting characters gets both wrong."
+  (pilish-style-test--with-fit-layout
+    (let ((chat (generate-new-buffer " *test-fit-chat*")))
+      (unwind-protect
+          (progn
+            (set-window-buffer chat-win chat)
+            (with-current-buffer chat
+              (setq pilish--input-buffer input-buf))
+            (with-current-buffer input-buf
+              (setq pilish--chat-buffer chat))
+            (let* ((width (window-body-width input-win))
+                   (line (concat (make-string (- width 3) ?a) " bbbb "
+                                 (make-string (- width 4) ?c))))
+              (dolist (wrap '(nil t))
+                (with-current-buffer input-buf
+                  (setq word-wrap wrap)
+                  (erase-buffer)
+                  (insert line))
+                (with-current-buffer chat
+                  (pilish--set-extension-widget "k" nil))
+                (pilish-fit-input-window input-win)
+                (let ((height (window-total-height input-win)))
+                  (with-current-buffer input-buf (erase-buffer))
+                  (with-current-buffer chat
+                    (pilish--set-extension-widget "k" (list line)))
+                  (pilish-fit-input-window input-win)
+                  ;; The widget rows and the empty draft line.
+                  (should (= (window-total-height input-win) (1+ height)))))))
+        (kill-buffer chat)))))
+
 (ert-deftest pilish-style-test-extension-widget-schedules-a-fit ()
   "Changing a widget refits the input window like editing the draft does."
   (let ((pilish-input-window-height 'fit)

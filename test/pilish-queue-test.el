@@ -23,7 +23,7 @@
 (defun pilish-queue-test--panel (input)
   "Return the text above INPUT's draft, or nil."
   (with-current-buffer input
-    (when-let* ((overlay pilish--input-preamble-overlay))
+    (when-let* ((overlay (pilish--input-preamble-overlay)))
       (overlay-get overlay 'before-string))))
 
 (defun pilish-queue-test--snapshot (proc steering followups)

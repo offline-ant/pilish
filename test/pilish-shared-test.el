@@ -354,7 +354,7 @@ The replayed start is not the run's start, so its duration is unknown."
       (with-current-buffer input
         (should-not (string-match-p
                      "old widget"
-                     (overlay-get pilish--input-preamble-overlay 'before-string)))))))
+                     (overlay-get (pilish--input-preamble-overlay) 'before-string)))))))
 
 (ert-deftest pilish-shared-test-truncated-replay-marks-and-refreshes-after-the-run ()
   "A replay missing part of the run says so; settling brings the full text."

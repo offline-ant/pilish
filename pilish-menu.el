@@ -397,7 +397,7 @@ input, never an overwrite of another context's draft."
          proc chat-buf '(:type "new_session") "Start a new conversation")
       (let ((generation
            (with-current-buffer chat-buf
-             (pilish--begin-session-transition proc))))
+             (pilish--begin-session-replacement proc))))
       (condition-case err
           (pilish--rpc-async
            proc '(:type "new_session")
@@ -530,7 +530,9 @@ Call this when starting a new session to ensure no stale state persists."
         pilish--pending-tool-overlay nil
         pilish--tool-block-order-counter 0
         pilish--thinking-block-order-counter 0)
-  (pilish--clear-extension-ui)
+  ;; A new unshared session's extensions have set their statuses and
+  ;; widgets already.
+  (pilish--drop-stale-extension-ui)
   (pilish--set-activity-phase "idle" 'reset t)
   (pilish--clear-local-user-message-region)
   (pilish--invalidate-model-change)
@@ -649,9 +651,14 @@ arrived, in either order and whether or not they still belong to GENERATION.
 The transition remains active until both the state and history RPC callbacks
 for GENERATION have completed or failed.  Synchronous scheduling errors finish
 the transition before being re-signaled so the UI cannot stay wedged.
-This independent refresh is only for explicit unshared sessions."
+This independent refresh is only for explicit unshared sessions.  Every
+caller follows a successful replacement of Pi's extensions, so the
+statuses and widgets the replaced extensions left go first."
   (when (pilish--process-shared-p proc)
     (user-error "Shared transitions must use authoritative snapshot/replay/live"))
+  (when (buffer-live-p chat-buf)
+    (with-current-buffer chat-buf
+      (pilish--drop-stale-extension-ui)))
   (let* ((latch (pilish--make-session-transition-latch
                  chat-buf proc generation 2))
          (responses (list nil nil))
@@ -873,7 +880,7 @@ transition is finished; SETTLE is then not called."
   (let* ((chat-buf (current-buffer))
          (new-proc (pilish--start-process
                     dir pilish--launch-args pilish--launch-environment))
-         (generation (pilish--begin-session-transition new-proc)))
+         (generation (pilish--begin-session-replacement new-proc)))
     (if (not (processp new-proc))
         (progn
           (pilish--finish-session-transition generation)
@@ -1019,7 +1026,7 @@ INPUT-CONTEXT, when supplied, was captured before the selection yielded."
                            (pilish--process-local-path selected-path)))
            (generation (when (buffer-live-p chat-buf)
                          (with-current-buffer chat-buf
-                           (pilish--begin-session-transition proc)))))
+                           (pilish--begin-session-replacement proc)))))
       (pilish--rpc-async
        proc
        (list :type "switch_session" :sessionPath session-path)
@@ -1749,7 +1756,7 @@ In explicit unshared mode, refresh state/history and prefill the fork text."
          (input-buf (pilish--get-input-buffer))
          (generation (when (buffer-live-p chat-buf)
                        (with-current-buffer chat-buf
-                         (pilish--begin-session-transition proc)))))
+                         (pilish--begin-session-replacement proc)))))
     (pilish--rpc-async proc (list :type "fork" :entryId entry-id)
       (lambda (response)
         (when (pilish--session-transition-current-p

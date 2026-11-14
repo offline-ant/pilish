@@ -142,7 +142,7 @@ Suspend local work bound to CONTEXT without losing the authoritative identity."
                        (not (pilish--valid-input-context-p
                              (plist-get snapshot :inputContext))))
               (error "Snapshot has no valid owning input context"))
-            (process-put proc 'pilish-mux-stale-ui (pilish--shared-ui-keys))
+            (process-put proc 'pilish-mux-stale-ui (pilish--extension-ui-keys))
             (setq pilish--settle-releases-streaming (eq (plist-get run :active) t))
             (when (and (eq (plist-get run :active) t)
                        (eq (plist-get run :tailTruncated) t))
@@ -167,13 +167,6 @@ Suspend local work bound to CONTEXT without losing the authoritative identity."
     (or (and file (not (equal file new-file)))
         (and dir (not (equal dir (file-name-as-directory
                                   (pilish--chat-session-directory))))))))
-
-(defun pilish--shared-ui-keys ()
-  "Return the current statuses and widgets as a list of (KIND . KEY)."
-  (append (mapcar (lambda (status) (cons 'status (car status)))
-                  pilish--extension-status)
-          (mapcar (lambda (widget) (cons 'widget (car widget)))
-                  pilish--extension-widgets)))
 
 (defun pilish--shared-note-ui-replay (proc event)
   "Keep the extension UI that PROC's replayed EVENT names."
@@ -307,6 +300,8 @@ prompt request or automatic follow-up across this reset."
                                     (pilish--chat-session-directory)))))
       (pilish--retarget-session-identity dir (pilish--shared-free-session-name dir)))
     (pilish--reset-session-state)
+    ;; The snapshot's replay sets the runtime's statuses and widgets again.
+    (pilish--clear-extension-ui)
     ;; Only work left after the context guard can survive initial identity
     ;; adoption; a real replacement already suspended/invalidated its owners.
     (setq pilish--followup-queue followups pilish--prompt-wait prompt-wait)

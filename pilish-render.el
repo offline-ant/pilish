@@ -1666,6 +1666,7 @@ and a window displays it there.  Return the buffer."
   (let* ((key (plist-get event :statusKey))
          (text (plist-get event :statusText))
          (old (cdr (assoc key pilish--extension-status))))
+    (pilish--note-extension-ui 'status key)
     (when text
       (setq text (ansi-color-filter-apply
                   (pilish--render-safe-string text))))

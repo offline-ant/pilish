@@ -906,7 +906,9 @@ of buttons to it through =pilish-dialog-row-functions=.
 
 Text widgets show above the prompt draft, in the input buffer, and are
 never part of the draft or the sent prompt; a widget placed below Pi's
-editor shows above the draft too.  Integrations read status text with
+editor shows above the draft too.  A new, resumed or forked session and a
+reload replace Pi's extensions, so their statuses and widgets go unless
+the new extensions set them again.  Integrations read status text with
 =pilish-session-extension-status= and observe changes with
 =pilish-extension-status-functions=.
 

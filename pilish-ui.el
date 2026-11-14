@@ -1611,6 +1611,9 @@ cannot apply older session identity or header state over a newer session view.")
 (defvar-local pilish--session-transition-process nil
   "Process allowed to complete the active session transition.")
 
+(defvar-local pilish--stale-extension-ui nil
+  "Statuses and widgets left by extensions Pi is replacing, as (KIND . KEY).")
+
 (defun pilish--set-session-transition-generation (generation)
   "Set session-transition GENERATION for the current chat buffer."
   (setq pilish--session-transition-generation generation))
@@ -1625,11 +1628,22 @@ Optional PROC may complete the transition before it becomes the current process.
           pilish--session-transition-process proc)
     next))
 
+(defun pilish--begin-session-replacement (&optional proc)
+  "Begin an unshared session transition that replaces Pi's extensions.
+Return its generation, as `pilish--begin-session-transition' does with
+PROC.  New, resumed and forked sessions and reloads replace them; their
+statuses and widgets are marked stale, see
+`pilish--mark-extension-ui-stale'."
+  (prog1 (pilish--begin-session-transition proc)
+    (pilish--mark-extension-ui-stale)))
+
 (defun pilish--finish-session-transition (generation)
-  "Mark session transition GENERATION finished when it is still current."
+  "Mark session transition GENERATION finished when it is still current.
+Statuses and widgets a failed or cancelled replacement marked stale stay."
   (when (= generation pilish--session-transition-generation)
     (setq pilish--session-transition-active nil
-          pilish--session-transition-process nil)
+          pilish--session-transition-process nil
+          pilish--stale-extension-ui nil)
     (pilish--reconcile-inactivity-timer)))
 
 (defun pilish--session-transition-active-p (&optional chat-buf)
@@ -2159,8 +2173,15 @@ break dispatch.  See `pilish-session-extension-status'.")
   "Extension widgets of this session, in the order their keys first arrived.
 Elements are (KEY . LINES), LINES being sanitized single lines.")
 
-(defvar-local pilish--input-preamble-overlay nil
-  "Input buffer overlay showing the lines above the draft, or nil.")
+(defun pilish--input-preamble-overlay ()
+  "Return the current input buffer's overlay showing the lines above the draft.
+Return nil when there is none.  It is found by its property: re-running
+`pilish-input-mode' would reset a buffer-local variable holding it, while
+the overlay stays."
+  (save-restriction
+    (widen)
+    (seq-find (lambda (overlay) (overlay-get overlay 'pilish-input-preamble))
+              (overlays-in (point-min) (point-min)))))
 
 (defface pilish-extension-widget
   '((t :inherit font-lock-doc-face))
@@ -2185,18 +2206,22 @@ with a draft too long for its window."
   (when (buffer-live-p pilish--input-buffer)
     (let ((lines (pilish--input-preamble-lines)))
       (with-current-buffer pilish--input-buffer
-        (when (or lines pilish--input-preamble-overlay)
-          (unless pilish--input-preamble-overlay
-            (setq pilish--input-preamble-overlay
-                  (make-overlay (point-min) (point-min))))
-          (overlay-put pilish--input-preamble-overlay 'before-string
-                       (when lines
-                         (concat (string-join lines "\n") "\n"))))
+        (let ((overlay (pilish--input-preamble-overlay)))
+          (when (and lines (not overlay))
+            (setq overlay (save-restriction
+                            (widen)
+                            (make-overlay (point-min) (point-min))))
+            (overlay-put overlay 'pilish-input-preamble t))
+          (when overlay
+            (overlay-put overlay 'before-string
+                         (when lines
+                           (concat (string-join lines "\n") "\n")))))
         (pilish--schedule-fit-input-windows)))))
 
 (defun pilish--set-extension-widget (key lines)
   "Show LINES as widget KEY, or remove it when LINES is nil.
 Run in the chat buffer.  A key keeps its position when its widget changes."
+  (pilish--note-extension-ui 'widget key)
   (let ((widget (assoc key pilish--extension-widgets)))
     (cond ((null lines)
            (setq pilish--extension-widgets
@@ -2208,14 +2233,61 @@ Run in the chat buffer.  A key keeps its position when its widget changes."
   (pilish--refresh-input-preamble))
 
 (defun pilish--input-preamble-screen-lines (window)
-  "Return the screen lines above the draft of input WINDOW's buffer."
-  (let ((chat pilish--chat-buffer)
-        (width (max 1 (window-body-width window))))
-    (if (buffer-live-p chat)
-        (cl-loop for line in (with-current-buffer chat
-                               (pilish--input-preamble-lines))
-                 sum (max 1 (ceiling (string-width line) width)))
-      0)))
+  "Return the screen lines the text above input WINDOW's draft takes.
+Vertical motion measures the overlay text in a scratch buffer with the
+input buffer's wrapping settings.  Counting characters would miss
+`word-wrap' and the column a text terminal keeps for continuation marks."
+  (with-current-buffer (window-buffer window)
+    (let ((preamble (when-let* ((overlay (pilish--input-preamble-overlay)))
+                      (overlay-get overlay 'before-string)))
+          (wrap word-wrap)
+          (truncate truncate-lines)
+          (remapping face-remapping-alist))
+      (if (not preamble)
+          0
+        (with-temp-buffer
+          (setq word-wrap wrap
+                truncate-lines truncate
+                face-remapping-alist remapping)
+          (insert preamble)
+          (goto-char (point-min))
+          ;; The text ends in a newline, so moving to its end counts rows.
+          (vertical-motion (buffer-size) window))))))
+
+(defun pilish--extension-ui-keys ()
+  "Return the current statuses and widgets as a list of (KIND . KEY)."
+  (append (mapcar (lambda (status) (cons 'status (car status)))
+                  pilish--extension-status)
+          (mapcar (lambda (widget) (cons 'widget (car widget)))
+                  pilish--extension-widgets)))
+
+(defun pilish--mark-extension-ui-stale ()
+  "Mark the statuses and widgets as set by extensions Pi will replace.
+Unshared Pi replaces every extension when it starts, resumes or forks a
+session, and a reload starts another Pi.  Its RPC mode tells the client
+nothing about that.  The new extensions set their statuses and widgets
+from `session_start', before Pi answers the request, so a successful
+replacement drops only those no extension set since this call, through
+`pilish--drop-stale-extension-ui'.  A failed one keeps them all.  Shared
+runtimes reconcile them from their snapshot instead."
+  (setq pilish--stale-extension-ui (pilish--extension-ui-keys)))
+
+(defun pilish--note-extension-ui (kind key)
+  "Note that an extension set the KIND (`status' or `widget') named KEY."
+  (setq pilish--stale-extension-ui
+        (delete (cons kind key) pilish--stale-extension-ui)))
+
+(defun pilish--drop-stale-extension-ui ()
+  "Remove what `pilish--mark-extension-ui-stale' marked."
+  (let ((stale pilish--stale-extension-ui))
+    (setq pilish--stale-extension-ui nil)
+    (pcase-dolist (`(,kind . ,key) stale)
+      (if (eq kind 'widget)
+          (pilish--set-extension-widget key nil)
+        (setq pilish--extension-status
+              (assoc-delete-all key pilish--extension-status))
+        (pilish--run-extension-status-functions key nil)))
+    (when stale (force-mode-line-update t))))
 
 (defun pilish--clear-extension-ui ()
   "Forget the extension statuses and widgets of the current chat buffer."
@@ -2470,7 +2542,7 @@ Resize only when INPUT-WIN is directly below CHAT-WIN and
 A trailing newline starts a line of its own, since point can be there.
 Temporarily hide the preamble; fitting counts its screen lines separately."
   (with-current-buffer (window-buffer window)
-    (let* ((overlay pilish--input-preamble-overlay)
+    (let* ((overlay (pilish--input-preamble-overlay))
            (preamble (and overlay (overlay-get overlay 'before-string))))
       (unwind-protect
           (save-excursion
