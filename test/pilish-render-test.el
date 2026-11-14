@@ -6595,7 +6595,9 @@ The banner is toggled before thinking blocks and outline cycling."
                   (font-lock-ensure)
                   (cl-mapc
                    (lambda (name path)
-                     (goto-char (point-min))
+                     ;; Start in the banner: the key help above it may
+                     ;; contain a source name such as "browse".
+                     (goto-char (car (pilish--startup-banner-region)))
                      (search-forward name)
                      (backward-char)
                      (let ((target (pilish--file-target-at-point)))
