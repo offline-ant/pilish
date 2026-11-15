@@ -2246,9 +2246,9 @@ input buffer's wrapping settings.  Counting characters would miss
       (if (not preamble)
           0
         (with-temp-buffer
-          (setq word-wrap wrap
-                truncate-lines truncate
-                face-remapping-alist remapping)
+          (setq-local word-wrap wrap
+                      truncate-lines truncate
+                      face-remapping-alist remapping)
           (insert preamble)
           (goto-char (point-min))
           ;; The text ends in a newline, so moving to its end counts rows.
